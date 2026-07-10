@@ -1,0 +1,98 @@
+"""LoRD3: local regression-discontinuity discovery (Herlands et al. 2018),
+reimplemented per docs/math_audit_final.md."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from scipy.special import logit
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.preprocessing import PolynomialFeatures
+
+from natex.data.spec import Dataset
+from natex.scan.neighborhoods import candidate_partitions, knn_indices, local_residual_variance
+from natex.scan.statistics import bernoulli_llr_all_splits, normal_llr_all_splits
+
+_P_CLIP = 1e-6
+
+
+@dataclass
+class Discovery:
+    center_index: int
+    k: int
+    llr: float
+    normal: np.ndarray
+    members: np.ndarray
+    group1: np.ndarray
+    p_value: float | None = None
+    extras: dict = field(default_factory=dict)
+
+
+@dataclass
+class LoRD3Result:
+    discoveries: list[Discovery]
+    model: str
+    k: int
+
+    def top(self, m: int) -> list[Discovery]:
+        return self.discoveries[:m]
+
+
+def fit_treatment_model(X: np.ndarray, T: np.ndarray, model: str, degree: int):
+    poly = PolynomialFeatures(degree=degree, include_bias=False)
+    Xp = poly.fit_transform(X)
+    if model == "normal":
+        est = LinearRegression().fit(Xp, T)
+        return lambda A: est.predict(poly.transform(A)), "normal"
+    est = LogisticRegression(penalty=None, max_iter=1000).fit(Xp, T.astype(int))
+    return lambda A: est.predict_proba(poly.transform(A))[:, 1], "bernoulli"
+
+
+def lord3_scan(
+    dataset: Dataset,
+    k: int = 50,
+    model: str = "auto",
+    degree: int = 1,
+    rng: np.random.Generator | None = None,
+) -> LoRD3Result:
+    if model == "auto":
+        model = "bernoulli" if dataset.treatment_is_binary else "normal"
+    X, T, Z = dataset.X, dataset.T, dataset.Z_std
+    predict, kind = fit_treatment_model(X, T, model, degree)
+    idx = knn_indices(Z, k=k)
+
+    if kind == "normal":
+        r = T - predict(X)
+        sigma2 = local_residual_variance(r, idx)
+    else:
+        p_hat = np.clip(predict(X), _P_CLIP, 1.0 - _P_CLIP)
+        eta = logit(p_hat)
+
+    discoveries: list[Discovery] = []
+    n = Z.shape[0]
+    for i in range(n):
+        members = idx[i]
+        cz = Z[members] - Z[i]
+        G, keep = candidate_partitions(cz)
+        if G.shape[1] == 0:
+            continue
+        if kind == "normal":
+            llrs = normal_llr_all_splits(r[members], 1.0 / sigma2[members], G)
+        else:
+            llrs = bernoulli_llr_all_splits(T[members], eta[members], G)
+        j = int(np.argmax(llrs))
+        raw_normal = cz[keep[j]]
+        norm = float(np.linalg.norm(raw_normal))
+        discoveries.append(
+            Discovery(
+                center_index=i,
+                k=k,
+                llr=float(llrs[j]),
+                normal=raw_normal / norm if norm > 0 else raw_normal,
+                members=members.copy(),
+                group1=G[:, j].copy(),
+            )
+        )
+    discoveries.sort(key=lambda d: d.llr, reverse=True)
+    return LoRD3Result(discoveries=discoveries, model=kind, k=k)
