@@ -14,7 +14,8 @@ import numpy as np
 
 from natex.data.spec import Dataset
 from natex.rdd.lord3 import LoRD3Result, fit_treatment_model, lord3_scan
-from natex.scan.neighborhoods import knn_indices, local_residual_variance
+from natex.scan.geometry import ScanGeometry, build_geometry
+from natex.scan.neighborhoods import local_residual_variance
 
 
 @dataclass
@@ -37,6 +38,8 @@ def randomization_test(
     Q: int = 99,
     rng: np.random.Generator | None = None,
     scan_kwargs: dict | None = None,
+    geometry: ScanGeometry | None = None,
+    centers: np.ndarray | None = None,
 ) -> RandomizationReport:
     if rng is None:
         raise ValueError("pass an explicit numpy Generator")
@@ -44,12 +47,16 @@ def randomization_test(
     scan_kwargs.setdefault("k", scan_result.k)
     kind = scan_result.model
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
+    # Geometry depends only on Z_std, which is identical across all replicas:
+    # build once, reuse everywhere. Replica draw order is unchanged, so
+    # p-values are bit-identical with or without the cache.
+    if geometry is None:
+        geometry = build_geometry(Z, scan_kwargs["k"])
     predict, _ = fit_treatment_model(X, T, kind, scan_kwargs.get("degree", 1))
     fitted = predict(X)
     sigma2 = None
     if kind == "normal":
-        idx = knn_indices(Z, k=scan_kwargs["k"])
-        sigma2 = local_residual_variance(T - fitted, idx)
+        sigma2 = local_residual_variance(T - fitted, geometry.idx)
     else:
         fitted = np.clip(fitted, 1e-6, 1 - 1e-6)
 
@@ -60,7 +67,9 @@ def randomization_test(
         df_star = dataset.df.copy()
         df_star[dataset.spec.treatment] = t_star
         ds_star = Dataset(df_star, dataset.spec)
-        res_star = lord3_scan(ds_star, model=kind, rng=rng, **scan_kwargs)
+        res_star = lord3_scan(
+            ds_star, model=kind, rng=rng, geometry=geometry, centers=centers, **scan_kwargs
+        )
         null_max[q_i] = res_star.discoveries[0].llr if res_star.discoveries else 0.0
 
     p = (1.0 + float(np.sum(null_max >= observed))) / (Q + 1.0)

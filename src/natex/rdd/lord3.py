@@ -11,7 +11,8 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from natex.data.spec import Dataset
-from natex.scan.neighborhoods import candidate_partitions, knn_indices, local_residual_variance
+from natex.scan.geometry import ScanGeometry, build_geometry
+from natex.scan.neighborhoods import local_residual_variance
 from natex.scan.statistics import bernoulli_llr_all_splits, normal_llr_all_splits
 
 _P_CLIP = 1e-6
@@ -34,6 +35,7 @@ class LoRD3Result:
     discoveries: list[Discovery]
     model: str
     k: int
+    centers: np.ndarray | None = None
 
     def top(self, m: int) -> list[Discovery]:
         return self.discoveries[:m]
@@ -65,15 +67,23 @@ def lord3_scan(
     model: str = "auto",
     degree: int = 1,
     rng: np.random.Generator | None = None,
+    geometry: ScanGeometry | None = None,
+    centers: np.ndarray | None = None,
 ) -> LoRD3Result:
     if model == "auto":
         model = "bernoulli" if dataset.treatment_is_binary else "normal"
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
     predict, kind = fit_treatment_model(X, T, model, degree)
-    idx = knn_indices(Z, k=k)
+    if geometry is None:
+        geometry = build_geometry(Z, k)
+    elif geometry.k != k:
+        raise ValueError(f"geometry.k={geometry.k} disagrees with k={k}")
+    idx = geometry.idx
 
     if kind == "normal":
         r = T - predict(X)
+        # Full-geometry variances even when scanning a center subset: every
+        # member's OWN-kNN variance is needed, not just the centers'.
         sigma2 = local_residual_variance(r, idx)
     else:
         p_hat = np.clip(predict(X), _P_CLIP, 1.0 - _P_CLIP)
@@ -81,7 +91,9 @@ def lord3_scan(
 
     discoveries: list[Discovery] = []
     n = Z.shape[0]
-    for i in range(n):
+    center_iter = range(n) if centers is None else np.asarray(centers, dtype=int)
+    for i in center_iter:
+        i = int(i)
         members = idx[i]
         if kind == "bernoulli":
             tm = T[members]
@@ -94,7 +106,7 @@ def lord3_scan(
                 # branch, keeping observed/null scans consistent.
                 continue
         cz = Z[members] - Z[i]
-        G, keep = candidate_partitions(cz)
+        G, keep = geometry.partitions_for(i, Z)
         if G.shape[1] == 0:
             continue
         if kind == "normal":
@@ -115,4 +127,4 @@ def lord3_scan(
             )
         )
     discoveries.sort(key=lambda d: d.llr, reverse=True)
-    return LoRD3Result(discoveries=discoveries, model=kind, k=k)
+    return LoRD3Result(discoveries=discoveries, model=kind, k=k, centers=centers)
