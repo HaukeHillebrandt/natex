@@ -1,32 +1,30 @@
-import os
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from natex.data.spec import Dataset
 from natex.estimate.local2sls import local_2sls
 from natex.rdd.lord3 import lord3_scan
 from natex.validate.randomization import randomization_test
 
 pytestmark = pytest.mark.backtest
 
-DATA = os.environ.get("NATEX_DATA")
-
 
 @pytest.fixture()
-def ds():
-    if not DATA:
-        pytest.skip("NATEX_DATA not set")
-    path = Path(DATA) / "test_score_2012" / "RDD_Guide_Dataset_0.csv"
-    return Dataset.from_csv(
-        path,
-        treatment="treat",
-        outcome="posttest",
-        forcing=["age", "pretest"],
-        covariates=["gender", "sped", "frlunch", "esol", "black", "white",
-                    "hispanic", "asian", "age", "pretest"],
-    )
+def ds(load_or_skip):
+    return load_or_skip("test_score_2012")
+
+
+def test_registry_spec_matches_phase1_handbuilt(ds):
+    # The registry must reproduce the phase-1 hand-built Dataset exactly.
+    assert ds.spec.treatment == "treat"
+    assert ds.spec.outcome == "posttest"
+    assert ds.spec.forcing == ["age", "pretest"]
+    assert ds.spec.covariates == [
+        "gender", "sped", "frlunch", "esol", "black", "white",
+        "hispanic", "asian", "age", "pretest",
+    ]
+    # 2766 raw data rows (checked by verify()); Dataset drops the 160 rows with
+    # NaN in scan columns, exactly as the phase-1 hand-built Dataset did.
+    assert ds.n == 2606
 
 
 def test_recovers_cutoff_215_and_forcing_variable(ds):
