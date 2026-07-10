@@ -83,6 +83,16 @@ def lord3_scan(
     n = Z.shape[0]
     for i in range(n):
         members = idx[i]
+        if kind == "bernoulli":
+            tm = T[members]
+            if tm.min() == tm.max():
+                # Homogeneous fast path: with constant T every split side is
+                # pure, so each split's ll1 and the null's boundary supremum
+                # are both 0 and every LLR is provably 0.0 (audit item 21).
+                # Skip the kernel; recording nothing for this center matches
+                # the slow path's all-zero scores. Null replicas hit the same
+                # branch, keeping observed/null scans consistent.
+                continue
         cz = Z[members] - Z[i]
         G, keep = candidate_partitions(cz)
         if G.shape[1] == 0:
