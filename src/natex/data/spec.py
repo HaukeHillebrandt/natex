@@ -27,7 +27,10 @@ class Dataset:
             raise ValueError(f"forcing columns must be numeric: {bad}")
         if not set(spec.forcing) <= set(spec.covariates):
             raise ValueError("forcing columns must be a subset of covariates")
-        self.df = df.reset_index(drop=True)
+        # Drop rows with missing values in scan-relevant columns only (never the
+        # outcome: discovery uses only (x, z, T) and must tolerate NaN in y).
+        scan_cols = list(dict.fromkeys([spec.treatment, *spec.forcing, *spec.covariates]))
+        self.df = df.dropna(subset=scan_cols).reset_index(drop=True)
         self.spec = spec
 
     @classmethod
