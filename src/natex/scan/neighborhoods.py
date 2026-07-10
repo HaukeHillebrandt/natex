@@ -48,3 +48,15 @@ def candidate_partitions(cz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         seen.add(b2)
         keep.append(j)
     return G[:, keep], np.asarray(keep, dtype=int)
+
+
+def local_residual_variance(r: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Per-point residual variance over each point's OWN k-neighborhood.
+
+    Audit item 20: the legacy implementation indexed reverse neighbors by
+    mistake; this function is row-wise over idx (own neighborhoods) by
+    construction. Floor is data-scaled (audit item 24), never absolute.
+    """
+    local = np.var(r[idx], axis=1, ddof=1)
+    floor = 1e-3 * float(np.var(r, ddof=1))
+    return np.maximum(local, floor)
