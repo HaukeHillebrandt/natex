@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.special import logit
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.preprocessing import PolynomialFeatures
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from natex.data.spec import Dataset
 from natex.scan.neighborhoods import candidate_partitions, knn_indices, local_residual_variance
@@ -45,8 +45,18 @@ def fit_treatment_model(X: np.ndarray, T: np.ndarray, model: str, degree: int):
     if model == "normal":
         est = LinearRegression().fit(Xp, T)
         return lambda A: est.predict(poly.transform(A)), "normal"
-    est = LogisticRegression(penalty=None, max_iter=1000).fit(Xp, T.astype(int))
-    return lambda A: est.predict_proba(poly.transform(A))[:, 1], "bernoulli"
+    # Ridge-penalized logistic on standardized features. Scale-invariant guard
+    # against perfect separation (sharp designs): the unpenalized MLE does not
+    # exist there, the fitted background absorbs the discontinuity, and the
+    # Bernoulli(p-hat) null replicas degenerate into exact copies of T. Penalized
+    # likelihood under separation follows the audit's remedy (Firth-style); the
+    # standardization makes the penalty independent of covariate units.
+    scaler = StandardScaler().fit(Xp)
+    est = LogisticRegression(C=1.0, max_iter=1000).fit(scaler.transform(Xp), T.astype(int))
+    return (
+        lambda A: est.predict_proba(scaler.transform(poly.transform(A)))[:, 1],
+        "bernoulli",
+    )
 
 
 def lord3_scan(
