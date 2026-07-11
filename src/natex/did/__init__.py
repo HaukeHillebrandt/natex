@@ -2,6 +2,7 @@
 
 from natex.did.background import DiDBackground, fit_did_background
 from natex.did.mdss import SingleDeltaPriority, SubsetState, mdss_optimize
+from natex.did.metrics import subset_precision_recall
 from natex.did.panel import CategoricalPanel, build_panel, quantile_bins
 from natex.did.statistics import (
     WindowStats,
@@ -40,6 +41,7 @@ __all__ = [
     "quantile_bins",
     "single_delta_llr",
     "single_delta_stats",
+    "subset_precision_recall",
     "suddds_scan",
     "window_stats",
     "working_residuals",
