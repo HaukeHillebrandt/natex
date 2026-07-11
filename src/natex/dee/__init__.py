@@ -12,6 +12,12 @@ from natex.dee.bma import (
 )
 from natex.dee.gp import GPPosterior, HeteroskedasticGP, rbf_kernel, sample_gp_prior
 from natex.dee.noise import log_se2_bias, log_se2_measurement_var, smooth_noise
+from natex.dee.observational import (
+    ObservationalEstimator,
+    TLearner,
+    default_factory,
+    experiment_crossfit_cate,
+)
 from natex.dee.vknn import (
     QuasiExperiment,
     VKNNResult,
@@ -27,11 +33,15 @@ __all__ = [
     "HeteroskedasticGP",
     "MixturePosterior",
     "ModelWeights",
+    "ObservationalEstimator",
     "QuasiExperiment",
+    "TLearner",
     "VKNNResult",
     "balance_filter",
     "buffered_folds",
     "buffered_stacking_weights",
+    "default_factory",
+    "experiment_crossfit_cate",
     "experiment_effects",
     "experiment_radius",
     "log_se2_bias",
