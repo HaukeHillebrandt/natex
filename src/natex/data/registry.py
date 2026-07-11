@@ -1,7 +1,8 @@
-"""Registry and loaders for the five RDD benchmark datasets, keyed on env NATEX_DATA.
+"""Registry and loaders for the benchmark datasets (5 RDD + Prop 99 DiD), keyed on env NATEX_DATA.
 
 Datasets are never committed; ``DatasetInfo.source`` carries human fetch
-instructions for reconstructing the local data root.
+instructions for reconstructing the local data root, and entries with a public
+``fetch_url`` can be downloaded via ``natex fetch-data NAME``.
 """
 
 from __future__ import annotations
@@ -28,6 +29,9 @@ class DatasetInfo:
     n_rows: int | None  # expected data rows; None = don't check
     source: str  # human fetch instructions (URL + landing page)
     notes: str = ""
+    time: str | None = None  # panel time column (DiD datasets)
+    unit: str | None = None  # cross-sectional unit id column (DiD datasets)
+    fetch_url: str | None = None  # direct public download when one exists; None = login-gated
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,47 @@ REGISTRY: dict[str, DatasetInfo] = {
             "load time; rows with missing/nonpositive wpop are dropped."
         ),
     ),
+    "prop99": DatasetInfo(
+        name="prop99",
+        relpath="prop99/smoking_data.csv",
+        glob_fallback=None,
+        treatment="treated",
+        outcome="cigsale",
+        forcing=(),  # DiD dataset: no forcing variable
+        covariates=(
+            "mean_lnincome",
+            "mean_retprice",
+            "mean_age15to24",
+            "mean_beer",
+            "cigsale_1975",
+            "cigsale_1980",
+            "cigsale_1988",
+        ),
+        time="year",
+        unit="state",
+        n_rows=1209,  # 39 states x 31 years (1970-2000), header excluded
+        fetch_url=(
+            "https://raw.githubusercontent.com/OscarEngelbrektson/"
+            "SyntheticControlMethods/master/examples/datasets/smoking_data.csv"
+        ),
+        source=(
+            "Abadie, Diamond & Hainmueller (2010) California Prop 99 smoking panel "
+            "(state, year, cigsale, lnincome, beer, age15to24, retprice). Fetch with "
+            "`natex fetch-data prop99` or download the CSV from the fetch URL and place "
+            "it at prop99/smoking_data.csv under NATEX_DATA."
+        ),
+        notes=(
+            "DiD benchmark (thesis ch.6 §6.4.3): treated = (state == 'California') & "
+            "(year >= 1989). Covariates are derived at load time as STATE-LEVEL, "
+            "time-invariant summaries (means over available years; lnincome starts 1972, "
+            "beer covers 1984-1997) plus lagged cigsale in 1975/1980/1988 — the thesis "
+            "quantizes each into 4 bins; profile-based subsets then select whole state "
+            "trajectories, which is what 'covariate profiles across ALL time points' "
+            "requires. Documented deviation: the thesis does not state its aggregation. "
+            "Implementation-time check (2026-07-11, real CSV): with bins=4 all 39 states "
+            "have distinct 7-dim quantized profiles, so California's profile is unique."
+        ),
+    ),
 }
 
 
@@ -240,7 +285,47 @@ def _prepare(name: str, df: pd.DataFrame) -> pd.DataFrame:
         # multiplicative: scan on log_pop. log() needs strictly positive wpop.
         df = df[df["wpop"].notna() & (df["wpop"] > 0)].reset_index(drop=True)
         df = df.assign(log_pop=np.log(df["wpop"].to_numpy(dtype=float)))
+    if name == "prop99":
+        df = _prepare_prop99(df)
     return df
+
+
+_PROP99_RAW_COLUMNS = ("state", "year", "cigsale", "lnincome", "beer", "age15to24", "retprice")
+
+
+def _prepare_prop99(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive prop99 DiD columns: treated flag + state-level covariates.
+
+    Covariates must be constant per state so that quantized covariate profiles
+    select whole state trajectories across ALL time points (thesis ch.6 §6.4.3;
+    aggregation choice documented in REGISTRY['prop99'].notes). Means skip NaN
+    (lnincome starts 1972, beer covers 1984-1997); the result has no NaN in any
+    spec column.
+    """
+    missing = [c for c in _PROP99_RAW_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"prop99: expected raw columns missing: {missing}")
+    df = df.copy()
+    df["treated"] = ((df["state"] == "California") & (df["year"] >= 1989)).astype(float)
+    grouped = df.groupby("state")
+    derived = pd.DataFrame(
+        {
+            "mean_lnincome": grouped["lnincome"].mean(),  # NaN-skipping
+            "mean_retprice": grouped["retprice"].mean(),
+            "mean_age15to24": grouped["age15to24"].mean(),
+            "mean_beer": grouped["beer"].mean(),
+        }
+    )
+    for yr in (1975, 1980, 1988):
+        derived[f"cigsale_{yr}"] = df.loc[df["year"] == yr].set_index("state")["cigsale"]
+    bad = derived.columns[derived.isna().any()].tolist()
+    if bad:
+        raise ValueError(
+            f"prop99: derived covariates contain NaN for some state: {bad} "
+            "(a state is missing every value of a raw column, or lacks a "
+            "1975/1980/1988 cigsale row)"
+        )
+    return df.merge(derived, left_on="state", right_index=True, how="left")
 
 
 def load_dataset(
@@ -260,5 +345,7 @@ def load_dataset(
         outcome=out,
         forcing=list(info.forcing),
         covariates=list(info.covariates),
+        time=info.time,
+        unit=info.unit,
     )
     return Dataset(df, spec)

@@ -12,6 +12,7 @@ EXPECTED_NAMES = {
     "ed_visits",
     "inpatient_visits",
     "egger_koethenbuerger",
+    "prop99",
 }
 
 TEST_SCORE_HEADER = [

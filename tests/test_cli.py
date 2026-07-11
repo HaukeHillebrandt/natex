@@ -44,19 +44,20 @@ def _write_fake_test_score(root, n=30):
 
 
 def test_datasets_lists_all_with_fake_root(tmp_path):
-    """`natex datasets` on a root holding only the fake test-score CSV: 5 lines,
-    one found, four missing with their fetch-instruction (source) text; exit 0."""
+    """`natex datasets` on a root holding only the fake test-score CSV: 6 lines,
+    one found, five missing with their fetch-instruction (source) text; exit 0."""
     _write_fake_test_score(tmp_path)
     runner = CliRunner()
     result = runner.invoke(app, ["datasets", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
-    assert len(lines) == 5
+    assert len(lines) == 6
     assert sum("found" in ln for ln in lines) == 1
-    assert sum("missing" in ln for ln in lines) == 4
+    assert sum("missing" in ln for ln in lines) == 5
     found_line = next(ln for ln in lines if "found" in ln)
     assert "test_score_2012" in found_line
-    for name in ("academic_probation", "ed_visits", "inpatient_visits", "egger_koethenbuerger"):
+    for name in ("academic_probation", "ed_visits", "inpatient_visits",
+                 "egger_koethenbuerger", "prop99"):
         line = next(ln for ln in lines if ln.startswith(name))
         assert "missing" in line
         assert REGISTRY[name].source in line

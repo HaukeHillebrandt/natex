@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 import typer
 
-from natex.data.registry import REGISTRY, verify
+from natex.data.registry import REGISTRY, data_root, verify
 from natex.data.spec import Dataset
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.rdd.lord3 import lord3_scan
@@ -57,6 +61,51 @@ def datasets(
             typer.echo(f"{name}  found  rows={st.n_rows}  ok={st.ok}  path={st.path}")
         else:
             typer.echo(f"{name}  missing  rows=?  ok=False  fetch: {info.source}")
+
+
+@app.command("fetch-data")
+def fetch_data(
+    name: str,
+    root: Path = typer.Option(None, help="data root; default env NATEX_DATA"),
+    force: bool = typer.Option(False, "--force", help="re-download over an existing file"),
+):
+    """Download a dataset that has a public direct URL into the data root.
+
+    Login-gated datasets print their fetch instructions and exit(1). The
+    download streams to a temp file next to the target and is renamed
+    atomically; afterwards ``verify(name)`` runs and its result is reported.
+    """
+    info = REGISTRY.get(name)
+    if info is None:
+        typer.echo(f"unknown dataset {name!r}; known: {sorted(REGISTRY)}")
+        raise typer.Exit(code=1)
+    if info.fetch_url is None:
+        typer.echo(f"{name} has no public direct download (login-gated).")
+        typer.echo(f"How to obtain it: {info.source}")
+        raise typer.Exit(code=1)
+    try:
+        base = data_root(root)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
+    dest = base / info.relpath
+    if dest.exists() and not force:
+        typer.echo(f"{dest} already exists; pass --force to re-download.")
+        raise typer.Exit(code=1)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as out_f, urllib.request.urlopen(info.fetch_url) as resp:
+            shutil.copyfileobj(resp, out_f)
+        os.replace(tmp_name, dest)  # atomic within the same directory
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    typer.echo(f"downloaded {info.fetch_url} -> {dest}")
+    st = verify(name, root=base)
+    typer.echo(f"verify: rows={st.n_rows}  ok={st.ok}  {st.message}")
+    if not st.ok:
+        raise typer.Exit(code=1)
 
 
 @app.command()
