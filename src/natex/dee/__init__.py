@@ -10,6 +10,7 @@ from natex.dee.bma import (
     mixture_posterior,
     mll_weights,
 )
+from natex.dee.debias import DEEResult, dee_debias
 from natex.dee.gp import GPPosterior, HeteroskedasticGP, rbf_kernel, sample_gp_prior
 from natex.dee.noise import log_se2_bias, log_se2_measurement_var, smooth_noise
 from natex.dee.observational import (
@@ -29,6 +30,7 @@ from natex.dee.vknn import (
 )
 
 __all__ = [
+    "DEEResult",
     "GPPosterior",
     "HeteroskedasticGP",
     "MixturePosterior",
@@ -40,6 +42,7 @@ __all__ = [
     "balance_filter",
     "buffered_folds",
     "buffered_stacking_weights",
+    "dee_debias",
     "default_factory",
     "experiment_crossfit_cate",
     "experiment_effects",
