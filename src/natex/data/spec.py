@@ -12,9 +12,10 @@ from pydantic import BaseModel
 class DatasetSpec(BaseModel):
     treatment: str
     outcome: str | None = None
-    forcing: list[str]
+    forcing: list[str]  # may be [] (DiD-only datasets have no forcing variable)
     covariates: list[str]
     time: str | None = None
+    unit: str | None = None  # cross-sectional unit id column (e.g. "state")
 
 
 class Dataset:
@@ -27,9 +28,17 @@ class Dataset:
             raise ValueError(f"forcing columns must be numeric: {bad}")
         if not set(spec.forcing) <= set(spec.covariates):
             raise ValueError("forcing columns must be a subset of covariates")
+        if spec.time is not None:
+            if spec.time not in df.columns:
+                raise ValueError(f"time column not in dataframe: {spec.time}")
+            if not pd.api.types.is_numeric_dtype(df[spec.time]):
+                raise ValueError(f"time column must be numeric: {spec.time}")
+        if spec.unit is not None and spec.unit not in df.columns:
+            raise ValueError(f"unit column not in dataframe: {spec.unit}")
         # Drop rows with missing values in scan-relevant columns only (never the
         # outcome: discovery uses only (x, z, T) and must tolerate NaN in y).
-        scan_cols = list(dict.fromkeys([spec.treatment, *spec.forcing, *spec.covariates]))
+        extra = [c for c in (spec.time, spec.unit) if c is not None]
+        scan_cols = list(dict.fromkeys([spec.treatment, *spec.forcing, *spec.covariates, *extra]))
         self.df = df.dropna(subset=scan_cols).reset_index(drop=True)
         self.spec = spec
 
@@ -42,6 +51,7 @@ class Dataset:
         forcing: list[str] | None = None,
         covariates: str | list[str] = "auto",
         time: str | None = None,
+        unit: str | None = None,
     ) -> "Dataset":
         df = pd.read_csv(path)
         reserved = {treatment} | ({outcome} if outcome else set())
@@ -50,7 +60,12 @@ class Dataset:
         if forcing is None:
             forcing = [c for c in covariates if pd.api.types.is_numeric_dtype(df[c])]
         spec = DatasetSpec(
-            treatment=treatment, outcome=outcome, forcing=forcing, covariates=list(covariates), time=time
+            treatment=treatment,
+            outcome=outcome,
+            forcing=forcing,
+            covariates=list(covariates),
+            time=time,
+            unit=unit,
         )
         return cls(df, spec)
 
