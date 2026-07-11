@@ -14,10 +14,19 @@ import typer
 
 from natex.data.registry import REGISTRY, data_root, verify
 from natex.data.spec import Dataset
+from natex.did.background import fit_did_background
+from natex.did.effects import did_effect, tau_randomization_test
+from natex.did.panel import build_panel
+from natex.did.suddds import suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.rdd.lord3 import lord3_scan
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
+from natex.validate.panel import (
+    anticipation_test,
+    composition_test,
+    panel_randomization_test,
+)
 from natex.validate.placebo import placebo_tests
 from natex.validate.randomization import randomization_test
 
@@ -121,8 +130,32 @@ def discover(
     coarse: bool = typer.Option(False, "--coarse/--no-coarse",
                                 help="coarse-to-fine scan (large datasets)"),
     n_coarse: int = typer.Option(2000, help="coarse-stage center subsample size"),
+    design: str = typer.Option("rdd", help="rdd (LoRD3 scan) | did (SuDDDS panel scan)"),
+    time: str = typer.Option(None, help="panel time column (required for --design did)"),
+    unit: str = typer.Option(None, help="panel unit column (optional; --design did)"),
+    bins: int = typer.Option(4, help="quantile bins per numeric covariate (--design did)"),
+    windows: str = typer.Option(
+        None, help="comma-separated window widths, e.g. '8,10'; default: data-driven (did)"
+    ),
+    restarts: int = typer.Option(8, help="scan restarts per window (--design did)"),
+    method: str = typer.Option(
+        "single_delta", help="single_delta|wcc|greedy (--design did)"
+    ),
+    model: str = typer.Option(
+        "auto", help="auto|normal|bernoulli (--design did; audit-19 model matching)"
+    ),
     out: Path = typer.Option(Path("out")),
 ):
+    if design not in ("rdd", "did"):
+        typer.echo(f"--design must be 'rdd' or 'did', got {design!r}")
+        raise typer.Exit(code=2)
+    if design == "did":
+        _discover_did(
+            csv, treatment=treatment, outcome=outcome, forcing=forcing, q=q,
+            seed=seed, degree=degree, time=time, unit=unit, bins=bins,
+            windows=windows, restarts=restarts, method=method, model=model, out=out,
+        )
+        return
     ds = Dataset.from_csv(
         csv, treatment=treatment, outcome=outcome,
         forcing=forcing.split(",") if forcing else None,
@@ -186,4 +219,116 @@ def discover(
     if effects:
         e = effects["2sls"]
         typer.echo(f"2SLS tau={e['tau']:.3f} CI=({e['ci'][0]:.3f},{e['ci'][1]:.3f}) weak_iv={e['weak_instrument']}")
+    typer.echo(f"results: {out / 'results.json'}")
+
+
+def _discover_did(
+    csv: Path,
+    *,
+    treatment: str,
+    outcome: str | None,
+    forcing: str | None,
+    q: int,
+    seed: int,
+    degree: int,
+    time: str | None,
+    unit: str | None,
+    bins: int,
+    windows: str | None,
+    restarts: int,
+    method: str,
+    model: str,
+    out: Path,
+) -> None:
+    """SuDDDS branch of ``discover``: scan + validation battery + effects.
+
+    Runs :func:`natex.did.suddds.suddds_scan`, calibrates the max-LLR with
+    :func:`natex.validate.panel.panel_randomization_test` (Q=``--q``), runs
+    the composition and anticipation checks on the top discovery, and — when
+    an outcome column is given — :func:`natex.did.effects.did_effect` plus the
+    studentized :func:`natex.did.effects.tau_randomization_test` for each of
+    the dd/synthetic/gess controls. The results bundle always reports what was
+    searched (windows grid, restarts, method, model, dims, bin counts —
+    spec 6b obligation).
+    """
+    if time is None:
+        typer.echo("--design did requires --time COLUMN (the panel time variable)")
+        raise typer.Exit(code=2)
+    ds = Dataset.from_csv(
+        csv, treatment=treatment, outcome=outcome,
+        forcing=forcing.split(",") if forcing else [],
+        time=time, unit=unit,
+    )
+    window_grid = tuple(float(w) for w in windows.split(",")) if windows else None
+    rng = np.random.default_rng(seed)
+    panel = build_panel(ds, bins=bins)
+    res = suddds_scan(
+        ds, windows=window_grid, restarts=restarts, model=model, method=method,
+        bins=bins, degree=degree, rng=rng, panel=panel,
+    )
+    if not res.discoveries:
+        typer.echo("no qualifying discovery (no cutoff had two-sided support); nothing to report")
+        raise typer.Exit(code=1)
+    rand = panel_randomization_test(
+        ds, res, Q=q, rng=rng, scan_kwargs={"bins": bins, "degree": degree}
+    )
+    top = res.discoveries[0]
+    comp = composition_test(panel, top)
+    background = fit_did_background(panel, model=res.model, degree=degree)
+    antic = anticipation_test(panel, background, top)
+    effects = {}
+    if ds.y is not None:
+        for control in ("dd", "synthetic", "gess"):
+            eff = did_effect(panel, top, control=control)
+            tau_rand = tau_randomization_test(panel, top, control=control, rng=rng)
+            effects[control] = {
+                "tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
+                "pre_mse": eff.pre_mse, "dose": eff.dose,
+            }
+    payload = _clean(
+        {
+            "params": {"design": "did", "q": q, "seed": seed, "degree": degree,
+                       "time": time, "unit": unit, "bins": bins, "windows": windows,
+                       "restarts": restarts, "method": method, "model": model,
+                       "csv": str(csv)},
+            "did": {
+                "scan": {"model": res.model, "method": res.method,
+                         "p_value": rand.p_value,
+                         "observed_max_llr": rand.observed_max_llr,
+                         "null_kind": rand.null_kind},
+                "discoveries": [
+                    {"subset_values": d.subset_values, "t0": d.t0,
+                     "window": d.window, "llr": d.llr}
+                    for d in res.top(20)
+                ],
+                "validation": {
+                    "composition_p": comp.p_value,
+                    "composition_passed": comp.passed,
+                    "anticipation_shifts": list(antic.shifts),
+                    "anticipation_p_holm": antic.p_holm.tolist(),
+                    "anticipation_passed": antic.passed,
+                },
+                "effects": effects,
+                # spec 6b: always report what was searched.
+                "searched": {
+                    "windows": list(res.windows), "restarts": res.restarts,
+                    "method": res.method, "model": res.model,
+                    "dims": list(panel.dim_names),
+                    "bin_counts": dict(zip(panel.dim_names, panel.dim_sizes)),
+                },
+            },
+        }
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "results.json").write_text(json.dumps(payload, indent=1))
+    typer.echo(f"model={res.model}  max LLR={rand.observed_max_llr:.2f}  scan p={rand.p_value:.3f}")
+    typer.echo(f"top subset: {top.subset_values}  t0={top.t0:g}  W={top.window:g}")
+    typer.echo(f"composition passed: {comp.passed}   anticipation passed: {antic.passed}")
+    if effects:
+        e = effects["dd"]
+        typer.echo(
+            f"dd tau={e['tau']:.3f} p={e['p']:.3f} "
+            f"(synthetic tau={effects['synthetic']['tau']:.3f}, "
+            f"gess tau={effects['gess']['tau']:.3f})"
+        )
     typer.echo(f"results: {out / 'results.json'}")

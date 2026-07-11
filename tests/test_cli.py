@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 
 import numpy as np
 import pandas as pd
@@ -7,6 +9,7 @@ from typer.testing import CliRunner
 from natex.cli import app
 from natex.data.registry import REGISTRY
 from natex.data.synthetic import make_synthetic
+from natex.data.synthetic_did import make_did_synthetic
 
 
 def test_discover_end_to_end(tmp_path):
@@ -84,6 +87,74 @@ def test_discover_coarse_smoke(tmp_path):
     p = payload["scan"]["p_value"]
     assert p is not None and 0.0 < p <= 1.0
     assert payload["params"]["coarse"] is True
+
+
+def test_discover_did_smoke(tmp_path):
+    """--design did: full scan + validation + three-control effects payload.
+
+    DGP seed 1 is a config where the seeded scan recovers the planted subset
+    exactly (nonempty subset_values, non-NaN effects), so the payload checks
+    exercise the non-degenerate path.
+    """
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    did = payload["did"]
+    top = did["discoveries"][0]
+    assert isinstance(top["t0"], float)
+    assert isinstance(top["llr"], float)
+    assert isinstance(top["subset_values"], dict)
+    p = did["scan"]["p_value"]
+    assert 0.0 < p <= 1.0
+    assert set(did["effects"]) == {"dd", "synthetic", "gess"}
+    for block in did["effects"].values():
+        assert {"tau", "se", "p", "pre_mse", "dose"} <= set(block)
+        assert isinstance(block["tau"], float)  # non-null: recovered subset
+        assert 0.0 < block["p"] <= 1.0
+    # spec 6b obligation: the bundle always reports what was searched.
+    searched = did["searched"]
+    assert searched["windows"] == [4.0]
+    assert searched["restarts"] == 2
+    assert searched["method"] == "single_delta"
+    assert searched["model"] == "normal"
+    assert searched["dims"] == ["x0", "x1"]
+    assert searched["bin_counts"] == {"x0": 3, "x1": 3}
+    assert "validation" in did
+
+
+def test_discover_did_requires_time(tmp_path):
+    """--design did without --time: nonzero exit, message names --time."""
+    ds, _ = make_did_synthetic(n=50, d=2, V=3, zeta=8.0, rng=np.random.default_rng(0))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code != 0
+    assert "--time" in result.output
+
+
+def test_import_surface_matplotlib_free():
+    """New DiD exports importable from natex; module import stays matplotlib-free."""
+    code = (
+        "import sys, natex\n"
+        "from natex import (suddds_scan, SuDDDSResult, DiDDiscovery, build_panel,\n"
+        "                   make_did_synthetic, did_effect)\n"
+        "assert 'matplotlib' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_discover_degree_passthrough(tmp_path):
