@@ -5,6 +5,12 @@ Instrument SELECTION reads only (T, pool, controls) — never the outcome
 post-selection first-stage F, never assumed relevance).
 """
 
+from natex.iv.pipeline import InstrumentDiscovery, discover_instruments
 from natex.iv.search import InstrumentSearchResult, select_instruments
 
-__all__ = ["InstrumentSearchResult", "select_instruments"]
+__all__ = [
+    "InstrumentDiscovery",
+    "InstrumentSearchResult",
+    "discover_instruments",
+    "select_instruments",
+]
