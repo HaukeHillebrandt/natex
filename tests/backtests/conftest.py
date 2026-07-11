@@ -18,6 +18,8 @@ def load_or_skip(name: str, **kwargs) -> Dataset:
         pytest.skip(str(exc))
 
 
-@pytest.fixture(name="load_or_skip")
+# Session scope: the fixture only hands back the (stateless) helper above, so
+# module-scoped fixtures (e.g. the 44k-row LSO scan) may depend on it.
+@pytest.fixture(name="load_or_skip", scope="session")
 def _load_or_skip_fixture():
     return load_or_skip
