@@ -34,32 +34,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.optimize import minimize
 
 from natex.did.mdss import SubsetState
 from natex.did.panel import CategoricalPanel
 from natex.did.suddds import DiDDiscovery
+from natex.estimate.simplex import (
+    MISSING_W_TOL,
+    fit_simplex_weights,
+    weighted_counterfactual,
+)
 
-_MISSING_W_TOL = 0.1  # synthetic: a time is defined while the total weight of
-# MISSING donor cells stays <= this; present weights are renormalized. SLSQP
-# solutions are not sparse (dozens of O(1e-2) weights), so requiring every
-# weighted donor present would void almost every time on a thin panel.
-
-
-def _weighted_counterfactual_by_time(contrib: np.ndarray, w: np.ndarray) -> np.ndarray:
-    """(n_t,) donor-weighted mean per time from ``contrib`` (n_c, n_t).
-
-    Missing donor cells (NaN) are dropped and the PRESENT weights are
-    renormalized while the missing weight mass is <= ``_MISSING_W_TOL``;
-    beyond that the time is NaN — never a silent 0. The renormalization
-    error is bounded by the missing mass times the donor-mean spread.
-    """
-    present = np.isfinite(contrib)
-    missing_w = (~present).T.astype(float) @ w  # (n_t,)
-    present_w = present.T.astype(float) @ w
-    num = np.where(present, contrib, 0.0).T @ w
-    ok = (missing_w <= _MISSING_W_TOL) & (present_w > 0.0)
-    return np.where(ok, num / np.where(present_w > 0.0, present_w, 1.0), np.nan)
+# Simplex fitting and missing-donor renormalization moved verbatim to
+# natex.estimate.simplex (phase 5 task 6) so IV/SC donor selection shares
+# the same deterministic fitter; both names re-exported for compatibility.
+_MISSING_W_TOL = MISSING_W_TOL
+_weighted_counterfactual_by_time = weighted_counterfactual
 
 
 @dataclass
@@ -251,41 +240,12 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
 
     y_fit = y_tau[common]  # (n_common,)
     y_ctrl = unit_mean[ctrl_units][:, common].T  # (n_common, n_c)
-    n_c = ctrl_units.size
-    w0 = np.full(n_c, 1.0 / n_c)
 
-    # Scale-normalize the SSE so the fit is invariant to the outcome's units:
-    # SLSQP's internal accuracy threshold is absolute, and on raw-scale
-    # outcomes (prop99: SSE ~ 5e3 at the uniform start) it declares success
-    # after ~5 iterations without leaving the uniform start (regression:
+    # SLSQP from the uniform start on the scale-normalized SSE (the phase-3
+    # scale-invariance fix lives in estimate.simplex; regression:
     # test_synthetic_control_scale_invariant_optimization).
-    scale = float(y_fit @ y_fit)
-    if scale <= 0.0:
-        scale = 1.0
-
-    def objective(w: np.ndarray) -> float:
-        r = y_fit - y_ctrl @ w
-        return float(r @ r) / scale
-
-    def gradient(w: np.ndarray) -> np.ndarray:
-        return -2.0 * (y_ctrl.T @ (y_fit - y_ctrl @ w)) / scale
-
-    result = minimize(
-        objective,
-        w0,
-        jac=gradient,
-        method="SLSQP",
-        bounds=[(0.0, 1.0)] * n_c,
-        constraints=[
-            {
-                "type": "eq",
-                "fun": lambda w: float(w.sum() - 1.0),
-                "jac": lambda w: np.ones_like(w),
-            }
-        ],
-        options={"maxiter": 500, "ftol": 1e-12},
-    )
-    w = np.asarray(result.x, dtype=float)
+    fit = fit_simplex_weights(y_fit, y_ctrl)
+    w = fit.weights
 
     # Counterfactual per time: renormalized over present donors; NaN only when
     # the missing donor weight mass exceeds _MISSING_W_TOL.
@@ -318,8 +278,8 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
             "n_donors_dropped": n_dropped,
             "n_common_pre_times": int(common.sum()),
             "n_undefined_times": n_undefined,
-            "converged": bool(result.success),
-            "fit_sse": float(result.fun) * scale,  # de-normalized back to y units
+            "converged": fit.converged,
+            "fit_sse": fit.sse,  # de-normalized back to y units
             "note": "outcome-only pre-fit; Abadie covariate V-weights not implemented",
         },
     )
