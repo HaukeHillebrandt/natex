@@ -1,0 +1,333 @@
+"""Tests for DiD control identification (phase 3, task 8).
+
+Covers the three control constructions of thesis section 6.3.2 with the audit
+repairs: dd_control (Eq 6.18, count-corrected denominators), synthetic_control
+(unit-level simplex weights), gess_control (Algorithm 9 with the argmin fix
+and MSE = +inf initialization).
+"""
+
+import numpy as np
+import pytest
+
+from natex.did.controls import dd_control, gess_control, synthetic_control
+from natex.did.panel import CategoricalPanel
+from natex.did.suddds import DiDDiscovery
+
+# ---------------------------------------------------------------------------
+# builders
+# ---------------------------------------------------------------------------
+
+# 3 units (a treated, b/c controls) x 4 periods; t0 = 2 (pre: t in {0, 1}).
+_TOY_Y = {
+    0: [10.0, 12.0, 20.0, 22.0],  # a (treated)
+    1: [6.0, 8.0, 9.0, 11.0],  # b (parallel to a in pre: gap 4)
+    2: [2.0, 2.0, 3.0, 5.0],  # c (not parallel)
+}
+
+
+def toy_panel(drop=(), y_override=None):
+    """Toy 1-dim panel; ``drop`` removes (unit, time) records entirely,
+    ``y_override`` maps (unit, time) -> y value (e.g. NaN)."""
+    rows = [(u, tt) for u in range(3) for tt in range(4) if (u, tt) not in drop]
+    y_map = dict(y_override or {})
+    codes = np.array([[u] for u, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array(["a", "b", "c"])],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.array([1.0 if (u == 0 and tt >= 2) else 0.0 for u, tt in rows]),
+        y=np.array([y_map.get((u, tt), _TOY_Y[u][tt]) for u, tt in rows]),
+        unit=np.array([u for u, _ in rows], dtype=np.int64),
+        unit_values=np.array(["u0", "u1", "u2"]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["a"]},
+        mask=codes[:, 0] == 0,
+        t0=2.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    return panel, disc
+
+
+def all_treated_discovery(panel):
+    """s_tau = D: every dimension unconstrained, all records treated."""
+    return DiDDiscovery(
+        subset_values={},
+        mask=np.ones(panel.n, dtype=bool),
+        t0=2.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+
+
+# ---------------------------------------------------------------------------
+# dd_control
+# ---------------------------------------------------------------------------
+
+
+def test_dd_control_hand_check():
+    panel, disc = toy_panel()
+    res = dd_control(panel, disc)
+    assert res.method == "dd"
+    # alpha = mean(treated pre) - mean(control pre) = 11 - 4.5
+    np.testing.assert_allclose(res.alpha, 6.5, atol=1e-12)
+    # per-time control means: 4, 5, 6, 8 -> y0 = alpha + mean
+    np.testing.assert_allclose(res.y0_hat, [10.5, 11.5, 12.5, 14.5], atol=1e-12)
+    # pre residuals -0.5, +0.5 -> mean square 0.25
+    np.testing.assert_allclose(res.pre_mse, 0.25, atol=1e-12)
+    np.testing.assert_array_equal(res.control_mask, panel.codes[:, 0] != 0)
+    assert res.weights is None
+    assert res.extras["n_undefined_times"] == 0
+
+
+def test_dd_control_unbalanced_counts():
+    # Drop control record (unit c, t=1): denominators must follow the records
+    # actually present (audit typo repair), not |D \ s_tau| or T0-scaled counts.
+    panel, disc = toy_panel(drop={(2, 1)})
+    res = dd_control(panel, disc)
+    alpha = 11.0 - (6.0 + 2.0 + 8.0) / 3.0  # control pre now has 3 records
+    np.testing.assert_allclose(res.alpha, alpha, rtol=1e-12)
+    expected_y0 = np.array([alpha + 4.0, alpha + 8.0, alpha + 6.0, alpha + 8.0])
+    np.testing.assert_allclose(res.y0_hat, expected_y0, rtol=1e-12)
+    expected_mse = ((10.0 - expected_y0[0]) ** 2 + (12.0 - expected_y0[1]) ** 2) / 2.0
+    np.testing.assert_allclose(res.pre_mse, expected_mse, rtol=1e-12)
+    assert res.extras["n_undefined_times"] == 0
+
+
+def test_dd_control_nan_y_excluded_like_missing_record():
+    # A control record with NaN y behaves as if absent (count-corrected).
+    panel, disc = toy_panel(y_override={(2, 1): np.nan})
+    res = dd_control(panel, disc)
+    alpha = 11.0 - (6.0 + 2.0 + 8.0) / 3.0
+    np.testing.assert_allclose(res.alpha, alpha, rtol=1e-12)
+
+
+def test_dd_control_time_without_controls_is_nan():
+    # Remove BOTH control records at t=1: counterfactual undefined there (NaN,
+    # never 0); pre_mse finite over the remaining defined pre record.
+    panel, disc = toy_panel(drop={(1, 1), (2, 1)})
+    res = dd_control(panel, disc)
+    np.testing.assert_allclose(res.alpha, 7.0, atol=1e-12)  # 11 - (6+2)/2
+    np.testing.assert_allclose(res.y0_hat[[0, 2, 3]], [11.0, 13.0, 15.0], atol=1e-12)
+    assert np.isnan(res.y0_hat[1])
+    np.testing.assert_allclose(res.pre_mse, 1.0, atol=1e-12)  # (10 - 11)^2 only
+    assert res.extras["n_undefined_times"] == 1
+
+
+def test_dd_control_empty_control_edge():
+    # s_tau = D -> empty control: pre_mse = +inf, y0_hat all-NaN, no exception.
+    panel, _ = toy_panel()
+    disc = all_treated_discovery(panel)
+    res = dd_control(panel, disc)
+    assert res.pre_mse == np.inf
+    assert np.all(np.isnan(res.y0_hat))
+    assert np.isnan(res.alpha)
+
+
+def test_dd_control_requires_outcome():
+    panel, disc = toy_panel()
+    panel.y = None
+    with pytest.raises(ValueError, match="outcome"):
+        dd_control(panel, disc)
+
+
+# ---------------------------------------------------------------------------
+# synthetic_control
+# ---------------------------------------------------------------------------
+
+
+def synth_panel():
+    """4 units x 6 periods; treated unit 0 is exactly 0.3*u1 + 0.7*u2 pre-t0=4."""
+    y_by_unit = {
+        0: [8.0, 7.6, 7.2, 6.8, 9.4, 9.0],  # 0.3*u1 + 0.7*u2 (+3 effect post)
+        1: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        2: [11.0, 10.0, 9.0, 8.0, 7.0, 6.0],
+        3: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+    }
+    rows = [(u, tt) for u in range(4) for tt in range(6)]
+    codes = np.array([[u] for u, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array(["tr", "c1", "c2", "c3"])],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.array([1.0 if (u == 0 and tt >= 4) else 0.0 for u, tt in rows]),
+        y=np.array([y_by_unit[u][tt] for u, tt in rows]),
+        unit=np.array([u for u, _ in rows], dtype=np.int64),
+        unit_values=np.array(["u0", "u1", "u2", "u3"]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["tr"]},
+        mask=codes[:, 0] == 0,
+        t0=4.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    return panel, disc
+
+
+def test_synthetic_control_recovers_convex_weights():
+    panel, disc = synth_panel()
+    res = synthetic_control(panel, disc)
+    assert res.method == "synthetic"
+    assert res.alpha is None  # weights absorb levels, no offset
+    assert list(res.extras["control_units"]) == [1, 2, 3]
+    np.testing.assert_allclose(res.weights, [0.3, 0.7, 0.0], atol=0.02)
+    assert abs(res.weights.sum() - 1.0) <= 1e-6
+    assert res.weights.min() >= -1e-9
+    assert res.pre_mse < 1e-6
+    # post-period counterfactual: 0.3*[5,6] + 0.7*[7,6] = [6.4, 6.0]
+    np.testing.assert_allclose(res.y0_hat[4:], [6.4, 6.0], atol=0.05)
+
+
+def test_synthetic_control_no_control_units():
+    panel, disc = synth_panel()
+    disc = all_treated_discovery(panel)
+    res = synthetic_control(panel, disc)
+    assert res.pre_mse == np.inf
+    assert np.all(np.isnan(res.y0_hat))
+    assert res.weights is None
+
+
+def test_synthetic_control_requires_outcome():
+    panel, disc = synth_panel()
+    panel.y = None
+    with pytest.raises(ValueError, match="outcome"):
+        synthetic_control(panel, disc)
+
+
+# ---------------------------------------------------------------------------
+# gess_control
+# ---------------------------------------------------------------------------
+
+
+def test_gess_argmin_regression():
+    # Candidate 'b' gives control MSE 0 (parallel), candidate 'c' gives MSE 1.
+    # Algorithm 9 as PRINTED (argmax, audit item 14) would select 'c'; the
+    # repaired argmin must select 'b' and then stop (adding 'c' raises MSE).
+    panel, disc = toy_panel()
+    res = gess_control(panel, disc)
+    assert res.method == "gess"
+    assert res.extras["expansions"] == [{"dim": "g", "value": "b"}]
+    np.testing.assert_array_equal(res.control_mask, panel.codes[:, 0] == 1)
+    np.testing.assert_allclose(res.alpha, 4.0, atol=1e-12)
+    np.testing.assert_allclose(res.y0_hat, [10.0, 12.0, 13.0, 15.0], atol=1e-12)
+    np.testing.assert_allclose(res.pre_mse, 0.0, atol=1e-12)
+    trace = res.extras["mse_trace"]
+    assert np.isinf(trace[0])  # incumbent initialized at +inf (empty control)
+    np.testing.assert_allclose(trace[1], 0.0, atol=1e-12)
+    assert np.all(np.diff(trace) <= 0)  # monotone nonincreasing accepted steps
+
+
+def test_gess_monotone_trace_and_termination():
+    rng = np.random.default_rng(42)
+    n_units, n_t = 6, 6
+    rows = [(u, tt) for u in range(n_units) for tt in range(n_t)]
+    codes = np.array([[u] for u, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array([f"v{u}" for u in range(n_units)])],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.zeros(len(rows)),
+        y=rng.normal(size=len(rows)),
+        unit=np.array([u for u, _ in rows], dtype=np.int64),
+        unit_values=np.array([f"u{u}" for u in range(n_units)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["v0"]},
+        mask=codes[:, 0] == 0,
+        t0=3.0,
+        window=3.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    res = gess_control(panel, disc)
+    trace = np.asarray(res.extras["mse_trace"])
+    assert np.all(np.diff(trace) <= 0)
+    assert len(res.extras["expansions"]) <= n_units - 1  # bounded by value count
+    assert res.y0_hat.shape == (n_t,)
+    assert not np.any(res.control_mask & disc.mask)  # s_c disjoint from s_tau
+
+
+def two_dim_panel():
+    """Dims g in {a,b,c}, h in {x,y}; s_tau = (g=a, h=x); (a,y) is parallel."""
+    y_by_profile = {
+        ("a", "x"): [10.0, 12.0, 20.0, 22.0],  # treated
+        ("a", "y"): [7.0, 9.0, 10.0, 12.0],  # parallel pre (gap 3) -> MSE 0
+        ("b", "x"): [0.0, 5.0, 1.0, 2.0],
+        ("c", "x"): [9.0, 0.0, 2.0, 3.0],
+        ("b", "y"): [1.0, 1.0, 1.0, 1.0],
+        ("c", "y"): [2.0, 2.0, 2.0, 2.0],
+    }
+    g_vals, h_vals = ["a", "b", "c"], ["x", "y"]
+    rows = [(g, h, tt) for g in range(3) for h in range(2) for tt in range(4)]
+    codes = np.array([[g, h] for g, h, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g", "h"],
+        dim_values=[np.array(g_vals), np.array(h_vals)],
+        t=np.array([float(tt) for _, _, tt in rows]),
+        theta=np.zeros(len(rows)),
+        y=np.array([y_by_profile[(g_vals[g], h_vals[h])][tt] for g, h, tt in rows]),
+        unit=np.array([2 * g + h for g, h, _ in rows], dtype=np.int64),
+        unit_values=np.array([f"{g}{h}" for g in g_vals for h in h_vals]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["a"], "h": ["x"]},
+        mask=(codes[:, 0] == 0) & (codes[:, 1] == 0),
+        t0=2.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    return panel, disc
+
+
+def test_gess_full_dimension_expands_whole_dims():
+    panel, disc = two_dim_panel()
+    res = gess_control(panel, disc, full_dimension=True)
+    # Relaxing h entirely (control = (a,y), MSE 0) beats relaxing g (MSE > 0).
+    assert res.extras["expansions"] == [{"dim": "h", "value": None}]
+    # The expanded dim is all-True -> omitted from the final profile.
+    assert res.extras["profile"] == {"g": ["a"]}
+    expected_ctrl = (panel.codes[:, 0] == 0) & (panel.codes[:, 1] == 1)
+    np.testing.assert_array_equal(res.control_mask, expected_ctrl)
+    np.testing.assert_allclose(res.pre_mse, 0.0, atol=1e-12)
+
+
+def test_gess_value_mode_expands_single_values_of_constrained_dims():
+    panel, disc = two_dim_panel()
+    res = gess_control(panel, disc)
+    # Value mode: first expansion adds the single value h='y' (control (a,y)).
+    assert res.extras["expansions"][0] == {"dim": "h", "value": "y"}
+    assert all(e["value"] is not None for e in res.extras["expansions"])
+
+
+def test_gess_empty_control_edge():
+    # s_tau = D: no constrained dims -> no candidates -> graceful +inf result.
+    panel, _ = toy_panel()
+    disc = all_treated_discovery(panel)
+    res = gess_control(panel, disc)
+    assert res.pre_mse == np.inf
+    assert np.all(np.isnan(res.y0_hat))
+    assert not res.control_mask.any()
+    assert res.extras["expansions"] == []
+    assert res.extras["mse_trace"] == [np.inf]
+
+
+def test_gess_requires_outcome():
+    panel, disc = toy_panel()
+    panel.y = None
+    with pytest.raises(ValueError, match="outcome"):
+        gess_control(panel, disc)
