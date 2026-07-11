@@ -338,7 +338,16 @@ def _without_records(panel: CategoricalPanel, drop: np.ndarray) -> CategoricalPa
 
 
 def _studentized(eff: DiDEffect) -> float:
-    """tau/se, NaN whenever tau or se is non-finite or se is 0 (never fake)."""
+    """tau/se; NaN when undefined — except exact zero movement, which is 0.
+
+    ``tau == 0 and se == 0`` means every usable post-period gap is exactly 0:
+    provably NO movement, the least extreme statistic possible, so it maps to
+    0.0 (this arises structurally, e.g. composition shares of time-invariant
+    covariate dimensions — the prop99 panel). Any other non-finite tau/se, or
+    ``se == 0`` with ``tau != 0``, stays NaN: never a fabricated value.
+    """
+    if eff.tau == 0.0 and eff.se == 0.0:
+        return 0.0
     if not np.isfinite(eff.tau) or not np.isfinite(eff.se) or eff.se == 0.0:
         return float("nan")
     return float(eff.tau / eff.se)

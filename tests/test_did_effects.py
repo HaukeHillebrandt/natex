@@ -458,6 +458,48 @@ def test_placebo_dimensions_clean_composition_passes():
     assert rep.passed is True
 
 
+def test_placebo_dimensions_time_invariant_composition_passes():
+    # Zero-movement regression (prop99 backtest): when a free dimension is
+    # FIXED per unit (h = g % 2 here; prop99's state-level covariates are all
+    # time-invariant), its composition share is constant over time, so every
+    # gap is exactly 0 with se exactly 0 — proof of NO composition movement,
+    # not an estimation failure. The studentized statistic must be 0 (least
+    # extreme), giving p = 1 and a pass; mapping 0/0 to NaN failed the whole
+    # battery on a panel where a composition jump is impossible.
+    rng = np.random.default_rng(11)
+    n_g, n_t, n_rep = 10, 10, 2
+    rows = [(g, tt) for g in range(n_g) for tt in range(n_t) for _ in range(n_rep)]
+    g_arr = np.array([g for g, _ in rows], dtype=np.int64)
+    t_arr = np.array([float(tt) for _, tt in rows])
+    h_arr = g_arr % 2  # deterministic per g: time-invariant composition
+    treated = (g_arr == 0) & (t_arr >= 5.0)
+    base = rng.normal(0.0, 1.0, size=n_g)
+    y = base[g_arr] + 0.5 * rng.normal(size=len(rows)) - 4.0 * treated
+    panel = CategoricalPanel(
+        codes=np.column_stack([g_arr, h_arr]).astype(np.int64),
+        dim_names=["g", "h"],
+        dim_values=[np.array([f"g{g}" for g in range(n_g)]), np.array([0, 1])],
+        t=t_arr,
+        theta=treated.astype(float),
+        y=y,
+        unit=g_arr.copy(),
+        unit_values=np.array([f"u{g}" for g in range(n_g)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["g0"]},
+        mask=g_arr == 0,
+        t0=5.0,
+        window=float(n_t),
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    rep = placebo_dimension_tests(panel, disc, control="dd")
+    assert rep.p_values["h"] == pytest.approx(1.0)
+    assert rep.p_holm["h"] == pytest.approx(1.0)
+    assert rep.passed is True
+
+
 def test_placebo_dimensions_detect_composition_jump():
     # Pool = n_g - 1 = 24 whole-g placebo cells (the tested dim is removed
     # from the profile definition), so the minimum p is 1/25 = 0.04.
