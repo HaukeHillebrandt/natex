@@ -1,8 +1,8 @@
 # natex
 
 **Automated natural-experiment discovery**: find, validate, and estimate regression
-discontinuities (and, in later phases, difference-in-differences designs) in any tabular
-dataset. natex is a modern reimplementation of the LoRD3 lineage — Herlands, Moraffah,
+discontinuities, difference-in-differences designs, instrumental variables, and
+synthetic-control donor pools in any tabular dataset. natex is a modern reimplementation of the LoRD3 lineage — Herlands, Moraffah,
 McFowland & Neill (KDD 2018), Herlands (PhD thesis, CMU 2019), and Jakubowski et al.
 (JMLR 2023) — that searches local neighborhoods of a dataset for treatment-assignment
 discontinuities using a log-likelihood-ratio scan, then subjects each candidate to a
@@ -123,6 +123,43 @@ The same pipeline runs from the CLI: `natex debias data.csv --treatment T --outc
 --m-prime 25 --out out/` writes `out/dee_result.json` (weights, per-experiment effects
 table, raw/debiased/direct/mixture grid predictions, diagnostics).
 
+### IV: instrument search with honest post-selection inference
+
+Belloni-style plug-in Lasso selection over a candidate instrument pool
+([method card](docs/method_cards/iv_sc.md)) — selection reads only the treatment, pool,
+and controls, never the outcome:
+
+```bash
+uv run natex instruments data.csv --treatment T --outcome y \
+  --pool z1,z2,z3,z4,z5 --controls x1,x2 --seed 0 --out out/
+```
+
+By default (`--honest`) instruments are selected on a discovery half and the effect is
+estimated on the other half — 2SLS with HC1 errors, the closed-form Anderson–Rubin/Fieller
+confidence set (reported honestly as `interval`/`disjoint`/`unbounded`/`empty`, never
+coerced to a finite interval), and the Hansen J overidentification diagnostic (`null` when
+just-identified; exclusion itself is untestable). `out/instruments.json` carries the
+selection block (names, λ, loadings, first-stage F, weak flag), the split sizes, and the
+estimation block. The same API is available as
+`natex.iv.pipeline.discover_instruments` / `natex.iv.search.select_instruments` /
+`natex.estimate.iv2sls.iv_2sls`.
+
+### SC: synthetic-control donor selection and placebo inference
+
+Abadie–Diamond–Hainmueller donor selection on a long panel — pre-trend scoring, simplex
+weights, post-period ATT, and the in-space RMSPE-ratio placebo test with +1-rank p-values
+(deterministic; no rng anywhere in the donor path):
+
+```bash
+uv run natex donors smoking.csv --outcome cigsale --unit state --time year \
+  --treated-unit California --t0 1989 --out out/
+```
+
+`out/donors.json` records ranked donor scores, weights, the counterfactual gap by time,
+pre/post RMSPE, `att_post`, and the placebo block (`--exclude-poor-fit MULT` opts into
+ADH's poor-pre-fit exclusion). Python API: `natex.iv.donors.select_donors` /
+`sc_placebo_test`.
+
 ## Backtests on real data
 
 Unit and synthetic tests run by default (`uv run pytest`). Real-data backtests are marked
@@ -226,15 +263,16 @@ Phase 1 delivered the scaffold, the corrected scan core, LoRD3 discovery, the va
 battery, 2SLS estimation, the intake profiler, the CLI, and the first real-data backtest.
 Phase 2 delivered the remaining RDD backtests, the synthetic benchmark suite, and the
 scaling engineering ([status](docs/status/phase-2.md)); phase 3 the SuDDDS DiD scan and
-the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 (this repo state) the
-DEE debiasing layer ([status](docs/status/phase-4.md)). Next:
+the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 the DEE debiasing layer
+([status](docs/status/phase-4.md)); phase 5 (this repo state) the IV/SC discovery layer
+([status](docs/status/phase-5.md)). Next:
 
 | Phase | Scope |
 |-------|-------|
 | 2 | **Done** — remaining RDD backtests + synthetic benchmarks (NIG/power curves); gate met: all RDD backtest rows pass ([status](docs/status/phase-2.md)) |
 | 3 | **Done** — SuDDDS difference-in-differences discovery (`did/`) + Prop 99 backtest; gate met: (California, 1989) recovered with Table 6.1-consistent signs ([status](docs/status/phase-3.md)) |
 | 4 | **Done** — DEE debiased-effect-estimation layer (`dee/`) + scaled simulation-1 benchmark; gate met: mixture beats the raw causal-forest MSE in every config's median ([status](docs/status/phase-4.md)) |
-| 5 | IV / synthetic-control discovery (`iv/`) from the Springer roadmap |
+| 5 | **Done** — IV/SC discovery (`iv/`): BCCH plug-in Lasso instrument search, honest 2SLS/J/AR estimation, SC donor selection + in-space placebo; gate met: Prop 99 donor backtest recovers the ADH pool (weight 0.955 on ADH's five donors, ATT −19.5) ([status](docs/status/phase-5.md)) |
 | 6 | LLM analyst pass + scan guidance (Null/Agent/API backends) with a guided-vs-unguided evaluation on the backtest suite |
 | 7 | Reporting & paper pipeline (`report/`) |
 | 8 | Agent skills + docs; optional PyPI release |
