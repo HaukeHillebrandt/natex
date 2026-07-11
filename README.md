@@ -37,7 +37,10 @@ uv sync --extra dev
 
 Requires Python ≥ 3.11. Core dependencies: numpy, scipy, pandas, scikit-learn, typer,
 pydantic. The import name is `natex` (the distribution is named `natex-discovery`; not yet
-on PyPI).
+on PyPI). Optional extras: `natex-discovery[plot]` (benchmark charts),
+`natex-discovery[ml]` (econml causal forest for the DEE observational layer),
+`natex-discovery[gp]` (GPyTorch/botorch GP backend for scale) — everything runs on core
+deps without them.
 
 ## Quickstart
 
@@ -100,6 +103,25 @@ Also available: `natex.validate.placebo.placebo_tests` (intercept-continuity pla
 battery), `natex.validate.density.density_test` (signed-distance McCrary-style density
 check), `natex.validate.honest.honest_split` (discovery/estimation split), and
 `natex.estimate.local2sls.wald_estimate`.
+
+### DEE: debias an observational CATE estimator
+
+Turn the discovered discontinuities into disjoint quasi-experiments and use their local
+2SLS effects to debias a conditioned-on-observables estimator
+([method card](docs/method_cards/dee.md)):
+
+```python
+from natex import dee_debias
+
+res = dee_debias(ds, query=ds.Z[:200], discoveries=res, m_prime=25,
+                 rng=np.random.default_rng(1))
+print(res.cate_debiased)        # cate_raw - bias-GP posterior mean at the query points
+print(res.weights.w_debias)     # stacked weight on the debias model vs the direct GP
+```
+
+The same pipeline runs from the CLI: `natex debias data.csv --treatment T --outcome y
+--m-prime 25 --out out/` writes `out/dee_result.json` (weights, per-experiment effects
+table, raw/debiased/direct/mixture grid predictions, diagnostics).
 
 ## Backtests on real data
 
@@ -202,15 +224,16 @@ Legacy scan outputs are therefore **not** treated as ground truth in parity test
 
 Phase 1 delivered the scaffold, the corrected scan core, LoRD3 discovery, the validation
 battery, 2SLS estimation, the intake profiler, the CLI, and the first real-data backtest.
-Phase 2 (this repo state) delivered the remaining RDD backtests, the synthetic benchmark
-suite, and the scaling engineering (vectorized kernels, geometry caching, coarse-to-fine
-scan) — see [docs/status/phase-2.md](docs/status/phase-2.md). Next:
+Phase 2 delivered the remaining RDD backtests, the synthetic benchmark suite, and the
+scaling engineering ([status](docs/status/phase-2.md)); phase 3 the SuDDDS DiD scan and
+the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 (this repo state) the
+DEE debiasing layer ([status](docs/status/phase-4.md)). Next:
 
 | Phase | Scope |
 |-------|-------|
 | 2 | **Done** — remaining RDD backtests + synthetic benchmarks (NIG/power curves); gate met: all RDD backtest rows pass ([status](docs/status/phase-2.md)) |
-| 3 | SuDDDS difference-in-differences discovery (`did/`) + Prop 99 (California tobacco) backtest |
-| 4 | DEE debiased-effect-estimation layer (`dee/`) + scaled simulation benchmark |
+| 3 | **Done** — SuDDDS difference-in-differences discovery (`did/`) + Prop 99 backtest; gate met: (California, 1989) recovered with Table 6.1-consistent signs ([status](docs/status/phase-3.md)) |
+| 4 | **Done** — DEE debiased-effect-estimation layer (`dee/`) + scaled simulation-1 benchmark; gate met: mixture beats the raw causal-forest MSE in every config's median ([status](docs/status/phase-4.md)) |
 | 5 | IV / synthetic-control discovery (`iv/`) from the Springer roadmap |
 | 6 | LLM analyst pass + scan guidance (Null/Agent/API backends) with a guided-vs-unguided evaluation on the backtest suite |
 | 7 | Reporting & paper pipeline (`report/`) |
