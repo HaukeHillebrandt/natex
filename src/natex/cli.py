@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import typer
 
 from natex.data.registry import REGISTRY, data_root, verify
@@ -21,6 +22,8 @@ from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
 from natex.did.suddds import suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
+from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
+from natex.iv.pipeline import discover_instruments
 from natex.rdd.lord3 import lord3_scan
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
@@ -345,6 +348,246 @@ def debias(
             f"direct={float(np.nanmean(res.cate_direct)):.3f}"
         )
     typer.echo(f"results: {out / 'dee_result.json'}")
+
+
+@app.command()
+def instruments(
+    csv: Path,
+    treatment: str = typer.Option(...),
+    pool: str = typer.Option(
+        None, help="comma-separated candidate instruments; "
+                   "default: all numeric columns except treatment/outcome/controls"
+    ),
+    controls: str = typer.Option(None, help="comma-separated control columns"),
+    outcome: str = typer.Option(
+        None, help="outcome column; omit for selection only (discovery never reads the outcome)"
+    ),
+    honest: bool = typer.Option(
+        True, "--honest/--no-honest",
+        help="select on a discovery half, estimate on the other (post-selection guarantee)",
+    ),
+    lam: str = typer.Option("plugin", help="plugin|cv|<positive float>"),
+    seed: int = typer.Option(0),
+    out: Path = typer.Option(Path("out")),
+):
+    """Belloni-style instrument selection (+ honest 2SLS/J/AR estimation block).
+
+    Runs :func:`natex.iv.pipeline.discover_instruments`: plug-in Lasso
+    first-stage selection over the candidate pool (reads only treatment, pool
+    and controls), then — when ``--outcome`` is given — 2SLS with HC1 SEs,
+    the Anderson-Rubin/Fieller confidence set and the Hansen J diagnostic on
+    the estimation half. Writes ``out/instruments.json`` (NaN serialized as
+    null, never 0). ``--no-honest`` selects and estimates on the full sample
+    and records the post-selection caveat string in the payload.
+    """
+    df = pd.read_csv(csv)
+    controls_list = [c.strip() for c in controls.split(",")] if controls else None
+    if pool:
+        pool_list = [c.strip() for c in pool.split(",")]
+    else:
+        excluded = {treatment, *(controls_list or []), *([outcome] if outcome else [])}
+        pool_list = [
+            c for c in df.columns
+            if c not in excluded and pd.api.types.is_numeric_dtype(df[c])
+        ]
+    lam_arg: float | str = lam
+    if lam not in ("plugin", "cv"):
+        try:
+            lam_arg = float(lam)
+        except ValueError:
+            typer.echo(f"--lam must be 'plugin', 'cv', or a positive float, got {lam!r}")
+            raise typer.Exit(code=2) from None
+    rng = np.random.default_rng(seed)
+    try:
+        res = discover_instruments(
+            df, treatment, pool_list, outcome=outcome, controls=controls_list,
+            honest=honest, lam=lam_arg, rng=rng,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    search = res.search
+    loadings = np.asarray(search.loadings, dtype=float)
+    est = res.estimate
+    payload = _clean(
+        {
+            "params": {"treatment": treatment, "pool": pool_list, "controls": controls_list,
+                       "outcome": outcome, "honest": honest, "lam": lam, "seed": seed,
+                       "csv": str(csv)},
+            "selection": {
+                "selected": search.selected,
+                "lam": search.lam,
+                "lam_source": search.extras.get("lam_source"),
+                "n_pool": len(pool_list),
+                "loadings": {
+                    "min": float(loadings.min()) if loadings.size else None,
+                    "median": float(np.median(loadings)) if loadings.size else None,
+                    "max": float(loadings.max()) if loadings.size else None,
+                },
+                "first_stage_F": search.first_stage_F,
+                "partial_r2": search.partial_r2,
+                "weak": search.weak,
+                "n_iter": search.n_iter,
+                "dropped_zero_variance": search.extras.get("dropped_zero_variance", []),
+            },
+            "split": {"honest": res.honest, "n_discovery": res.n_discovery,
+                      "n_estimation": res.n_estimation},
+            "estimate": None if est is None else {
+                "tau": est.tau, "se": est.se, "ci": list(est.ci),
+                "ar_ci": list(est.ar_ci) if est.ar_ci is not None else None,
+                "ar_kind": est.ar_kind,
+                "j_stat": est.j_stat, "j_p": est.j_p, "j_df": est.j_df,
+                "first_stage_F": est.first_stage_F, "partial_r2": est.partial_r2,
+                "weak_instrument": est.weak_instrument, "n_used": est.n_used,
+            },
+            # None when honest; the post-selection warning string when --no-honest.
+            "caveat": res.extras.get("caveat"),
+        }
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "instruments.json").write_text(json.dumps(payload, indent=1))
+    names = ", ".join(search.selected) if search.selected else "(none)"
+    typer.echo(f"selected {len(search.selected)}/{len(pool_list)} instruments: {names}")
+    typer.echo(
+        f"lam={search.lam:.3f} ({search.extras.get('lam_source', 'n/a')})  "
+        f"first-stage F={search.first_stage_F:.2f}  "
+        f"partial R2={search.partial_r2:.4f}  weak={search.weak}"
+    )
+    if res.honest:
+        typer.echo(f"honest split: {res.n_discovery} discovery / {res.n_estimation} estimation rows")
+    else:
+        typer.echo(f"CAVEAT: {res.extras['caveat']}")
+    if est is not None:
+        ar = (f"AR CI=({est.ar_ci[0]:.3f},{est.ar_ci[1]:.3f})" if est.ar_ci is not None
+              else f"AR set: {est.ar_kind}")
+        j_txt = "n/a (just-identified)" if est.j_p is None else f"{est.j_p:.3f}"
+        typer.echo(
+            f"2SLS tau={est.tau:.3f} CI=({est.ci[0]:.3f},{est.ci[1]:.3f})  {ar}  J p={j_txt}"
+        )
+    typer.echo(f"results: {out / 'instruments.json'}")
+
+
+@app.command()
+def donors(
+    csv: Path,
+    outcome: str = typer.Option(...),
+    unit: str = typer.Option(...),
+    time: str = typer.Option(...),
+    treated_unit: str = typer.Option(..., "--treated-unit"),
+    t0: float = typer.Option(..., help="first post-treatment time"),
+    n_donors: int = typer.Option(
+        None, "--n-donors",
+        help="top-k donors by pre-trend score; default: all complete candidates",
+    ),
+    scoring: str = typer.Option("rmse", help="rmse|corr"),
+    placebo: bool = typer.Option(
+        True, "--placebo/--no-placebo", help="Abadie in-space RMSPE-ratio placebo test"
+    ),
+    exclude_poor_fit: float = typer.Option(
+        None, "--exclude-poor-fit",
+        help="drop placebos with pre-RMSPE > MULT x the treated unit's",
+    ),
+    out: Path = typer.Option(Path("out")),
+):
+    """Synthetic-control donor selection, ATT and in-space placebo inference.
+
+    Builds the unit-by-time outcome matrix, scores every complete donor
+    candidate against the treated pre-trajectory, fits simplex weights on the
+    top pool, and reports the counterfactual gap and post-period ATT
+    (:mod:`natex.iv.donors`). With ``--placebo`` (default) every complete
+    candidate is refit as pseudo-treated under the identical selection rule
+    and the +1-rank two-sided RMSPE-ratio p-value is reported; ``--no-placebo``
+    omits the block. Writes ``out/donors.json`` (NaN as null, never 0).
+    Deterministic: no rng anywhere in the donor path.
+    """
+    df = pd.read_csv(csv)
+    try:
+        Y, units, times = unit_time_matrix(df, unit, time, outcome)
+        treated: object = treated_unit
+        if units.dtype.kind in "iuf" and treated_unit not in units:
+            # numeric unit labels arrive as a string from the CLI
+            try:
+                treated = float(treated_unit)
+            except ValueError:
+                pass  # fall through: select_donors reports the unmatched unit
+        res = select_donors(
+            Y, units, times, treated, t0, n_donors=n_donors, scoring=scoring
+        )
+        rep = (
+            sc_placebo_test(
+                Y, units, times, treated, t0, n_donors=n_donors, scoring=scoring,
+                exclude_poor_fit=exclude_poor_fit,
+            )
+            if placebo
+            else None
+        )
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    placebo_block = None
+    if rep is not None:
+        placebo_block = {
+            "p_value": rep.p_value,
+            "ratio_treated": rep.ratio_treated,
+            "n_used": int(rep.ratios.size),
+            "n_skipped": rep.n_skipped,
+            "n_placebo_candidates": rep.extras["n_placebo_candidates"],
+            "poor_fit_units": rep.extras["poor_fit_units"],
+            "exclude_poor_fit": exclude_poor_fit,
+            # usable placebos sorted by descending post/pre RMSPE ratio
+            "ratios": [
+                {"unit": u, "ratio": r}
+                for u, r in zip(rep.placebo_units, rep.ratios.tolist(), strict=True)
+            ],
+        }
+    payload = _clean(
+        {
+            "params": {"outcome": outcome, "unit": unit, "time": time,
+                       "treated_unit": treated_unit, "t0": t0, "n_donors": n_donors,
+                       "scoring": scoring, "placebo": placebo,
+                       "exclude_poor_fit": exclude_poor_fit, "csv": str(csv)},
+            "treated_unit": res.treated_unit,
+            "t0": res.t0,
+            "scores": [
+                {"unit": s.unit, "pre_rmse": s.pre_rmse, "pre_corr": s.pre_corr,
+                 "rank": s.rank}
+                for s in res.scores
+            ],
+            "donors": list(res.donors),
+            "weights": [
+                {"unit": u, "weight": w}
+                for u, w in zip(res.donors, res.weights.tolist(), strict=True)
+            ],
+            "pre_rmspe": res.pre_rmspe,
+            "post_rmspe": res.post_rmspe,
+            "att_post": res.att_post,
+            "times": res.times,
+            "effect_by_time": res.effect_by_time,
+            "diagnostics": res.extras,
+            **({"placebo": placebo_block} if placebo_block is not None else {}),
+        }
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "donors.json").write_text(json.dumps(payload, indent=1))
+    if "failure" in res.extras:
+        typer.echo(f"donor selection failed: {res.extras['failure']}")
+    else:
+        top = ", ".join(
+            f"{u} w={w:.2f}" for u, w in zip(res.donors[:8], res.weights.tolist(), strict=False)
+        )
+        typer.echo(
+            f"donors {len(res.donors)}/{res.extras['n_candidates']} candidates: {top}"
+        )
+    typer.echo(
+        f"pre RMSPE={res.pre_rmspe:.3f}  post RMSPE={res.post_rmspe:.3f}  "
+        f"ATT(post)={res.att_post:.3f}"
+    )
+    if rep is not None:
+        typer.echo(
+            f"placebo: p={rep.p_value:.3f}  treated ratio={rep.ratio_treated:.2f}  "
+            f"usable placebos={rep.ratios.size} (skipped {rep.n_skipped})"
+        )
+    typer.echo(f"results: {out / 'donors.json'}")
 
 
 def _discover_did(
