@@ -22,6 +22,7 @@ import numpy as np
 from scipy import stats
 
 from natex.data.spec import Dataset
+from natex.estimate.iv2sls import ar_confidence_set
 from natex.rdd.lord3 import Discovery
 from natex.validate.placebo import hc1_ols, signed_distance
 
@@ -36,6 +37,8 @@ class EffectEstimate:
     first_stage_t: float
     weak_instrument: bool
     n_used: int = 0  # members with finite y actually used
+    ar_ci: tuple[float, float] | None = None  # weak-IV-robust AR/Fieller interval (2SLS only)
+    ar_kind: str | None = None  # "interval" | "empty" | "disjoint" | "unbounded"
 
 
 def _oriented_side(Tm: np.ndarray, group1: np.ndarray) -> np.ndarray:
@@ -54,7 +57,7 @@ def _first_stage(Tm: np.ndarray, controls: np.ndarray, g: np.ndarray):
     return float(jump), float(t)
 
 
-def _package(tau, se, method, fs_jump, fs_t, n_used):
+def _package(tau, se, method, fs_jump, fs_t, n_used, ar_ci=None, ar_kind=None):
     z = stats.norm.ppf(0.975)
     return EffectEstimate(
         tau=float(tau),
@@ -65,6 +68,8 @@ def _package(tau, se, method, fs_jump, fs_t, n_used):
         first_stage_t=fs_t,
         weak_instrument=bool(fs_t**2 < 10.0) if np.isfinite(fs_t) else True,
         n_used=n_used,
+        ar_ci=ar_ci,
+        ar_kind=ar_kind,
     )
 
 
@@ -134,7 +139,21 @@ def local_2sls(dataset: Dataset, d: Discovery) -> EffectEstimate:
     meat = Zmat.T @ (Zmat * (e**2)[:, None])
     cov = ZtX_inv @ meat @ ZtX_inv.T * (n / max(n - p, 1))
     fs_jump, fs_t = _first_stage(Tm, controls, gf)
-    return _package(beta[-1], np.sqrt(max(cov[-1, -1], 0.0)), "2sls", fs_jump, fs_t, n_used)
+    # Weak-IV-robust AR/Fieller set (audit section 3 adopted): k = 1 with the
+    # frozen oriented side indicator as the instrument and [1, s, s*g] as the
+    # partialled controls, on the same finite-y rows. n_used >= 8 guarantees
+    # dof = n - 3 - 1 >= 4, so the set is always defined here.
+    ar = ar_confidence_set(ym, Tm, gf[:, None], controls=np.c_[s, s * gf])
+    return _package(
+        beta[-1],
+        np.sqrt(max(cov[-1, -1], 0.0)),
+        "2sls",
+        fs_jump,
+        fs_t,
+        n_used,
+        ar_ci=ar.interval,
+        ar_kind=ar.kind,
+    )
 
 
 def wald_estimate(dataset: Dataset, d: Discovery) -> EffectEstimate:
