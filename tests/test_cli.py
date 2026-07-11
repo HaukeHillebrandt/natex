@@ -157,6 +157,68 @@ def test_import_surface_matplotlib_free():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_debias_smoke(tmp_path):
+    """`natex debias` end to end on a tiny constant-surfaces DEE DGP.
+
+    n=500 forces small pipeline knobs (the CLI defaults size k'=250 experiments,
+    impossible at 500 rows): k'=60 / t_side=8 / m_prime=10 yield >= 3 usable
+    experiments at seed 0. Asserts the plan's contract: exit 0, JSON payload
+    with weights/experiments/grid/diagnostics, finite grid arrays (the _clean
+    helper maps non-finite floats to None), and w_debias in [0, 1].
+    """
+    from natex.data.synthetic_dee import make_dee_synthetic
+
+    ds, _ = make_dee_synthetic(
+        n=500, constant_surfaces=(2.0, 3.0), type_probs=(0.1, 0.4, 0.4, 0.1),
+        rng=np.random.default_rng(0),
+    )
+    csv = tmp_path / "dee.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["debias", str(csv), "--treatment", "D", "--outcome", "y",
+         "--k", "25", "--m-prime", "10", "--k-prime", "60", "--t-side", "8",
+         "--grid", "5", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "dee_result.json").read_text())
+    assert {"params", "weights", "experiments", "grid", "diagnostics"} <= set(payload)
+    w = payload["weights"]["w_debias"]
+    assert w is not None and 0.0 <= w <= 1.0
+    assert payload["weights"]["strategy"] == "stacking"
+    assert payload["diagnostics"]["n_experiments_used"] >= 3
+    exps = payload["experiments"]
+    assert len(exps) >= 3
+    for e in exps:
+        assert {"center_z", "llr", "tau", "se", "first_stage_t",
+                "weak_instrument", "n_members", "used"} <= set(e)
+    grid = payload["grid"]
+    assert len(grid["query"]) == 25  # 5x5 lattice over the 2 forcing dims
+    assert all(v is not None for v in grid["cate_raw"])
+    for key in ("cate_debiased", "cate_direct", "mixture"):
+        for stat in ("mean", "sd"):
+            vals = grid[key][stat]
+            assert len(vals) == 25
+            assert all(v is not None for v in vals), f"{key}.{stat} not finite"
+    assert payload["params"]["m_prime_used"] == 10
+
+
+def test_debias_requires_outcome(tmp_path):
+    """debias without --outcome: nonzero exit, message names --outcome."""
+    from natex.data.synthetic_dee import make_dee_synthetic
+
+    ds, _ = make_dee_synthetic(
+        n=100, constant_surfaces=(2.0, 3.0), rng=np.random.default_rng(0)
+    )
+    csv = tmp_path / "dee.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(app, ["debias", str(csv), "--treatment", "D"])
+    assert result.exit_code != 0
+    assert "--outcome" in result.output
+
+
 def test_discover_degree_passthrough(tmp_path):
     """--degree 2 runs end to end and is recorded in results.json params."""
     ds, _ = make_synthetic(n=400, zeta=4.0, kind="real", rng=np.random.default_rng(1))

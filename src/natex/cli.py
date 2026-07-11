@@ -14,6 +14,8 @@ import typer
 
 from natex.data.registry import REGISTRY, data_root, verify
 from natex.data.spec import Dataset
+from natex.dee.debias import dee_debias
+from natex.dee.vknn import select_m_prime
 from natex.did.background import fit_did_background
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
@@ -220,6 +222,129 @@ def discover(
         e = effects["2sls"]
         typer.echo(f"2SLS tau={e['tau']:.3f} CI=({e['ci'][0]:.3f},{e['ci'][1]:.3f}) weak_iv={e['weak_instrument']}")
     typer.echo(f"results: {out / 'results.json'}")
+
+
+@app.command()
+def debias(
+    csv: Path,
+    treatment: str = typer.Option(...),
+    outcome: str = typer.Option(None, help="outcome column (required for debiasing)"),
+    forcing: str = typer.Option(None, help="comma-separated; default: all numeric"),
+    k: int = typer.Option(50, help="scan neighborhood size"),
+    degree: int = typer.Option(1, help="background polynomial degree of the treatment model"),
+    m_prime: int = typer.Option(25, "--m-prime",
+                                help="top-LLR candidates offered to the VKNN repair"),
+    q_null: int = typer.Option(0, "--q-null",
+                               help="> 0: select M' from a Q=q-null fitted-null Monte Carlo"),
+    k_prime: int = typer.Option(250, "--k-prime", help="k'-NN ball size per experiment"),
+    t_side: int = typer.Option(15, "--t-side", help="min support per hyperplane side"),
+    grid: int = typer.Option(15, help="query lattice points per forcing dimension"),
+    weighting: str = typer.Option("stacking", help="stacking|loo|mll"),
+    seed: int = typer.Option(0),
+    out: Path = typer.Option(Path("out")),
+):
+    """DEE debiasing: scan -> VKNN repair -> local 2SLS -> GP debiasing.
+
+    Runs the LoRD3 scan, repairs the top M' candidates into disjoint
+    quasi-experiments, estimates local effects, cross-fits the observational
+    T-learner (audit 9), fits the bias/direct GP surfaces, and writes
+    ``out/dee_result.json`` with the model weights, the per-experiment effects
+    table, raw/debiased/direct/mixture predictions (mean + sd) on a
+    ``grid``-per-dimension query lattice spanning the observed forcing ranges,
+    and the pipeline diagnostics. NaN values are serialized as null, never 0.
+    """
+    if outcome is None:
+        typer.echo("debias requires --outcome COLUMN (the effect being debiased)")
+        raise typer.Exit(code=2)
+    ds = Dataset.from_csv(
+        csv, treatment=treatment, outcome=outcome,
+        forcing=forcing.split(",") if forcing else None,
+    )
+    rng = np.random.default_rng(seed)
+    res_scan = lord3_scan(ds, k=k, degree=degree, rng=rng)
+    if q_null > 0:
+        rand = randomization_test(
+            ds, res_scan, Q=q_null, rng=rng, scan_kwargs={"k": k, "degree": degree}
+        )
+        m_prime_used = select_m_prime(res_scan, rand.null_max_llrs)
+    else:
+        m_prime_used = int(m_prime)
+    # query lattice: `grid` points per forcing dim spanning the observed range
+    axes = [np.linspace(ds.Z[:, j].min(), ds.Z[:, j].max(), grid)
+            for j in range(ds.Z.shape[1])]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    query = np.column_stack([m.ravel() for m in mesh])
+    res = dee_debias(
+        ds, query, res_scan, m_prime=m_prime_used, k_prime=k_prime,
+        t_side=t_side, weighting=weighting, rng=rng,
+    )
+
+    def _mean_sd(mean: np.ndarray, cov: np.ndarray | None) -> dict:
+        sd = np.sqrt(np.maximum(np.diag(cov), 0.0)) if cov is not None else np.full(
+            mean.shape[0], np.nan
+        )
+        return {"mean": mean, "sd": sd}
+
+    # model A cov = bias posterior cov; model B cov = direct posterior cov
+    cov_a = res.mixture.post_a.cov if res.mixture is not None else None
+    cov_b = res.mixture.post_b.cov if res.mixture is not None else None
+    payload = _clean(
+        {
+            "params": {"k": k, "degree": degree, "m_prime": m_prime, "q_null": q_null,
+                       "m_prime_used": m_prime_used, "k_prime": k_prime, "t_side": t_side,
+                       "grid": grid, "weighting": weighting, "seed": seed, "csv": str(csv)},
+            "weights": {"w_debias": res.weights.w_debias, "strategy": res.weights.strategy,
+                        "detail": res.weights.detail},
+            "experiments": [
+                {
+                    "center_z": ds.Z[e.center_index].tolist(),
+                    "llr": e.llr,
+                    "n_members": int(len(e.members)),
+                    "tau": eff.tau,
+                    "se": eff.se,
+                    "first_stage_t": eff.first_stage_t,
+                    "weak_instrument": eff.weak_instrument,
+                    "used": used,
+                    "obs_cate": obs,
+                    "bias_obs": bias,
+                    "noise_var": nv,
+                }
+                for e, eff, used, obs, bias, nv in zip(
+                    res.vknn.experiments, res.effects, res.used.tolist(),
+                    res.obs_at_centers, res.bias_obs, res.noise_var, strict=True,
+                )
+            ],
+            "grid": {
+                "query": res.query,
+                "cate_raw": res.cate_raw,
+                "cate_debiased": _mean_sd(res.cate_debiased, cov_a),
+                "cate_direct": _mean_sd(res.cate_direct, cov_b),
+                "mixture": _mean_sd(
+                    res.mixture.mean if res.mixture is not None
+                    else np.full(res.cate_raw.shape[0], np.nan),
+                    res.mixture.cov if res.mixture is not None else None,
+                ),
+            },
+            "diagnostics": res.diagnostics,
+        }
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dee_result.json").write_text(json.dumps(payload, indent=1))
+    diag = res.diagnostics
+    typer.echo(
+        f"experiments: {diag['n_experiments']} repaired, "
+        f"{diag['n_experiments_used']} used (m_prime={m_prime_used})"
+    )
+    if "reason" in diag:
+        typer.echo(f"degenerate: {diag['reason']}")
+    else:
+        typer.echo(
+            f"w_debias={res.weights.w_debias:.2f} ({res.weights.strategy})  "
+            f"grid mean cate: raw={float(np.nanmean(res.cate_raw)):.3f} "
+            f"debiased={float(np.nanmean(res.cate_debiased)):.3f} "
+            f"direct={float(np.nanmean(res.cate_direct)):.3f}"
+        )
+    typer.echo(f"results: {out / 'dee_result.json'}")
 
 
 def _discover_did(
