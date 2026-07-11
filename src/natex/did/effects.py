@@ -299,10 +299,20 @@ class TauRandomizationReport:
     extras: dict = field(default_factory=dict)
 
 
-def _profiles_to_values(panel: CategoricalPanel, profiles: tuple[int, ...]) -> dict[str, list]:
+def _profiles_to_values(
+    panel: CategoricalPanel,
+    profiles: tuple[int, ...],
+    constrained_dims: set[str] | None = None,
+) -> dict[str, list]:
     """Decoded per-dimension values covering the given full-profile ids.
 
-    For multi-profile placebos the conjunction-of-unions cover can exceed the
+    ``constrained_dims`` (audit 5 matched shapes) restricts the output to the
+    dimensions the OBSERVED discovery constrains, so a placebo discovery has
+    the same free/constrained dimension pattern as ``s_tau`` — a gess placebo
+    then expands in the same space the observed gess did. Full-profile
+    seeding (``None`` = all dims) starved every prop99 gess placebo: no state
+    is within one value change of another on all 7 binned covariates. For
+    multi-profile placebos the conjunction-of-unions cover can exceed the
     exact profile set; the placebo MASK stays exact — the cover only seeds
     gess expansion.
     """
@@ -310,6 +320,7 @@ def _profiles_to_values(panel: CategoricalPanel, profiles: tuple[int, ...]) -> d
     return {
         panel.dim_names[j]: np.unique(np.asarray(panel.dim_values[j])[codes[j]]).tolist()
         for j in range(panel.m)
+        if constrained_dims is None or panel.dim_names[j] in constrained_dims
     }
 
 
@@ -344,7 +355,10 @@ def tau_randomization_test(
 
     Placebo subsets are MATCHED IN SHAPE: each draws the same number of full
     covariate profiles as ``s_tau`` from the pool of profiles containing no
-    ``s_tau`` records, and keeps the discovery's T0. The statistic is the
+    ``s_tau`` records, keeps the discovery's T0, and constrains the SAME
+    dimensions the observed discovery constrains (its ``subset_values`` keys)
+    so a gess placebo expands in the same space the observed gess did — the
+    placebo record mask itself stays the exact full-profile set. The statistic is the
     studentized ``|tau_p / se_p|`` against ``|tau_hat / se|``, so a planted
     NEGATIVE effect rejects (the thesis's one-sided 95th-percentile rule
     cannot). The p-value uses the +1-rank rule:
@@ -413,7 +427,9 @@ def tau_randomization_test(
             n_failed += 1
             continue
         p_disc = DiDDiscovery(
-            subset_values=_profiles_to_values(panel, profiles),
+            subset_values=_profiles_to_values(
+                panel, profiles, constrained_dims=set(discovery.subset_values)
+            ),
             mask=p_mask,
             t0=discovery.t0,
             window=discovery.window,

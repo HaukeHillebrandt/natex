@@ -254,12 +254,21 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
     n_c = ctrl_units.size
     w0 = np.full(n_c, 1.0 / n_c)
 
+    # Scale-normalize the SSE so the fit is invariant to the outcome's units:
+    # SLSQP's internal accuracy threshold is absolute, and on raw-scale
+    # outcomes (prop99: SSE ~ 5e3 at the uniform start) it declares success
+    # after ~5 iterations without leaving the uniform start (regression:
+    # test_synthetic_control_scale_invariant_optimization).
+    scale = float(y_fit @ y_fit)
+    if scale <= 0.0:
+        scale = 1.0
+
     def objective(w: np.ndarray) -> float:
         r = y_fit - y_ctrl @ w
-        return float(r @ r)
+        return float(r @ r) / scale
 
     def gradient(w: np.ndarray) -> np.ndarray:
-        return -2.0 * (y_ctrl.T @ (y_fit - y_ctrl @ w))
+        return -2.0 * (y_ctrl.T @ (y_fit - y_ctrl @ w)) / scale
 
     result = minimize(
         objective,
@@ -310,7 +319,7 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
             "n_common_pre_times": int(common.sum()),
             "n_undefined_times": n_undefined,
             "converged": bool(result.success),
-            "fit_sse": float(result.fun),
+            "fit_sse": float(result.fun) * scale,  # de-normalized back to y units
             "note": "outcome-only pre-fit; Abadie covariate V-weights not implemented",
         },
     )

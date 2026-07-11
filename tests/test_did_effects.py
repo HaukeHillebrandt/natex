@@ -349,6 +349,53 @@ def test_fewer_than_five_usable_placebos_gives_nan_p():
     assert np.isnan(rep.p_value)  # never a fake 1.0
 
 
+def test_gess_placebos_match_observed_free_dims():
+    # Audit 5 matched shapes, gess seeding regression (prop99 backtest): the
+    # observed discovery constrains a strict subset of dims; placebo
+    # discoveries must constrain the SAME dims (with each placebo profile's
+    # own values), not the full profile. Geometry that proves it: two
+    # redundant dims d0 = d1 = unit id, so every full profile is >= 2 value
+    # changes away from every other unit and a full-profile-seeded gess can
+    # never expand to a nonempty control (38/38 placebos failed on prop99);
+    # with d1 left free (as in the observed discovery) one d0 expansion
+    # reaches another unit and every placebo is usable.
+    rng = np.random.default_rng(7)
+    n_u, n_t = 6, 10
+    rows = [(u, tt) for u in range(n_u) for tt in range(n_t)]
+    u_arr = np.array([u for u, _ in rows], dtype=np.int64)
+    t_arr = np.array([float(tt) for _, tt in rows])
+    treated = (u_arr == 0) & (t_arr >= 5.0)
+    base = rng.normal(0.0, 1.0, size=n_u)
+    y = base[u_arr] + 0.3 * rng.normal(size=len(rows)) + 6.0 * treated
+    panel = CategoricalPanel(
+        codes=np.column_stack([u_arr, u_arr]).astype(np.int64),
+        dim_names=["d0", "d1"],
+        dim_values=[
+            np.array([f"a{u}" for u in range(n_u)]),
+            np.array([f"b{u}" for u in range(n_u)]),
+        ],
+        t=t_arr,
+        theta=treated.astype(float),
+        y=y,
+        unit=u_arr.copy(),
+        unit_values=np.array([f"u{u}" for u in range(n_u)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"d0": ["a0"]},  # d1 free, exactly as a scan can leave it
+        mask=u_arr == 0,
+        t0=5.0,
+        window=5.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    rep = tau_randomization_test(panel, disc, control="gess")
+    assert rep.mode == "enumerate"
+    assert rep.extras["n_failed"] == 0
+    assert rep.q == 5  # every placebo produced a usable gess control
+    assert np.isfinite(rep.p_value)
+
+
 # ---------------------------------------------------------------------------
 # placebo_dimension_tests
 # ---------------------------------------------------------------------------

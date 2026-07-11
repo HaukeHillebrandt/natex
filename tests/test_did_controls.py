@@ -188,6 +188,50 @@ def test_synthetic_control_recovers_convex_weights():
     np.testing.assert_allclose(res.y0_hat[4:], [6.4, 6.0], atol=0.05)
 
 
+def test_synthetic_control_scale_invariant_optimization():
+    # Regression (prop99 backtest, task 12): with ~38 donors and outcomes at
+    # the raw-data scale (~100-300), SLSQP on the UNSCALED SSE objective
+    # stalls at the uniform start ("success" after ~5 iterations, weights all
+    # 1/n_c, SSE ~3000) because its internal accuracy threshold is absolute.
+    # The objective must be scale-normalized so the fit is invariant to the
+    # outcome's units. Deterministic: seeded donor trajectories, treated unit
+    # is exactly 0.6*donor0 + 0.4*donor1, so the optimum has SSE ~ 0.
+    rng = np.random.default_rng(0)
+    n_pre, n_post, n_c = 19, 6, 38
+    n_t = n_pre + n_post
+    base = rng.uniform(80.0, 280.0, size=n_c)
+    donors = base[None, :] + np.cumsum(rng.normal(0.0, 3.0, size=(n_t, n_c)), axis=0)
+    w_true = np.zeros(n_c)
+    w_true[0], w_true[1] = 0.6, 0.4
+    treated = donors @ w_true  # exact convex combination, pre AND post
+    y_by_time = np.column_stack([treated, donors])  # unit 0 treated
+    rows = [(u, tt) for u in range(n_c + 1) for tt in range(n_t)]
+    codes = np.array([[u] for u, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array([f"s{u}" for u in range(n_c + 1)])],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.array([1.0 if (u == 0 and tt >= n_pre) else 0.0 for u, tt in rows]),
+        y=np.array([y_by_time[tt, u] for u, tt in rows]),
+        unit=np.array([u for u, _ in rows], dtype=np.int64),
+        unit_values=np.array([f"u{u}" for u in range(n_c + 1)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["s0"]},
+        mask=codes[:, 0] == 0,
+        t0=float(n_pre),
+        window=5.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    res = synthetic_control(panel, disc)
+    assert res.pre_mse < 1e-6  # stalled-at-uniform fit has pre_mse ~ 150
+    np.testing.assert_allclose(res.weights[:2], [0.6, 0.4], atol=0.01)
+    assert float(res.weights[2:].max()) <= 0.01
+
+
 def test_synthetic_control_drops_incomplete_donors_instead_of_failing():
     # A donor unit missing one pre-period record is excluded from the pool
     # (Abadie's balanced-donor requirement); the fit proceeds on the rest.
