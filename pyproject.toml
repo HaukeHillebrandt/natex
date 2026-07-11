@@ -17,6 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]
+# numba/shap floors keep the resolver off broken back-solves (econml -> sparse
+# -> numba 0.53 does not build; econml -> shap 0.46 breaks at import on
+# numpy >= 2.4). econml itself allows shap < 0.49.
+ml = ["econml>=0.15", "numba>=0.60", "shap>=0.48"]
+# botorch supplies fit_gpytorch_mll (the maintained fit API; the removed
+# fit_gpytorch_model was the DEE repo's breakage, repo risk 9).
+gp = ["torch>=2.2", "gpytorch>=1.13", "botorch>=0.12"]
 dev = ["pytest>=8", "ruff>=0.4", "pytest-cov"]
 
 [project.scripts]
