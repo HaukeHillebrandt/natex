@@ -10,6 +10,8 @@ estimation target (documented method property, mutation-tested).
 from natex.iv.donors import (
     DonorScore,
     DonorSelectionResult,
+    SCPlaceboReport,
+    sc_placebo_test,
     select_donors,
     select_donors_from_dataset,
     unit_time_matrix,
@@ -22,7 +24,9 @@ __all__ = [
     "DonorSelectionResult",
     "InstrumentDiscovery",
     "InstrumentSearchResult",
+    "SCPlaceboReport",
     "discover_instruments",
+    "sc_placebo_test",
     "select_donors",
     "select_donors_from_dataset",
     "select_instruments",

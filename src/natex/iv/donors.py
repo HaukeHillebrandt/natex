@@ -20,6 +20,11 @@ pre-``t0`` -> ``att_post = NaN``, ``pre_rmspe = +inf``, all-NaN
 counterfactual, reason in ``extras["failure"]``; no defined post period ->
 ``att_post = NaN``, ``post_rmspe = +inf``.
 
+Inference: :func:`sc_placebo_test` is Abadie et al.'s in-space placebo
+test — every complete donor refit as pseudo-treated under the identical
+selection rule (treated unit removed from every placebo panel), post/pre
+RMSPE ratios, +1-rank p-value. Deterministic, no rng anywhere.
+
 DOCUMENTED DEVIATION (same as phase 3): outcome-only pre-fit; Abadie et
 al.'s covariate V-weights are not implemented.
 """
@@ -35,6 +40,7 @@ from natex.data.spec import Dataset
 from natex.estimate.simplex import fit_simplex_weights, weighted_counterfactual
 
 _SCORING = ("rmse", "corr")
+_MIN_USABLE_PLACEBOS = 5  # fewer usable placebos -> p = NaN (phase-3 policy, never a fake 1.0)
 
 
 @dataclass
@@ -251,4 +257,144 @@ def select_donors_from_dataset(
     Y, units, times = unit_time_matrix(dataset.df, spec.unit, spec.time, spec.outcome)
     return select_donors(
         Y, units, times, treated_unit, t0, n_donors=n_donors, scoring=scoring
+    )
+
+
+# ---------------------------------------------------------------------------
+# Abadie in-space RMSPE-ratio placebo inference (audit item 1/5 lineage)
+# ---------------------------------------------------------------------------
+
+
+def _rmspe_ratio(pre_rmspe: float, post_rmspe: float) -> float:
+    """Post/pre RMSPE ratio; NaN on every failure path, never a fake 0.0.
+
+    ``pre = +inf`` / ``post = +inf`` mark failed fits or an undefined
+    period (the :func:`select_donors` failure policy), so the ratio is NaN
+    — ``post / inf`` would fabricate 0.0. A genuinely perfect pre fit
+    (``pre == 0``, ``post > 0``) is +inf; 0/0 is NaN.
+    """
+    if not (np.isfinite(pre_rmspe) and np.isfinite(post_rmspe)):
+        return float("nan")
+    if pre_rmspe == 0.0:
+        return float("inf") if post_rmspe > 0.0 else float("nan")
+    return float(post_rmspe / pre_rmspe)
+
+
+@dataclass
+class SCPlaceboReport:
+    """In-space placebo test: +1-rank p-value on post/pre RMSPE ratios."""
+
+    p_value: float  # (1 + #{placebo ratio >= treated}) / (n_used + 1); NaN if n_used < 5
+    ratio_treated: float  # post_rmspe / pre_rmspe of the treated run
+    ratios: np.ndarray  # (n_used,) usable placebo ratios, sorted descending
+    placebo_units: list[object]  # aligned with `ratios`
+    n_skipped: int  # zero-pre-rmspe, failed fits, or poor-fit exclusions
+    extras: dict = field(default_factory=dict)
+
+
+def sc_placebo_test(
+    Y: np.ndarray,
+    units: np.ndarray,
+    times: np.ndarray,
+    treated_unit: object,
+    t0: float,
+    n_donors: int | None = None,
+    scoring: str = "rmse",
+    exclude_poor_fit: float | None = None,
+) -> SCPlaceboReport:
+    """Abadie, Diamond & Hainmueller (2010) in-space placebo inference.
+
+    Every complete donor candidate of the treated run is refit as
+    pseudo-treated under the IDENTICAL selection rule (same ``n_donors``
+    and ``scoring``); the treated unit's row is removed from every placebo
+    panel, so it can never enter a placebo donor pool (its real post-period
+    effect must not contaminate placebo counterfactuals). Each fit yields
+    ratio = post-RMSPE / pre-RMSPE — sign-agnostic, so the test is
+    two-sided by construction (audit item 5) — and the p-value is the
+    +1-rank Monte Carlo form (audit item 1 lineage):
+
+        p = (1 + #{placebo ratio >= treated ratio}) / (n_used + 1)
+
+    Placebos with a failed fit or an exactly-zero pre-RMSPE (undefined
+    ratio) are skipped and counted in ``n_skipped`` (never a fake 0.0
+    ratio). With ``exclude_poor_fit = m``, placebos whose pre-RMSPE exceeds
+    ``m x`` the treated unit's are also dropped (Abadie's poor-pre-fit
+    exclusion) and listed in ``extras["poor_fit_units"]``. Fewer than
+    ``_MIN_USABLE_PLACEBOS`` (5) usable placebos — or an undefined treated
+    ratio — gives ``p = NaN``, never a fake 1.0 (phase-3 policy).
+    Deterministic: no rng anywhere.
+    """
+    if exclude_poor_fit is not None and not exclude_poor_fit > 0:
+        raise ValueError(f"exclude_poor_fit must be > 0 or None, got {exclude_poor_fit}")
+    treated_res = select_donors(
+        Y, units, times, treated_unit, t0, n_donors=n_donors, scoring=scoring
+    )
+    ratio_treated = _rmspe_ratio(treated_res.pre_rmspe, treated_res.post_rmspe)
+
+    units_arr = np.asarray(units)
+    i_treated = int(np.flatnonzero(units_arr == treated_unit)[0])  # validated above
+    Y_placebo = np.delete(np.asarray(Y, dtype=float), i_treated, axis=0)
+    units_placebo = np.delete(units_arr, i_treated)
+
+    candidates = [s.unit for s in treated_res.scores]  # every complete donor, score order
+    pools: dict = {}
+    pre_rmspes: dict = {}
+    kept: list[tuple[object, float]] = []
+    poor_fit_units: list[object] = []
+    n_failed = 0
+    n_zero_pre = 0
+    for u in candidates:
+        res = select_donors(
+            Y_placebo, units_placebo, times, u, t0, n_donors=n_donors, scoring=scoring
+        )
+        pools[u] = list(res.donors)
+        pre_rmspes[u] = res.pre_rmspe
+        ratio = _rmspe_ratio(res.pre_rmspe, res.post_rmspe)
+        if not np.isfinite(ratio):
+            if res.pre_rmspe == 0.0:
+                n_zero_pre += 1
+            else:
+                n_failed += 1
+            continue
+        if exclude_poor_fit is not None and res.pre_rmspe > exclude_poor_fit * treated_res.pre_rmspe:
+            poor_fit_units.append(u)
+            continue
+        kept.append((u, ratio))
+
+    raw = np.asarray([r for _, r in kept], dtype=float)
+    order = np.argsort(-raw, kind="stable")
+    ratios = raw[order]
+    placebo_units = [kept[i][0] for i in order]
+    n_used = int(ratios.size)
+    n_skipped = n_failed + n_zero_pre + len(poor_fit_units)
+
+    if n_used < _MIN_USABLE_PLACEBOS or np.isnan(ratio_treated):
+        p_value = float("nan")
+    else:
+        p_value = float((1 + int(np.sum(ratios >= ratio_treated))) / (n_used + 1))
+
+    extras = {
+        "n_placebo_candidates": len(candidates),
+        "n_used": n_used,
+        "n_failed": n_failed,
+        "n_zero_pre_rmspe": n_zero_pre,
+        "n_poor_fit": len(poor_fit_units),
+        "poor_fit_units": poor_fit_units,
+        "placebo_pools": pools,
+        "placebo_pre_rmspe": pre_rmspes,
+        "treated_pre_rmspe": treated_res.pre_rmspe,
+        "treated_post_rmspe": treated_res.post_rmspe,
+        "exclude_poor_fit": exclude_poor_fit,
+        "n_donors": n_donors,
+        "scoring": scoring,
+    }
+    if "failure" in treated_res.extras:
+        extras["treated_failure"] = treated_res.extras["failure"]
+    return SCPlaceboReport(
+        p_value=p_value,
+        ratio_treated=ratio_treated,
+        ratios=ratios,
+        placebo_units=placebo_units,
+        n_skipped=n_skipped,
+        extras=extras,
     )
