@@ -4,6 +4,8 @@ quasi-experiment repair, local effects, and GP debiasing of observational CATE."
 from natex.dee.vknn import (
     QuasiExperiment,
     VKNNResult,
+    balance_filter,
+    experiment_effects,
     experiment_radius,
     select_m_prime,
     voronoi_knn_repair,
@@ -12,6 +14,8 @@ from natex.dee.vknn import (
 __all__ = [
     "QuasiExperiment",
     "VKNNResult",
+    "balance_filter",
+    "experiment_effects",
     "experiment_radius",
     "select_m_prime",
     "voronoi_knn_repair",

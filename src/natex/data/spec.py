@@ -94,6 +94,21 @@ class Dataset:
         sd[sd == 0] = 1.0
         return (z - z.mean(axis=0)) / sd
 
+    def standardize(self, z: np.ndarray) -> np.ndarray:
+        """Map raw forcing-space points to Z_std coordinates.
+
+        Uses the SAME per-column moments as ``Z_std`` (mean and sd with
+        ddof=0, zero-sd columns pass through unscaled), so
+        ``standardize(self.Z)`` is bitwise equal to ``self.Z_std``.
+        """
+        z = np.asarray(z, dtype=float)
+        Z = self.Z
+        if z.ndim != 2 or z.shape[1] != Z.shape[1]:
+            raise ValueError(f"expected shape (m, {Z.shape[1]}) in forcing space, got {z.shape}")
+        sd = Z.std(axis=0, ddof=0)
+        sd[sd == 0] = 1.0
+        return (z - Z.mean(axis=0)) / sd
+
     @property
     def X(self) -> np.ndarray:
         return pd.get_dummies(self.df[self.spec.covariates], dtype=float).to_numpy(dtype=float)

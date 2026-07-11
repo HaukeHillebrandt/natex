@@ -41,3 +41,34 @@ def test_nonnumeric_forcing_rejected():
     spec = DatasetSpec(treatment="T", outcome="y", forcing=["group"], covariates=["group"])
     with pytest.raises(ValueError, match="forcing"):
         Dataset(toy_df(), spec)
+
+
+def test_standardize_bitwise_consistent_with_Z_std():
+    spec = DatasetSpec(
+        treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score", "group"]
+    )
+    ds = Dataset(toy_df(), spec)
+    assert np.array_equal(ds.standardize(ds.Z), ds.Z_std)  # bitwise
+
+
+def test_standardize_zero_variance_column_passes_through():
+    df = toy_df()
+    df["const"] = 3.0
+    spec = DatasetSpec(
+        treatment="T", outcome="y", forcing=["age", "const"], covariates=["age", "const"]
+    )
+    ds = Dataset(df, spec)
+    out = ds.standardize(np.array([[2.0, 10.0]]))
+    assert out[0, 1] == 10.0 - 3.0  # centered, unscaled (sd 0 -> 1)
+    assert np.array_equal(ds.standardize(ds.Z), ds.Z_std)
+
+
+def test_standardize_shape_errors():
+    spec = DatasetSpec(
+        treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score"]
+    )
+    ds = Dataset(toy_df(), spec)
+    with pytest.raises(ValueError, match="shape"):
+        ds.standardize(np.zeros((3, 5)))
+    with pytest.raises(ValueError, match="shape"):
+        ds.standardize(np.zeros(4))

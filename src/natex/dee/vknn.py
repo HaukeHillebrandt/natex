@@ -28,7 +28,9 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from natex.data.spec import Dataset
+from natex.estimate.local2sls import EffectEstimate, local_2sls, wald_estimate
 from natex.rdd.lord3 import Discovery, LoRD3Result
+from natex.validate.placebo import placebo_tests
 
 
 @dataclass
@@ -182,6 +184,49 @@ def select_m_prime(
     if null.size == 0:
         raise ValueError("null_max_llrs is empty")
     return int(np.sum(llrs > float(np.quantile(null, level))))
+
+
+_EFFECT_METHODS = {"2sls": local_2sls, "wald": wald_estimate}
+
+
+def experiment_effects(
+    dataset: Dataset, result: VKNNResult, method: str = "2sls"
+) -> list[EffectEstimate]:
+    """Local effect at every repaired experiment, in acceptance order.
+
+    Pure delegation: ``QuasiExperiment`` satisfies the Discovery duck-typing
+    contract (center_index/members/group1/normal), so the phase-1 estimators
+    run unchanged -- frozen-side instrument, HC1 errors, always-on first-stage
+    diagnostics, NaN (never 0.0) when underdetermined or the outcome is
+    missing. Weak-instrument experiments are flagged, not dropped (audit 10):
+    their large SE^2 downweights them in the heteroskedastic GP downstream.
+    """
+    if method not in _EFFECT_METHODS:
+        raise ValueError(f"method must be one of {sorted(_EFFECT_METHODS)}, got {method!r}")
+    estimator = _EFFECT_METHODS[method]
+    return [estimator(dataset, e) for e in result.experiments]
+
+
+def balance_filter(dataset: Dataset, result: VKNNResult, alpha: float = 0.05) -> VKNNResult:
+    """Keep experiments whose covariates are continuous at the boundary.
+
+    Reuses the phase-1 placebo battery per experiment (intercept-continuity
+    with side-specific trends, HC1, Holm WITHIN experiment -- stricter than
+    the paper's Bonferroni across covariates; method card). Reads covariates
+    only, never ``y``. Returns a NEW VKNNResult -- the input is unmodified;
+    surviving experiments keep their aligned ``accepted`` ranks, and
+    ``rejected`` still records support-test rejections only.
+    """
+    keep = np.asarray(
+        [placebo_tests(dataset, e, alpha=alpha).passed for e in result.experiments], dtype=bool
+    )
+    return VKNNResult(
+        experiments=[e for e, ok in zip(result.experiments, keep, strict=True) if ok],
+        accepted=result.accepted[keep] if keep.size else result.accepted.copy(),
+        rejected=result.rejected.copy(),
+        k_prime=result.k_prime,
+        t_side=result.t_side,
+    )
 
 
 def experiment_radius(dataset: Dataset, e: QuasiExperiment) -> float:
