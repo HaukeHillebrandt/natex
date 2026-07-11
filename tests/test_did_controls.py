@@ -188,6 +188,76 @@ def test_synthetic_control_recovers_convex_weights():
     np.testing.assert_allclose(res.y0_hat[4:], [6.4, 6.0], atol=0.05)
 
 
+def test_synthetic_control_drops_incomplete_donors_instead_of_failing():
+    # A donor unit missing one pre-period record is excluded from the pool
+    # (Abadie's balanced-donor requirement); the fit proceeds on the rest.
+    # Before the repair one sparse unit voided every common pre time -> NaN.
+    panel, disc = synth_panel()
+    keep = ~((panel.unit == 3) & (panel.t == 1.0))
+    sparse = CategoricalPanel(
+        codes=panel.codes[keep],
+        dim_names=panel.dim_names,
+        dim_values=panel.dim_values,
+        t=panel.t[keep],
+        theta=panel.theta[keep],
+        y=panel.y[keep],
+        unit=panel.unit[keep],
+        unit_values=panel.unit_values,
+    )
+    disc = DiDDiscovery(
+        subset_values=disc.subset_values,
+        mask=sparse.codes[:, 0] == 0,
+        t0=4.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    res = synthetic_control(sparse, disc)
+    assert list(res.extras["control_units"]) == [1, 2]
+    assert res.extras["n_donors_dropped"] == 1
+    np.testing.assert_allclose(res.weights, [0.3, 0.7], atol=0.02)
+    assert res.pre_mse < 1e-6
+
+
+def test_synthetic_control_renormalizes_small_missing_weight():
+    # Treated = 0.05*u1 + 0.95*u2 in the pre period. Dropping u1's record at a
+    # post time leaves missing weight ~0.05 <= 0.1: the time stays defined via
+    # renormalization over present donors (y0 ~= u2's value), never NaN-voided.
+    y_by_unit = {
+        0: [1.5, 2.4, 3.3, 4.2, 8.0, 8.0],  # 0.05*u1 + 0.95*u2 pre-t0=4
+        1: [11.0, 10.0, 9.0, 8.0, 7.0, 6.0],
+        2: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        3: [30.0, 20.0, 35.0, 25.0, 30.0, 20.0],  # poor fit: weight ~0
+    }
+    rows = [(u, tt) for u in range(4) for tt in range(6) if (u, tt) != (1, 5)]
+    codes = np.array([[u] for u, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array(["tr", "c1", "c2", "c3"])],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.array([1.0 if (u == 0 and tt >= 4) else 0.0 for u, tt in rows]),
+        y=np.array([y_by_unit[u][tt] for u, tt in rows]),
+        unit=np.array([u for u, _ in rows], dtype=np.int64),
+        unit_values=np.array(["u0", "u1", "u2", "u3"]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["tr"]},
+        mask=codes[:, 0] == 0,
+        t0=4.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    res = synthetic_control(panel, disc)
+    np.testing.assert_allclose(res.weights, [0.05, 0.95, 0.0], atol=0.02)
+    # t=5: u1 missing, missing weight ~0.05 -> renormalized to ~u2's value 6.
+    assert np.isfinite(res.y0_hat[5])
+    np.testing.assert_allclose(res.y0_hat[5], 6.0, atol=0.3)
+
+
 def test_synthetic_control_no_control_units():
     panel, disc = synth_panel()
     disc = all_treated_discovery(panel)

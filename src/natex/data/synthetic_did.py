@@ -15,12 +15,39 @@ Data-generating process (docs/math_audit_final.md, "pure typos" section):
   + eps_theta_i + u_i``.
 * **Eq 6.26** — ``y_i = sum_j gamma_y[j, x_ij] + tau * theta_i + eps_y_i + u_i``
   (same per-value repair for gamma_y).
-* **Eqs 6.27-6.28 (Codex #24/#25)** — ``hetero_group=True`` replaces the y
-  noise by the printed time-scaled term ``eps_y_i * 1[x_i in s_g] * t_i`` with
+* **Eqs 6.27-6.28 (Codex #24/#25)** — ``hetero_group=True`` with the default
+  ``hetero_kind="scaled_noise"`` replaces the y noise by the printed
+  time-scaled term ``eps_y_i * 1[x_i in s_g] * t_i`` with
   ``s_g = s_I  union  s_c`` and ``s_c`` a random subset of UNTREATED profiles
   (Eq 6.28's set notation repaired to ``s_c  subset of  D \\ s_I``). As the
   audit notes, this creates HETEROSKEDASTICITY, not the correlation the thesis
-  prose claims — it still creates the misspecification GESS handles.
+  prose claims — and because per-record mean-zero noise averages out of every
+  per-time control mean, it biases NO control method and cannot reproduce the
+  Fig 6.5 method ranking (calibration: 16 seed-configs, all three controls
+  within ~0.3 of tau after dose normalization).
+
+* **``hetero_kind="shock"``** — the PROSE-intent correlated variant needed
+  for the Fig 6.5 analog: Eq 6.27's ``eps * 1[divergent] * t_i`` with eps
+  drawn ONCE PER TIME PERIOD (``N(0, hetero_scale^2)``, shared by every
+  divergent record at that time) instead of per record — within-subset
+  correlation, exactly what the thesis prose claims. Two documented
+  deviations from the printed equation, both forced by identifiability
+  (calibration, 8 seeds x several configs): (i) the shocks hit s_c ONLY, not
+  ``s_g = s_I union s_c`` — shocks shared with s_I are common to the treated
+  subset while every monotone-profile-expansion control catches them only
+  DILUTED (a conjunction-of-unions cover cannot isolate s_c, so no method
+  can cancel them and no ranking exists). On s_c only, the variant realizes
+  the Fig 6.5 failure mode: pooled controls cannot disaggregate the
+  divergent subset — DD absorbs ~|s_c|/|control| of every shock, synthetic
+  control overfits its few pre-period times with dozens of donors — while
+  GESS's pre-MSE search excludes s_c. (ii) s_c is redrawn until AVOIDABLE by
+  monotone profile expansion: at least one dimension constrained by both s_I
+  and s_c has disjoint value sets — GESS can only build controls from
+  profile expansions (thesis limitation), so an s_c intersecting every
+  expansion contaminates every method equally and the ranking is again
+  unidentifiable. The thesis base config (8-value dimensions) makes such
+  collisions rare, which is why its averaged Fig 6.5 shows clean
+  order-of-magnitude gaps.
 
 ``theta_kind="binary"`` is a documented natex addition (audit item 19 needs a
 binary-treatment variant): the Eq 6.25 latent is thresholded at its median, so
@@ -49,8 +76,10 @@ class DiDTruth:
 
     ``included[j]`` is a length-V boolean mask over the value grid ``1..V``
     (index ``v - 1``) — all-True for unconstrained dimensions, matching the
-    conjunction-of-unions subset convention. ``hetero_mask`` is the s_g record
-    mask of the Eq 6.27 variant (``None`` unless ``hetero_group=True``).
+    conjunction-of-unions subset convention. ``hetero_mask`` is the divergent
+    record mask of the Eq 6.27 variant (``None`` unless ``hetero_group=True``):
+    s_g = s_I union s_c for ``hetero_kind="scaled_noise"``, s_c alone for
+    ``"shock"`` (whose shared per-period draws are in ``hetero_shocks``).
     """
 
     included: list[np.ndarray]  # per-dim value masks of s_I
@@ -58,7 +87,8 @@ class DiDTruth:
     t0: float
     zeta: float
     tau: float
-    hetero_mask: np.ndarray | None = None  # (n,) s_g membership (hetero_group only)
+    hetero_mask: np.ndarray | None = None  # (n,) divergent records (hetero_group only)
+    hetero_shocks: np.ndarray | None = None  # (periods,) shared shocks ("shock" only)
 
 
 def _random_subset_masks(
@@ -81,6 +111,19 @@ def _subset_record_mask(x: np.ndarray, included: list[np.ndarray]) -> np.ndarray
     return mask
 
 
+def _avoidable(inc_i: list[np.ndarray], inc_c: list[np.ndarray]) -> bool:
+    """True iff some dim constrained by BOTH s_I and s_c has disjoint values.
+
+    Any monotone profile expansion of s_I that keeps that dimension's values
+    then excludes s_c entirely, so a GESS-style control CAN avoid the
+    divergent subset (module docstring, ``hetero_kind="shock"``).
+    """
+    return any(
+        not a.all() and not c.all() and not (a & c).any()
+        for a, c in zip(inc_i, inc_c, strict=True)
+    )
+
+
 def make_did_synthetic(
     n: int = 2000,
     d: int = 4,
@@ -92,6 +135,8 @@ def make_did_synthetic(
     s_values: int = 2,
     theta_kind: str = "real",
     hetero_group: bool = False,
+    hetero_kind: str = "scaled_noise",
+    hetero_scale: float = 8.0,
     rng: np.random.Generator | None = None,
 ) -> tuple[Dataset, DiDTruth]:
     """Draw one ch.6 synthetic panel; returns ``(Dataset, DiDTruth)``.
@@ -120,6 +165,10 @@ def make_did_synthetic(
         raise ValueError(f"s_values must lie in 1..V={V}, got {s_values}")
     if theta_kind not in ("real", "binary"):
         raise ValueError(f"theta_kind must be 'real' or 'binary', got {theta_kind!r}")
+    if hetero_kind not in ("scaled_noise", "shock"):
+        raise ValueError(f"hetero_kind must be 'scaled_noise' or 'shock', got {hetero_kind!r}")
+    if not hetero_scale > 0.0:
+        raise ValueError(f"hetero_scale must be > 0, got {hetero_scale}")
 
     # Eq 6.22: covariates, confounder and time, all discrete uniform.
     x = rng.integers(1, V + 1, size=(n, d))
@@ -154,24 +203,34 @@ def make_did_synthetic(
     y_base = gamma_y[np.arange(d)[None, :], x - 1].sum(axis=1)
     eps_y = rng.normal(0.0, 1.0, size=n) * scale
     hetero_mask: np.ndarray | None = None
+    hetero_shocks: np.ndarray | None = None
     if hetero_group:
         # Eq 6.28 (repaired set notation): s_c is a random subset of UNTREATED
         # profiles, drawn like s_I and redrawn until it contributes records
-        # outside s_I. s_g = s_I  union  s_c.
+        # outside s_I; hetero_kind="shock" additionally requires s_c to be
+        # AVOIDABLE by monotone profile expansion (see module docstring).
         for _ in range(_MAX_SC_DRAWS):
-            sc_mask = _subset_record_mask(x, _random_subset_masks(d, V, s_dims, s_values, rng))
-            sc_mask &= ~record_mask
-            if sc_mask.any():
+            sc_included = _random_subset_masks(d, V, s_dims, s_values, rng)
+            sc_mask = _subset_record_mask(x, sc_included) & ~record_mask
+            if sc_mask.any() and (hetero_kind != "shock" or _avoidable(included, sc_included)):
                 break
         else:
             raise RuntimeError(
-                f"no random untreated subset s_c found in {_MAX_SC_DRAWS} draws; "
+                f"no admissible untreated subset s_c found in {_MAX_SC_DRAWS} draws; "
                 "lower s_dims/s_values or raise n"
             )
-        hetero_mask = record_mask | sc_mask
-        # As printed (Codex #24): heteroskedastic time-scaled noise, no noise
-        # outside s_g — heteroskedasticity, not the claimed correlation.
-        eps_y = eps_y * (hetero_mask * t)
+        if hetero_kind == "shock":
+            # Prose-intent correlated variant: one shared draw PER TIME PERIOD,
+            # time-scaled, on the s_c records only (module docstring).
+            hetero_shocks = rng.normal(0.0, hetero_scale, size=periods)
+            hetero_mask = sc_mask
+            eps_y = eps_y + hetero_shocks[t.astype(np.int64) - 1] * t * sc_mask
+        else:
+            hetero_mask = record_mask | sc_mask
+            # As printed (Codex #24): heteroskedastic time-scaled noise, no
+            # noise outside s_g — heteroskedasticity, not the claimed
+            # correlation.
+            eps_y = eps_y * (hetero_mask * t)
     y = y_base + tau * theta + eps_y + u
 
     df = pd.DataFrame({f"x{j}": x[:, j] for j in range(d)})
@@ -193,5 +252,6 @@ def make_did_synthetic(
         zeta=float(zeta),
         tau=float(tau),
         hetero_mask=hetero_mask,
+        hetero_shocks=hetero_shocks,
     )
     return Dataset(df, spec), truth

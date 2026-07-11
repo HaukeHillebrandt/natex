@@ -81,6 +81,35 @@ def test_hetero_group_only_changes_y():
     assert np.any(sg & ~tr_h.record_mask)  # some untreated records included
 
 
+def test_hetero_shock_variant():
+    # Prose-intent correlated variant: shared per-period shocks on s_c only.
+    ds_s, tr_s = make_did_synthetic(
+        hetero_group=True, hetero_kind="shock", rng=np.random.default_rng(5), **BASE
+    )
+    ds_p, tr_p = make_did_synthetic(hetero_group=False, rng=np.random.default_rng(5), **BASE)
+    cols = [f"x{j}" for j in range(BASE["d"])] + ["t", "theta"]
+    assert ds_s.df[cols].equals(ds_p.df[cols])
+    sc = tr_s.hetero_mask
+    assert sc is not None and sc.any()
+    assert not np.any(sc & tr_s.record_mask)  # shocks never touch s_I
+    assert tr_s.hetero_shocks is not None
+    assert tr_s.hetero_shocks.shape == (BASE["periods"],)
+    assert tr_p.hetero_shocks is None
+    # y differs from the plain draw exactly on s_c, by the shared shock * t.
+    dy = ds_s.df["y"].to_numpy() - ds_p.df["y"].to_numpy()
+    assert np.all(dy[~sc] == 0.0)
+    t = ds_s.df["t"].to_numpy()
+    expected = tr_s.hetero_shocks[t.astype(np.int64) - 1] * t
+    np.testing.assert_allclose(dy[sc], expected[sc], rtol=1e-12)
+
+
+def test_hetero_validation_errors():
+    with pytest.raises(ValueError, match="hetero_kind"):
+        make_did_synthetic(n=100, hetero_kind="bogus", rng=np.random.default_rng(0))
+    with pytest.raises(ValueError, match="hetero_scale"):
+        make_did_synthetic(n=100, hetero_scale=0.0, rng=np.random.default_rng(0))
+
+
 def test_dataset_wiring():
     ds, _ = make_did_synthetic(rng=np.random.default_rng(2), **BASE)
     spec = ds.spec

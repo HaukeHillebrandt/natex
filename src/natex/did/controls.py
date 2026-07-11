@@ -40,8 +40,26 @@ from natex.did.mdss import SubsetState
 from natex.did.panel import CategoricalPanel
 from natex.did.suddds import DiDDiscovery
 
-_W_TOL = 1e-8  # synthetic weights below this are treated as exactly zero
-# when deciding whether a missing unit-time cell makes y0_hat undefined.
+_MISSING_W_TOL = 0.1  # synthetic: a time is defined while the total weight of
+# MISSING donor cells stays <= this; present weights are renormalized. SLSQP
+# solutions are not sparse (dozens of O(1e-2) weights), so requiring every
+# weighted donor present would void almost every time on a thin panel.
+
+
+def _weighted_counterfactual_by_time(contrib: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """(n_t,) donor-weighted mean per time from ``contrib`` (n_c, n_t).
+
+    Missing donor cells (NaN) are dropped and the PRESENT weights are
+    renormalized while the missing weight mass is <= ``_MISSING_W_TOL``;
+    beyond that the time is NaN — never a silent 0. The renormalization
+    error is bounded by the missing mass times the donor-mean spread.
+    """
+    present = np.isfinite(contrib)
+    missing_w = (~present).T.astype(float) @ w  # (n_t,)
+    present_w = present.T.astype(float) @ w
+    num = np.where(present, contrib, 0.0).T @ w
+    ok = (missing_w <= _MISSING_W_TOL) & (present_w > 0.0)
+    return np.where(ok, num / np.where(present_w > 0.0, present_w, 1.0), np.nan)
 
 
 @dataclass
@@ -162,15 +180,20 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
     """Synthetic control: unit-level simplex weights fit on pre-period trajectories.
 
     Control units are the units with NO ``s_tau`` records (partially treated
-    units are excluded entirely). Weights ``w >= 0, sum(w) = 1`` minimize
-    ``||ybar_tau(t) - sum_u w_u ybar_u(t)||^2`` over the pre-period times at
-    which the treated subset and EVERY candidate control unit have records,
+    units are excluded entirely), restricted to the DONOR POOL of units with
+    finite-y records at every pre-period time where the treated subset has
+    records (Abadie's balanced-donor requirement; without it one sparse unit
+    voids every common time and the fit fails on any thin panel — the
+    ``extras["n_donors_dropped"]`` count reports the exclusions). Weights
+    ``w >= 0, sum(w) = 1`` minimize
+    ``||ybar_tau(t) - sum_u w_u ybar_u(t)||^2`` over those pre-period times,
     solved with SLSQP from the uniform start (deterministic).
 
     DOCUMENTED DEVIATION: outcome-only pre-fit; Abadie et al.'s covariate
     V-weights are not implemented. ``y0_hat = sum_u w_u ybar_u(t)`` with no
-    alpha offset (the weights absorb levels); a time where a unit carrying
-    weight > 1e-8 has no record is NaN — never 0.
+    alpha offset (the weights absorb levels); missing donor cells are
+    renormalized away while their weight mass is <= 0.1, beyond which the
+    time is NaN — never 0.
     """
     y = _require_outcome(panel)
     tau_mask = np.asarray(discovery.mask, dtype=bool)
@@ -213,9 +236,18 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
     y_tau = np.where(tau_cnt > 0, tau_sum / np.maximum(tau_cnt, 1), np.nan)
 
     times = np.unique(panel.t)
-    common = (times < discovery.t0) & (tau_cnt > 0) & np.all(cell_cnt[ctrl_units] > 0, axis=0)
+    common = (times < discovery.t0) & (tau_cnt > 0)
     if not common.any():
-        return _fail("no pre-period times common to s_tau and all control units")
+        return _fail("no pre-period times with s_tau records")
+    # Donor pool: candidate units observed at EVERY common pre time. Dropping
+    # incomplete units (instead of shrinking the time set) keeps thin panels
+    # fittable — previously any one sparse unit voided all common times.
+    n_candidates = ctrl_units.size
+    complete = np.all(cell_cnt[ctrl_units][:, common] > 0, axis=1)
+    ctrl_units = ctrl_units[complete]
+    n_dropped = int(n_candidates - ctrl_units.size)
+    if ctrl_units.size == 0:
+        return _fail("no control unit has records at every s_tau pre-period time")
 
     y_fit = y_tau[common]  # (n_common,)
     y_ctrl = unit_mean[ctrl_units][:, common].T  # (n_common, n_c)
@@ -246,12 +278,9 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
     )
     w = np.asarray(result.x, dtype=float)
 
-    # Counterfactual per time: NaN only when a unit with weight > _W_TOL is
-    # missing at that time (near-zero-weight gaps do not poison the mean).
-    contrib = unit_mean[ctrl_units]  # (n_c, n_t)
-    heavy = w > _W_TOL
-    safe = np.where(np.isnan(contrib) & ~heavy[:, None], 0.0, contrib)
-    y0_by_time = safe.T @ w  # (n_t,)
+    # Counterfactual per time: renormalized over present donors; NaN only when
+    # the missing donor weight mass exceeds _MISSING_W_TOL.
+    y0_by_time = _weighted_counterfactual_by_time(unit_mean[ctrl_units], w)  # (n_t,)
 
     tau_idx = np.flatnonzero(tau_mask)
     y0_hat = y0_by_time[code[tau_idx]]
@@ -277,6 +306,7 @@ def synthetic_control(panel: CategoricalPanel, discovery: DiDDiscovery) -> Contr
         extras={
             "control_units": ctrl_units,
             "control_unit_values": np.asarray(panel.unit_values)[ctrl_units],
+            "n_donors_dropped": n_dropped,
             "n_common_pre_times": int(common.sum()),
             "n_undefined_times": n_undefined,
             "converged": bool(result.success),
