@@ -44,3 +44,29 @@ Small seeded slices of these curves run in default CI:
 `tests/test_benchmarks_small.py`.
 
 The changepoint-baseline comparison (KDD Fig 9) is out of scope for phase 2.
+
+# DEE simulation-1 replication (phase 4)
+
+`run_dee_sim.py` is the scaled analog of the DEE paper's simulation 1
+(Jakubowski et al., JMLR 2023): per seed, a fresh GP-surface synthetic draw
+(`natex.data.synthetic_dee`), a LoRD3 scan, the full `dee_debias` pipeline,
+and truth-grid MSEs of raw / debiased / direct / mixture estimators.
+
+```sh
+uv run python benchmarks/run_dee_sim.py            # 20 seeds x {0.2, 0.5}^2, n=4000
+uv run python benchmarks/run_dee_sim.py --small    # 3-seed quick pass
+uv run python benchmarks/run_dee_sim.py --q-null 99  # M' from the fitted-null MC
+```
+
+Outputs: `dee_sim1.csv` (one row per replication; columns =
+`RESULT_COLUMNS`) and, with matplotlib, the per-config MSE box plot
+`dee_sim1_mse.png`. Expected qualitative shape (the sim-1 claim): the
+debiased and mixture estimators beat the raw observational T-learner in
+median grid MSE. Documented deviations (docstring): boosted complier shares
+`type_probs=(0.1, 0.4, 0.4, 0.1)` (uniform types leave the local 2SLS too
+weak at scaled-down n) and an extra `m_prime` column auditing the
+`--q-null`/`select_m_prime` path.
+
+The CI-small seeded slice — the spec §8 phase-4 gate, scaled — runs in
+default CI: `tests/test_dee_benchmarks_small.py` (2 pinned seeds at n=1500;
+calibration table in the test docstring).
