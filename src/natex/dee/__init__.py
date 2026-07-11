@@ -2,6 +2,7 @@
 quasi-experiment repair, local effects, and GP debiasing of observational CATE."""
 
 from natex.dee.gp import GPPosterior, HeteroskedasticGP, rbf_kernel, sample_gp_prior
+from natex.dee.noise import log_se2_bias, log_se2_measurement_var, smooth_noise
 from natex.dee.vknn import (
     QuasiExperiment,
     VKNNResult,
@@ -20,8 +21,11 @@ __all__ = [
     "balance_filter",
     "experiment_effects",
     "experiment_radius",
+    "log_se2_bias",
+    "log_se2_measurement_var",
     "rbf_kernel",
     "sample_gp_prior",
     "select_m_prime",
+    "smooth_noise",
     "voronoi_knn_repair",
 ]
