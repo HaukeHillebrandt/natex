@@ -306,9 +306,17 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
     windows = budget["windows"]
     if windows is not None:
         windows = tuple(float(w) for w in windows)
+    model, method = budget["model"], budget["method"]
+    if method == "single_delta" and model == "auto":
+        # audit 19's Bernoulli auto-matching conflicts with single_delta's
+        # Gaussian profile GLR on binary treatments: resolve the DEFAULT
+        # combination to the thesis-parity normal model instead of failing
+        # every binary-treatment did config (dogfood finding). An explicit
+        # model='bernoulli' still raises inside suddds_scan.
+        model = "normal"
     panel = build_panel(ds, bins=bins)
     res = suddds_scan(ds, windows=windows, restarts=int(budget["restarts"]),
-                      model=budget["model"], method=budget["method"],
+                      model=model, method=method,
                       bins=bins, degree=degree, rng=rng, panel=panel)
     if not res.discoveries:
         raise ValueError("no qualifying discovery")
@@ -407,11 +415,12 @@ def discover(
     eff_budget = _effective_budget(search_plan, budget)
 
     guidance_log_path: str | None = None
-    if out is not None:
+    if out is not None and guidance is not None:
+        # No backend => no hook will ever log: recording a path to a file that
+        # is never created misleads downstream readers (dogfood finding).
         log = GuidanceLog(Path(out) / "guidance_log.jsonl")
         guidance_log_path = str(log.path)
-        if guidance is not None:
-            guidance = LoggedBackend(guidance, log)  # one JSONL line per hook call
+        guidance = LoggedBackend(guidance, log)  # one JSONL line per hook call
 
     # -- config list (spec 6b: plan orders, never truncates) ------------------
     records: list[ConfigRecord] = []

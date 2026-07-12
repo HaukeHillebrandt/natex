@@ -4,6 +4,7 @@ import importlib
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from natex.data.spec import Dataset, DatasetSpec
@@ -120,7 +121,52 @@ def test_rdd_auto_single_config(tmp_path):
     assert searched["plan_candidates"] == 0
     assert searched["exhaustive_candidates"] == 1
     assert (tmp_path / "out" / "discover_report.json").exists()
-    assert payload["guidance_log_path"].endswith("guidance_log.jsonl")
+    # no guidance backend => no log will ever be written: the path must be
+    # None, not a phantom file reference (dogfood regression, Fitbit run)
+    assert payload["guidance_log_path"] is None
+
+
+def test_no_phantom_guidance_log_path_without_backend(tmp_path):
+    """Dogfood regression (Fitbit run): a guidance-free ``out=`` run recorded
+    ``out/guidance_log.jsonl`` in the report although the file never exists."""
+    out = tmp_path / "out"
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(1), budget=SMALL, out=out)
+    assert rep.guidance_log_path is None
+    assert not (out / "guidance_log.jsonl").exists()
+
+
+def _did_binary_dataset():
+    """Small panel with a BINARY treatment (the dogfood case that failed)."""
+    rng = np.random.default_rng(3)
+    n = 300
+    codes = rng.integers(0, 3, size=(n, 2))
+    t = rng.integers(0, 8, size=n).astype(float)
+    p = 0.2 + 0.6 * ((codes[:, 0] == 1) & (t >= 4.0))
+    df = pd.DataFrame(
+        {
+            "d0": codes[:, 0].astype(float),
+            "d1": codes[:, 1].astype(float),
+            "time": t,
+            "T": (rng.random(n) < p).astype(float),
+            "y": rng.normal(0.0, 1.0, n),
+        }
+    )
+    spec = DatasetSpec(treatment="T", outcome="y", forcing=[],
+                       covariates=["d0", "d1"], time="time")
+    return Dataset(df, spec)
+
+
+def test_did_binary_treatment_scans_under_default_budget(tmp_path):
+    """Dogfood regression (Fitbit run): the budget defaults
+    ``method='single_delta'`` + ``model='auto'`` failed every binary-treatment
+    did config out of the box; the runner resolves auto -> normal (the remedy
+    the error message itself prescribes)."""
+    rep = discover(_did_binary_dataset(), design="did",
+                   rng=np.random.default_rng(0),
+                   budget={"q": 9, "bins": 3, "restarts": 2, "windows": (4.0,)})
+    rec = rep.configs[0]
+    assert rec.status == "scanned", rec.error
+    assert rec.summary["design"] == "did"
 
 
 # ---------------------------------------------------------------------------
