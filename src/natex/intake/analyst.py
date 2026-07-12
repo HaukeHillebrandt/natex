@@ -111,7 +111,10 @@ class IntakeReport:
         Frame resolution: ``df`` arg, else the study() frame, else re-read
         ``source`` if it is an existing csv path. Spec mirrors
         ``Dataset.from_csv`` defaults: covariates = all prepared columns minus
-        {treatment, outcome}.
+        {treatment, outcome} and minus columns the prep plan roles as
+        ``ignore``/``time``/``unit`` (unless the candidate itself uses them) —
+        role-ignored columns must not leak into the scan's covariate set, the
+        placebo battery, or listwise deletion (dogfood finding).
         """
         frame = df if df is not None else self._df
         if frame is None and self.source != "<dataframe>" and Path(self.source).exists():
@@ -125,7 +128,13 @@ class IntakeReport:
                 f"candidate index {candidate} out of range for {len(ranked)} ranked candidates"
             )
         c = ranked[candidate]
-        covariates = [col for col in df2.columns if col not in {c.treatment, c.outcome}]
+        roles = self.prep_plan.column_roles
+        used = {c.treatment, c.outcome, c.unit, c.time, *c.forcing}
+        covariates = [
+            col for col in df2.columns
+            if col not in {c.treatment, c.outcome}
+            and not (roles.get(col) in ("ignore", "time", "unit") and col not in used)
+        ]
         if c.design == "rdd":
             spec = DatasetSpec(
                 treatment=c.treatment, outcome=c.outcome,
@@ -249,24 +258,35 @@ def study(
     search_plan: SearchPlan = ask(search_request, SearchPlan.model_validate)
 
     known = set(df2.columns)
-    surviving: list[DesignCandidate] = []
-    for i, c in enumerate(search_plan.candidates):
-        unknown = sorted({col for col in _candidate_columns(c) if col not in known})
-        if unknown:
-            errors.append(
-                f"search_plan: dropped candidate {i} ({c.design}, treatment='{c.treatment}'): "
-                f"unknown columns {unknown}"
-            )
-        else:
-            surviving.append(c)
-    if surviving:
-        search_plan = SearchPlan(candidates=surviving, budget=search_plan.budget)
-    else:
+
+    def keep_known(plan: SearchPlan, origin: str = "") -> SearchPlan:
+        """Drop candidates naming columns absent from the PREPARED frame."""
+        surviving: list[DesignCandidate] = []
+        for i, c in enumerate(plan.candidates):
+            unknown = sorted({col for col in _candidate_columns(c) if col not in known})
+            if unknown:
+                errors.append(
+                    f"search_plan{origin}: dropped candidate {i} ({c.design}, "
+                    f"treatment='{c.treatment}'): unknown columns {unknown}"
+                )
+            else:
+                surviving.append(c)
+        return SearchPlan(candidates=surviving, budget=plan.budget)
+
+    search_plan = keep_known(search_plan)
+    if not search_plan.candidates:
         errors.append(
             "search_plan: no candidates survived column validation "
             "-- fell back to NullBackend heuristics"
         )
-        search_plan = SearchPlan.model_validate(fallback.complete(search_request).content)
+        # The fallback plan is column-validated too: without this, a fallback
+        # that repeats the same invalid candidates (dogfood finding: with the
+        # Null backend the fallback IS the backend that just failed) would put
+        # unknown columns straight back into the final plan.
+        search_plan = keep_known(
+            SearchPlan.model_validate(fallback.complete(search_request).content),
+            " (fallback)",
+        )
 
     # Snooping guard (audit 1 lineage): prep steps that touch a surviving
     # candidate's outcome column are flagged — warning only, never a failure.

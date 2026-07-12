@@ -165,6 +165,51 @@ def test_mock_ranks_truth_first_null_ranks_decoy(tmp_path):
     assert blind.search_plan.ranked()[0].treatment == "holiday"
 
 
+def test_null_chain_consistent_when_prepare_drops_guessed_columns(tmp_path):
+    """Dogfood regression (Fitbit run): NullBackend prepare drops
+    high-missingness columns; the search plan must be built from the POST-prep
+    columns, so no surviving candidate references a dropped column and the
+    fallback never returns the identical invalid plan."""
+    rng = np.random.default_rng(0)
+    n = 100
+    df = pd.DataFrame(
+        {
+            "x0": rng.normal(0.0, 1.0, n),
+            "x1": rng.normal(0.0, 1.0, n),
+            "y": rng.normal(0.0, 1.0, n),
+        }
+    )
+    # the ONLY binary treatment guess, 60% missing -> Null prepare drops it
+    df["T"] = np.where(np.arange(n) < 40, (np.arange(n) % 2).astype(float), np.nan)
+    csv = tmp_path / "gappy.csv"
+    df.to_csv(csv, index=False)
+    report = study(csv, rng=np.random.default_rng(0))
+    assert "T" in report.prep_plan.drop_cols
+    prepared = set(df.columns) - set(report.prep_plan.drop_cols)
+    for c in report.search_plan.candidates:
+        cols = {c.treatment, *c.forcing, *([c.outcome] if c.outcome else [])}
+        assert cols <= prepared
+    assert not any("unknown columns" in e for e in report.guidance_errors)
+
+
+def test_prepare_covariates_respect_ignore_time_unit_roles(tmp_path):
+    """Dogfood regression (Fitbit run): prep-plan column roles were validated
+    but never consumed — ``ignore``/``time``/``unit`` columns leaked into the
+    covariate set (and hence the placebo battery and listwise deletion)."""
+    csv = _write_synthetic_csv(tmp_path)
+    mock = MockBackend([
+        {"shape": "cross-section"},
+        {"version": 1, "column_roles": {"holiday": "ignore", "x2": "time"}},
+        {"candidates": [{"design": "rdd", "treatment": "T", "outcome": "y",
+                         "forcing": ["x0"]}], "budget": {}},
+    ])
+    report = study(csv, guidance=mock, rng=np.random.default_rng(0))
+    ds = report.prepare(candidate=0)
+    assert "holiday" not in ds.spec.covariates  # role: ignore
+    assert "x2" not in ds.spec.covariates  # role: time, unused by the candidate
+    assert "x0" in ds.spec.covariates  # the candidate's own forcing stays
+
+
 def test_snooping_warning_advisory_only(tmp_path):
     csv = _write_synthetic_csv(tmp_path)
     mock = MockBackend([
