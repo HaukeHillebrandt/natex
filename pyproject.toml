@@ -1,6 +1,6 @@
 [project]
 name = "natex-discovery"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Automated natural-experiment discovery (LoRD3 lineage): find, validate, and estimate RDDs and DiDs in tabular data"
 readme = "README.md"
 license = { text = "MIT" }

@@ -17,7 +17,7 @@ from natex.rdd.lord3 import LoRD3Result, lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 __all__ = [
     "CoarseToFineResult",
     "ConfigRecord",
