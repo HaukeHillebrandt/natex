@@ -103,7 +103,7 @@ continues); a parsed non-dict is a `ValueError`; the timeout error names the exa
 path to write. The answering agent may reply with either the bare content object or a
 `{"content": {...}, ...}` envelope.
 
-Example request (`out/agent/requests/0000_understand.json`, abridged):
+Example request (`out/guidance/requests/0000_understand.json`, abridged):
 
 ```json
 {
@@ -125,11 +125,11 @@ Example request (`out/agent/requests/0000_understand.json`, abridged):
  },
  "schema_hint": { "...": "Understanding.model_json_schema()" },
  "instructions": "You are given a column-level profile of a tabular dataset ...",
- "respond_to": ".../out/agent/responses/0000_understand.json"
+ "respond_to": ".../out/guidance/responses/0000_understand.json"
 }
 ```
 
-Example hand-written response (`out/agent/responses/0000_understand.json`):
+Example hand-written response (`out/guidance/responses/0000_understand.json`):
 
 ```json
 {

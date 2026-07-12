@@ -123,3 +123,30 @@ def test_claude_md_conventions():
 def test_claude_md_is_short():
     lines = claude_text().splitlines()
     assert len(lines) < 60, f"CLAUDE.md is {len(lines)} lines; keep the card under 60"
+
+
+def test_llm_analyst_card_uses_guidance_dir():
+    """Method-card examples must use the real agent-backend default workdir.
+
+    The default was renamed OUT/agent -> OUT/guidance in phase skills-docs;
+    requests really land under out/guidance/requests/ (final-review F-D2).
+    """
+    text = (ROOT / "docs" / "method_cards" / "llm_analyst.md").read_text(
+        encoding="utf-8"
+    )
+    assert "out/agent" not in text, "stale out/agent path in llm_analyst.md"
+    assert "out/guidance/requests/0000_understand.json" in text
+
+
+def test_phase_llm_analyst_status_notes_rename():
+    """Run-of-record status doc: path updated to out/guidance, with an explicit
+    bracketed editorial note (history may not be silently rewritten)."""
+    text = (ROOT / "docs" / "status" / "phase-llm-analyst.md").read_text(
+        encoding="utf-8"
+    )
+    assert "out/agent" not in text, "stale out/agent path in phase-llm-analyst.md"
+    flattened = flat(text)
+    assert (
+        "[dir renamed OUT/agent → OUT/guidance in phase skills-docs; path updated]"
+        in flattened
+    ), "missing bracketed rename note"

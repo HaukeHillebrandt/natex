@@ -87,7 +87,7 @@ rng=default_rng(0))` (columns x0,x1,x2,T,y):
 
 1. `uv run natex study synthetic.csv --backend agent --seed 0 --out out/` blocked polling
    after echoing
-   `natex guidance request (understand): answer by writing JSON matching schema_hint to .../out/agent/responses/0000_understand.json`.
+   `natex guidance request (understand): answer by writing JSON matching schema_hint to .../out/guidance/responses/0000_understand.json` [dir renamed OUT/agent → OUT/guidance in phase skills-docs; path updated].
 2. The three request files (`0000_understand.json`, `0001_prepare.json`,
    `0002_search_plan.json`) were answered by hand — the `understand` reply as a bare
    content object, the `prepare` reply deliberately in the `{"content": {...}}` envelope
