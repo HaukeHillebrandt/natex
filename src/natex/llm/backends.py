@@ -166,6 +166,8 @@ class NullBackend:
     everything else empty (profile-only degradation, spec 6a).
 
     ``search_plan`` (payload ``{"profile": <post-prep profile>, "understanding", "context"}``):
+    understanding guesses naming columns absent from the (post-prep) profile are
+    discarded first (the understanding predates the prep plan's drops); then
     for each treatment guess ``t`` (profile order) one ``rdd`` candidate — outcome =
     first outcome guess != t (else None), forcing = all forcing guesses not in
     {t, outcome}, skipped if forcing empty; then for each (t x did_structure) one
@@ -277,10 +279,18 @@ class NullBackend:
     def _search_plan(payload: dict) -> dict:
         prof = payload["profile"]
         und = payload.get("understanding") or {}
-        treatments = [g["column"] for g in und.get("treatments", [])]
-        outcome_guesses = [g["column"] for g in und.get("outcomes", [])]
-        forcing_guesses = [g["column"] for g in und.get("forcing", [])]
-        structures = und.get("did_structures", [])
+        # The profile is POST-prep while the understanding guesses are PRE-prep:
+        # guesses naming dropped columns would only produce candidates that
+        # study()'s column validation drops again (dogfood finding), so keep a
+        # guess only when its column still exists in the profile.
+        known = {c["name"] for c in prof.get("columns", [])}
+        treatments = [g["column"] for g in und.get("treatments", []) if g["column"] in known]
+        outcome_guesses = [g["column"] for g in und.get("outcomes", []) if g["column"] in known]
+        forcing_guesses = [g["column"] for g in und.get("forcing", []) if g["column"] in known]
+        structures = [
+            s for s in und.get("did_structures", [])
+            if s["unit"] in known and s["time"] in known
+        ]
 
         def first_outcome(t: str) -> str | None:
             return next((o for o in outcome_guesses if o != t), None)

@@ -186,6 +186,25 @@ def test_search_plan_fake_test_score():
     assert plan.ranked()[0].priority == 0
 
 
+def test_search_plan_filters_guesses_to_post_prep_profile_columns():
+    """Dogfood regression (Fitbit run): ``understanding`` guesses come from the
+    PRE-prep profile; when prepare() drops those columns the search plan must
+    not propose candidates that reference them (study() would drop every one
+    and fall back to the same broken plan)."""
+    df = _fake_test_score_df()
+    und = _understand(df)
+    df2 = df.drop(columns=["treat", "age"])  # as if dropped by the prep plan
+    be = NullBackend()
+    payload = {"profile": _profile_dict(df2), "understanding": und, "context": None}
+    content = be.complete(GuidanceRequest(task="search_plan", payload=payload)).content
+    plan = SearchPlan.model_validate(content)
+    assert plan.candidates, "surviving binary guesses must still yield candidates"
+    named = {c.treatment for c in plan.candidates}
+    named |= {c.outcome for c in plan.candidates if c.outcome}
+    named |= {f for c in plan.candidates for f in c.forcing}
+    assert "treat" not in named and "age" not in named
+
+
 def test_search_plan_panel_yields_did_candidate():
     df = _panel_df()
     be = NullBackend()
