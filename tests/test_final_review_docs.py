@@ -36,3 +36,35 @@ def test_status_docs_exist_with_required_sections():
     assert FUTURE_WORK_TABLE_HEADER in future, (
         "future_work.md missing its table header row"
     )
+
+
+def _future_work_rows() -> list[list[str]]:
+    """Data rows of the future_work.md table as stripped cell lists."""
+    lines = FUTURE_WORK.read_text(encoding="utf-8").splitlines()
+    start = lines.index(FUTURE_WORK_TABLE_HEADER)
+    rows = []
+    for line in lines[start + 2 :]:  # skip header + |---| separator
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        rows.append(cells)
+    return rows
+
+
+def test_future_work_rows_have_rationales():
+    """Task 6: the future-work register is populated and every row is complete.
+
+    The spec-completeness matrix (final-review.md section D) sends every
+    deliberately-unimplemented promise here; at minimum the planner's
+    pre-identified deferrals (rdrobust/rddensity bridges, PyPI, staggered
+    adoption, Google Docs export, ...) mean the table has >= 6 rows, and each
+    row must carry a non-empty Item, Spec/audit ref, and Rationale cell.
+    """
+    rows = _future_work_rows()
+    assert len(rows) >= 6, f"expected >= 6 future-work rows, found {len(rows)}"
+    for i, cells in enumerate(rows):
+        assert len(cells) == 3, f"row {i} does not have exactly 3 cells: {cells}"
+        item, ref, rationale = cells
+        assert item, f"row {i}: empty Item cell"
+        assert ref, f"row {i}: empty Spec/audit ref cell"
+        assert rationale, f"row {i}: empty Rationale cell"
