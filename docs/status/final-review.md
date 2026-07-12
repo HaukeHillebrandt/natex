@@ -59,6 +59,86 @@ all 10 + the 4 rejected/downgraded bullets are recorded, 14 rows.
 
 ## B. API consistency sweep
 
+Date: 2026-07-12. Read-only on `src/`; each check records the exact command and its result.
+
+### B1. Generator discipline
+
+- **Legacy-call grep** — `grep -rn "np\.random\.\(seed\|rand\|randn\|choice\|normal\|uniform\|default_rng()\)" src/natex` → **empty (exit 1)**. No global seeding, no legacy `np.random.*` sampler, no argument-less `default_rng()` anywhere in `src/natex`.
+- The only other `np.random.` attribute use is `np.random.SeedSequence(self.seed)` (`src/natex/dee/observational.py:90`) — deterministic child-seed derivation from an explicit int field, no global state.
+- **`default_rng(` call sites** (`grep -rn "default_rng" src/natex` → 15 hits, all with an explicit seed): CLI boundary conversions (`src/natex/cli.py:176,261,351,449,583,814` — the plan-permitted convert-ONCE points), spawn-key benchmark design (`src/natex/benchmarks.py:133,193`, documented `:12`), guidance-eval paired arms (`src/natex/guidance_eval.py:153-159`, documented `:147`), and the plan-carried subsample seed (`src/natex/intake/prep.py:184`, deliberately NOT the pipeline Generator so serialized plans replay bitwise — comment `:182-183`).
+- **Enumeration** (AST walk over `src/natex`): **48 `rng` parameters** (all annotated `np.random.Generator` or `... | None`) across `data/synthetic*`, `scan/`, `rdd/`, `did/`, `dee/`, `iv/`, `validate/`, `intake/analyst`, `discover`, `guidance_eval`, `benchmarks`; **14 `seed` parameters**: 6 CLI options (boundary), 2 benchmark entry points (spawn keys), `dee/forest.py:49` + `dee/observational.py:57` (sklearn/econml `random_state`, "callers derive it from the pipeline Generator" — `forest.py:40`, `observational.py:90`), `intake/prep.py:43` (plan-carried, documented), `report/bundle.py:128` (metadata only), `guidance_eval.py:139` (top-level, converted once).
+- **`rng=None` handling**: 17 explicit `raise ValueError` sites (`grep -rn "rng is None" src/natex` — every hit raises) plus `_require_rng` (`dee/gp.py:32`, ValueError + TypeError) used at 16 call sites across `dee/`. Deferred-requirement sites raise exactly when randomness is consumed: `did/effects.py:480` (`mode=="sample"`), `iv/pipeline.py:90` (`honest=True`), `iv/search.py:145` (`lam=="cv"`); `did/effects.py:571 placebo_dimension_tests` passes through to `tau_randomization_test`.
+- `grep -rn "random_state" src/natex` → 5 hits, all pinned from `seed`/`rng` (`observational.py:101`, `forest.py:92`, `iv/search.py:214` `KFold(random_state=int(rng.integers(...)))`).
+- **Finding F-C3**: `lord3_scan` (`src/natex/rdd/lord3.py:64-72`) accepts `rng` but its body never uses it — the scan is deterministic; callers (`discover.py:263`, `cli.py:360,450`, `validate/randomization.py:71`) pass `rng=rng` into a dead parameter.
+
+### B2. NaN-never-0.0
+
+- `grep -rn "except:" src/natex` → empty; every `except <Type>` block either re-raises, exits (`typer.Exit`), records an explicit error state, or falls back with the failure logged — spot-checked all 38 `except ` hits. Key sites: `discover.py:458-461` (`rec.status="failed"`, "llr/p stay None — never fabricated"), `intake/analyst.py:194-198` (fallback logged into `errors`), `dee/gp.py:82` (re-raises past max jitter), `report/paper.py:220-227` (compile failure → `(None, False, message)`).
+- `grep -rn "return 0\.0" src/natex` → 5 hits, each a **genuine mathematical zero**: `did/effects.py:413` (`tau==0 and se==0` = provably zero movement, docstring `:404-411`; any other degenerate case → NaN `:415`), `scan/statistics.py:71,73` (pure-group boundary supremum, audit item 21), `rdd/metrics.py:14` (entropy of a degenerate distribution), `:22` (NIG with zero base entropy — nothing to explain; benchmark metric, not an estimator). `dee/vknn.py:182` `return 0` is a documented legal count ("Zero is a legal answer" `:178`).
+- Zero-fallback suspects adjudicated: `validate/randomization.py:73` + `validate/panel.py:228` (`else 0.0` on an empty replica scan) are genuine — an empty discovery list means every center hit the homogeneous fast path whose scores are provably all 0.0 (`rdd/lord3.py:98-105`); `did/statistics.py:114,196,227` + `scan/statistics.py:222` map *degenerate splits* to the null score 0.0 in LLR kernels (correct ranking convention, audit item 21); `sqrt(max(·, 0.0))` clamps (`placebo.py:27`, `density.py:46`, `local2sls.py:149,181`, `iv2sls.py:287`, `cli.py:469`) guard round-off-negative variances — a resulting `se=0` drives p→0, i.e. fail-loud, never a fabricated success; `panel.py:115-116` φ=0 for a zero-variance unit is the neutral AR(1) fit, not a failure path. `dee/gp.py:138-139` returns `(1e25, zeros(3))` on Cholesky failure — an optimizer barrier value inside hyperparameter search (restarts continue), never a reported result.
+- `grep -rn "nan_to_num\|fillna(0" src/natex` → empty; 95 `float("nan")`/`np.nan` failure-path hits; `natex.jsonutil.jsonable` maps non-finite → JSON `null`, never 0 (`src/natex/jsonutil.py:23-25`).
+
+### B3. Result dataclass conventions
+
+| Dataclass | Effect fields | Open-ended dict | Serialization | Verdict |
+|---|---|---|---|---|
+| `LoRD3Result` (`rdd/lord3.py:34`) | none (discovery-only — never reads the outcome) | — | summarized into results payloads via `jsonable` | OK |
+| `SuDDDSResult` (`did/suddds.py:83`) | none (discovery-only) | — | same | OK |
+| `CoarseToFineResult` (`scan/coarse.py:28`) | none | `params: dict` (records requested budgets) | same | OK |
+| `ControlResult` (`did/controls.py:55`) | counterfactual `y0_hat`, `pre_mse` (no τ by design) | `extras: dict` | same | OK |
+| `VKNNResult` (`dee/vknn.py:55`) | none (repair stage) | — (effective `k_prime` a named field) | same | OK |
+| `DEEResult` (`dee/debias.py:76`) | `effects: list[EffectEstimate]` (τ/se/ci carriers) | `diagnostics: dict[str, Any]` (extras-style) | GP handles excluded from payloads; CLI writes summary dicts | OK |
+| `InstrumentSearchResult` (`iv/search.py:60`) | none (selection never reads the outcome); `first_stage_F`/`partial_r2`/`weak` diagnostics | `extras: dict` | same | OK |
+| `DonorSelectionResult` (`iv/donors.py:57`) | `att_post`, `effect_by_time`, `pre_rmspe`/`post_rmspe` (SC-literature ATT naming; no `se`/`ci` — inference via `sc_placebo_test` p) | `extras: dict` | same | F-C5 (noted) |
+| `PaperResult` (`report/paper.py:63`) | none (paths + `compiled` + `message`) | — | paths written as strings by the CLI | OK |
+| `ResultsBundle` (`report/bundle.py:108`) | plain class (not a dataclass) wrapping the results dict | the dict itself | `jsonable` applied exactly once in `save()` (`bundle.py:254`, contract `:6-8`) | OK |
+
+Effect carriers: `EffectEstimate` (`estimate/local2sls.py`) `tau`/`se`/`ci` + `ar_ci` ✓; `IVEstimate` (`estimate/iv2sls.py:39-54`) `tau`/`se`/`ci` + `extras` ✓; `DiDEffect` (`did/effects.py`) `tau`/`se` + `extras` (no `ci` field — inference is the randomization p, documented) ✓. No ad-hoc synonyms (`effect`, `estimate`, `beta`) exist as effect field names; `grep -rn "pickle" src/natex` → **empty** (no pickled namespaces).
+
+### B4. CLI flag consistency (9 commands, `src/natex/cli.py`)
+
+Extracted by AST walk over every `@app.command` (options, defaults, `help=` presence, docstrings):
+
+| Command | Docstring | `--seed` | `--out` | Options missing `help=` |
+|---|---|---|---|---|
+| `datasets` (:58) | yes | n/a (deterministic) | n/a | none |
+| `fetch-data` (:75) | yes | n/a | n/a (`--root`) | none |
+| `study` (:153) | yes | 0 ✓ | `Path("out")` ✓ | `seed`, `out` |
+| `discover` (:281) | **NO** (F-C1) | 0 ✓ | `Path("out")` ✓ | `outcome`, `k`, `seed`, `out` |
+| `debias` (:414) | yes | 0 ✓ | `Path("out")` ✓ | `treatment`, `seed`, `out` |
+| `instruments` (:537) | yes | 0 ✓ | `Path("out")` ✓ | `treatment`, `seed`, `out` |
+| `donors` (:654) | yes | n/a (`select_donors`/`sc_placebo_test` are rng-free by construction) | `Path("out")` ✓ | `outcome`, `unit`, `time`, `treated_unit`, `out` |
+| `paper` (:889) | yes | n/a (deterministic) | `None` → `BUNDLE/paper`, documented in help ✓ | none |
+| `brief` (:920) | yes | n/a | `None` → `BUNDLE/research-brief.md`, documented ✓ | none |
+
+- Shared spellings consistent everywhere they recur: `--treatment` (discover/debias/instruments), `--outcome` (discover/debias/instruments/donors), `--forcing` (discover/debias), `--workdir` + `--backend` + `--model` (study/discover), `--unit`/`--time` (discover-did/donors), `--k`/`--q`/`--degree` (discover/debias). `--seed` defaults to 0 on all four stochastic commands; no seedless stochastic command exists.
+- **Finding F-C1** (= plan's known nit 2, fix cross-referenced to task 7): `def discover` has no docstring → empty description in `natex --help`.
+- **Finding F-C2**: 17 options across 5 commands lack `help=` (table above; `--seed`/`--out` uniformly undocumented on the data commands, plus 7 required/core options on discover/debias/instruments/donors).
+
+### B5. No bare except
+
+- `grep -rn "except:" src tests` → **empty (exit 1)**.
+- `uv run ruff check --select E722 src tests` → **"All checks passed!"**.
+- Advisory: `uv run ruff check --select BLE001 src` → **"All checks passed!"** (zero blind-except hits; nothing to report).
+
+### B6. Silent-cap audit (`min(`/`max(`/`np.clip` on user-supplied sizes/budgets)
+
+`grep -rn "min(\|max(\|np\.clip\|\.clip(" src/natex` — every hit touching a user parameter adjudicated:
+
+| Site | Parameter | Disposition |
+|---|---|---|
+| `scan/coarse.py:63` `min(n_coarse, n)` | `--n-coarse` | Forced by `replace=False`; requested value recorded in `CoarseToFineResult.params["n_coarse"]` (`:101`), actual coverage in `frac_centers_scanned` (`:99`) — accounted |
+| `intake/prep.py:180` `min(subsample.n, before)` | plan `subsample.n` | Log line records requested n AND `before -> after` rows (`:187-190`) — accounted |
+| `dee/vknn.py:116` `min(k_prime, n)` | `--k-prime` | Forced (≤ n points exist); effective value returned as `VKNNResult.k_prime` ("effective k′ (clamped to n)", `:58`, set `:166`) — accounted |
+| `dee/vknn.py:69` `cands[: max(int(m_prime), 0)]` | `--m-prime` | `m_prime > n_candidates` takes all (visible: `len(accepted)+len(rejected)` = candidates offered); **negative `m_prime` silently coerced to 0** → zero candidates, zero experiments, no error — F-C4 (noted) |
+| `dee/observational.py:130` `min(n_folds, u)` | `n_folds` (not CLI-exposed) | Documented in the docstring (`:127`, `:145-146`) — accounted |
+| `dee/bma.py:203` `n_folds = max(2, u)` | `n_folds` | Reduction recorded in the returned detail dict (`n_folds_requested`/`n_folds`, `:201-204`) — accounted |
+| `iv/donors.py:201` `min(n_donors, candidates)` | `--n-donors` | Forced; help documents "default: all complete candidates"; ALL candidates stay ranked in `scores` — visible |
+| `did/mdss.py:287-293` `exhaustive_max_values` (12) / `_MAX_EXACT_VALUES` (20) | scan cardinality | Loud `ValueError` refusal above 20, never silent (§A item 16) — positive example |
+| `discover.py` `max_configs` budget | `--max-configs` | Explicit `skipped_budget` status per config (`:125`, `searched` coverage dict `:152`) — positive example |
+| `validate/panel.py:116` `phi` clip to `[0, _PHI_MAX]` | internal AR(1) fit | Not a user parameter; model-fit stabilization |
+| `q`, `windows`, `restarts`, `grid`, `t_side` | CLI | No clipping found anywhere; `suddds_scan` validates `restarts >= 1` (`:308-309`) and nonempty `windows` (`:335-336`); `knn_indices` raises on `k < 2` (`scan/neighborhoods.py:14-15`) |
+
 ## C. Docs accuracy execution log
 
 | Doc | Command executed | Expected (as documented) | Observed | Verdict |
@@ -82,6 +162,11 @@ all 10 + the 4 rejected/downgraded bullets are recorded, 14 rows.
 | F-B4 | task 3, audit §2 item 19 | noted | `src/natex/did/suddds.py:313-316`; `src/natex/did/background.py:134-139` | No Poisson variant for count treatments: `model="auto"` maps binary theta → Bernoulli and everything else → normal, so a count treatment gets the Normal-residual model. Documented future work (`docs/method_cards/suddds.md:74-75,179-180`); the continuous-treatment estimand itself is covered by dose normalization (`did/effects.py:180-243`). Future-work candidate. | |
 | F-B5 | task 3, audit §3 adopted 5 | noted | `src/natex/validate/` | The decision's "step-down inference offered but labeled approximate" clause is not implemented at the discovery level: no per-discovery step-down selective-inference procedure exists. Holm step-down is offered only inside the validation batteries (`validate/panel.py:311-325`, `did/effects.py:559-568`, `validate/placebo.py:59-66`); the discovery-level guarantees are the max-LLR fitted-null calibration and the honest split (the decision's PRIMARY guarantee, implemented). No doc claims a step-down guarantee, so nothing is doc-wrong. Future-work candidate. | |
 | F-B6 | task 3, audit §3 adopted 6 | noted | `docs/method_cards/dee.md:159-161` | Overlap-aware influence-function/bootstrap-covariance aggregation is deferred (documented: "considered and deferred"); the implemented behavior is the decision's own simple default — disjointness by construction via VKNN (`src/natex/dee/vknn.py:75-141`), and no overlap-fraction weighting exists anywhere. Future-work candidate. | |
+| F-C1 | task 4, check B4 | must-fix | `src/natex/cli.py:281` | `def discover(...)` has no docstring, so `natex --help` shows an empty description for `discover` — every other command has one. (= plan's pre-confirmed nit 2; fix scheduled in task 7.) | |
+| F-C2 | task 4, check B4 | must-fix (doc) | `src/natex/cli.py` (`study`, `discover`, `debias`, `instruments`, `donors`) | 17 options lack `help=` text (plan check: "every option has `help=`"): study `seed`,`out`; discover `outcome`,`k`,`seed`,`out`; debias `treatment`,`seed`,`out`; instruments `treatment`,`seed`,`out`; donors `outcome`,`unit`,`time`,`treated_unit`,`out`. `--seed`/`--out` are uniformly undocumented on the data commands; required options like debias/instruments `--treatment` and the donors panel columns show bare `[required]` with no description. Repair = one-line `help=` per option, shared spellings kept identical across commands. | |
+| F-C3 | task 4, check B1 | noted | `src/natex/rdd/lord3.py:64-72` | `lord3_scan` accepts `rng: np.random.Generator \| None = None` but the body never consumes it — the scan is fully deterministic; callers (`discover.py:263`, `cli.py:360,450`, `validate/randomization.py:71`) pass `rng=rng` into a dead parameter, implying nonexistent stochasticity. No correctness impact (nothing is seeded or skipped). Repair candidates: drop the parameter, or document it as accepted-for-interface-uniformity in a docstring (`lord3_scan` currently has none). | |
+| F-C4 | task 4, check B6 | noted | `src/natex/dee/vknn.py:69` | `_ordered_candidates` clamps a negative `m_prime` to 0 (`cands[: max(int(m_prime), 0)]`): a nonsensical `--m-prime -5` silently yields zero candidates and zero experiments instead of raising ValueError like the module's other guards. Fail-visible downstream (empty `experiments`, NaN CATE) but a silent coercion of a user budget. (`m_prime > n_candidates` taking all candidates is benign and visible via `len(accepted)+len(rejected)`.) | |
+| F-C5 | task 4, check B3 | noted | `src/natex/iv/donors.py:57-80` | `DonorSelectionResult` names its effect `att_post`/`effect_by_time` rather than `tau`, and carries no `se`/`ci` (inference is the `sc_placebo_test` RMSPE-ratio p, per Abadie SC practice). Deliberate domain-standard naming, consistent across the SC vertical (CLI output, skills, method card); adjudicate against the tau/se/ci convention rather than rename mechanically. | |
 
 ## Fixes applied
 
