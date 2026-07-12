@@ -10,6 +10,7 @@ from natex.llm.backends import (
     GuidanceRequest,
     GuidanceResponse,
     MockBackend,
+    NullBackend,
 )
 from natex.llm.log import GuidanceLog, LoggedBackend
 
@@ -21,4 +22,5 @@ __all__ = [
     "GuidanceResponse",
     "LoggedBackend",
     "MockBackend",
+    "NullBackend",
 ]
