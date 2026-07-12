@@ -6,7 +6,37 @@
 **Design spec:** `".../RDD/docs/superpowers/specs/2026-07-10-natex-design.md"` **section 6** (6a Stage-0
 analyst pass, 6b targeted-first-exhaustive-still, 6c in-scan guidance hooks + backends), section 4
 (`natex.study` / `natex.discover` API contract), section 10 risk "LLM guidance could bias discovery".
-**First commit of task 1 is this plan file itself** (`docs: phase llm-analyst implementation plan`).
+**First commit of task 1 is this plan file itself** (`docs: phase llm-analyst implementation plan`
+— already done at `04902c3`; on resume, the first action is the recovery protocol's step-1 commit
+of this updated plan instead).
+
+## Current state & recovery (verified 2026-07-12 — read FIRST, resume idempotently)
+
+A previous execution attempt completed tasks 1–3 of this plan; tasks 1–2 are committed, task 3
+is code-complete but UNCOMMITTED in the working tree. Verified on 2026-07-12:
+`uv run ruff check src tests` → "All checks passed!"; `uv run pytest -q tests/test_llm_backends.py
+tests/test_llm_null.py tests/test_intake_plans.py tests/test_prep_plan.py tests/test_profiler.py`
+→ 61 passed.
+
+| Plan task | State | Evidence |
+|---|---|---|
+| Plan file committed | DONE | commit `04902c3` |
+| Task 1 (llm core: models, protocol, MockBackend, GuidanceLog/LoggedBackend) | DONE, committed | commit `b51c0c3`; `src/natex/llm/{__init__,backends,log}.py`, `tests/test_llm_backends.py` |
+| Task 2 (PrepPlan + executor) | DONE, committed | commit `e817b0f`; `src/natex/intake/prep.py`, `tests/test_prep_plan.py` |
+| Task 3 (plans models + NullBackend) | code DONE, **uncommitted** | modified `src/natex/llm/backends.py` (+`NullBackend`) and `src/natex/llm/__init__.py` (export); untracked `src/natex/intake/plans.py`, `tests/test_intake_plans.py`, `tests/test_llm_null.py` — all green |
+| Tasks 4–11 | NOT STARTED | — |
+
+**Recovery protocol (replaces task 3's implementation work; everything else unchanged):**
+1. First action: commit this updated plan file —
+   `git add docs/plans/phase-llm-analyst.md && git commit -m "docs: update phase llm-analyst plan with recovery state"`.
+2. Re-run the two verification commands above; both must be green (they were on 2026-07-12).
+   If anything fails, fix per task 3's spec below before committing.
+3. Commit the recovered task-3 work exactly as task 3 specifies:
+   `git add src/natex/llm/backends.py src/natex/llm/__init__.py src/natex/intake/plans.py tests/test_intake_plans.py tests/test_llm_null.py`
+   then `git commit -m "feat(llm): NullBackend profile-only heuristics; Understanding/DesignCandidate/SearchPlan models"`.
+4. Run the FULL suite once (`uv run pytest -q`) to confirm no cross-module breakage, then
+   proceed to task 4. Do not re-implement tasks 1–3; if a later task requires changing their
+   files, that change belongs to the later task's commit.
 
 ## Phase objective
 
@@ -61,6 +91,11 @@ paths, prefix commands with `cd /Users/haukehillebrandt/dev/natex &&`.
 
 **TDD discipline for every task:** write the failing test(s) first, run them to confirm failure,
 implement, run `uv run pytest -q` and `uv run ruff check src tests`, then commit.
+
+**Polling-test policy (binding):** any test that exercises AgentBackend polling must use
+`poll_interval <= 0.05 s` and `timeout <= 5 s` (task 4 uses 0.02 s / 0.15 s) so nothing ever
+blocks the suite; the 600 s production default is asserted on the constructor signature only,
+never waited on.
 
 **Statistical-test policy** (napkin): every stochastic assertion is seeded; calibrate thresholds
 across ≥5 seeds during implementation, pin one seed with margin, record observed ranges in the
