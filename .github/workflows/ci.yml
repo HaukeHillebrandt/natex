@@ -10,6 +10,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv python install ${{ matrix.python-version }}
-      - run: uv sync --extra dev --extra plot
+      - run: uv sync --extra dev --extra plot --extra report
       - run: uv run ruff check src tests
       - run: uv run pytest -q

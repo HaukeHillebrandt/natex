@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.8"]
+report = ["jinja2>=3.1"]
 # numba/shap floors keep the resolver off broken back-solves (econml -> sparse
 # -> numba 0.53 does not build; econml -> shap 0.46 breaks at import on
 # numpy >= 2.4). econml itself allows shap < 0.49.

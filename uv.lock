@@ -1317,6 +1317,9 @@ ml = [
 plot = [
     { name = "matplotlib" },
 ]
+report = [
+    { name = "jinja2" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1325,6 +1328,7 @@ requires-dist = [
     { name = "econml", marker = "extra == 'ml'", specifier = ">=0.15" },
     { name = "google-genai", marker = "extra == 'llm'", specifier = ">=1.0" },
     { name = "gpytorch", marker = "extra == 'gp'", specifier = ">=1.13" },
+    { name = "jinja2", marker = "extra == 'report'", specifier = ">=3.1" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.8" },
     { name = "numba", marker = "extra == 'ml'", specifier = ">=0.60" },
     { name = "numpy", specifier = ">=1.26" },
@@ -1339,7 +1343,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'gp'", specifier = ">=2.2" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["plot", "ml", "gp", "llm", "dev"]
+provides-extras = ["plot", "report", "ml", "gp", "llm", "dev"]
 
 [[package]]
 name = "networkx"
