@@ -4,6 +4,8 @@ Dependency-free: frontmatter is parsed with a tiny splitter (single-line
 ``key: value`` pairs only — the authoring house rule keeps ``description``
 on ONE line), never pyyaml. ``SKILL_DIRS`` starts with the discover skill;
 tasks 3 and 4 append their directory name as their failing-test-first step.
+Generic text helpers are shared with ``tests/test_agent_docs.py`` via
+``tests/doc_helpers.py``.
 """
 
 from __future__ import annotations
@@ -13,12 +15,17 @@ import re
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
-from natex.cli import app
+from doc_helpers import (
+    ROOT,
+    commands_taught,
+    flat,
+    json_blocks,
+    registered_commands,
+)
+
 from natex.llm.backends import TASKS
 
-ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
 
 SKILL_DIRS = [
@@ -56,33 +63,6 @@ def skill_path(d: str) -> Path:
 def body_of(d: str) -> str:
     _, body = frontmatter(skill_path(d))
     return body
-
-
-def flat(text: str) -> str:
-    """Whitespace-flattened text so hard-wrapped prose matches substrings."""
-    return " ".join(text.split())
-
-
-def fenced_blocks(text: str) -> list[str]:
-    """Contents of every triple-backtick fenced block, any language tag."""
-    return re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
-
-
-def json_blocks(text: str) -> list[str]:
-    """Contents of every ```json fenced block."""
-    return re.findall(r"```json\n(.*?)```", text, re.S)
-
-
-def registered_commands() -> set[str]:
-    """Command names parsed from ``natex --help`` (rich-box or plain layout)."""
-    output = CliRunner().invoke(app, ["--help"]).output
-    tail = output[output.index("Commands") :]
-    cmds = set()
-    for line in tail.splitlines():
-        m = re.match(r"^[│|]?\s{1,3}([a-z][a-z0-9-]+)", line)
-        if m:
-            cmds.add(m.group(1))
-    return cmds
 
 
 def test_help_parser_sanity():
@@ -135,11 +115,7 @@ def test_safety_warnings_present(d):
 
 @pytest.mark.parametrize("d", SKILL_DIRS)
 def test_only_real_cli_commands_are_taught(d):
-    cmds = registered_commands()
-    taught: set[str] = set()
-    for block in fenced_blocks(body_of(d)):
-        taught |= set(re.findall(r"\bnatex[ \t]+([a-z][a-z0-9-]+)", block))
-    unknown = taught - cmds
+    unknown = commands_taught(body_of(d)) - registered_commands()
     assert not unknown, f"skills/{d} teaches unregistered natex commands: {sorted(unknown)}"
 
 
