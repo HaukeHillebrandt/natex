@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 
 import numpy as np
@@ -210,3 +211,163 @@ def test_package_export():
     import natex.report
 
     assert natex.report.render_paper is render_paper
+
+
+# ---------------------------------------------------------------------------
+# 8. texesc: every LaTeX special escaped (backslash first), nothing dropped
+# ---------------------------------------------------------------------------
+
+
+def test_texesc_escapes_every_special():
+    from natex.report.paper import texesc
+
+    out = texesc("50% & _x_ #$ ~^ \\")
+    assert "\\%" in out
+    assert "\\&" in out
+    assert "\\_x\\_" in out
+    assert "\\#" in out
+    assert "\\$" in out
+    assert "\\textasciitilde{}" in out
+    assert "\\textasciicircum{}" in out
+    assert "\\textbackslash{}" in out
+    assert "50" in out  # no character dropped
+    assert texesc("{a}") == "\\{a\\}"
+    assert texesc("—") == "--"  # em dash -> LaTeX en dash (missing table cells)
+
+
+# ---------------------------------------------------------------------------
+# 9. _md_to_tex: bounded method-card converter (lossy by design)
+# ---------------------------------------------------------------------------
+
+
+def test_md_to_tex_bounded_converter():
+    from natex.report.paper import _md_to_tex
+
+    md = "\n".join([
+        "# Head",
+        "",
+        "Plain foo_bar with **bold** and *ital* and `code_x` and",
+        "[audit](../math_audit_final.md).",
+        "",
+        "- first item",
+        "- second `it_em`",
+        "",
+        "| a | b |",
+        "|---|---|",
+        "| 1 | 2 |",
+        "",
+        "tail",
+    ])
+    tex = _md_to_tex(md)
+    assert "\\section*{Head}" in tex
+    assert "\\textbf{bold}" in tex
+    assert "\\emph{ital}" in tex
+    assert "\\texttt{code\\_x}" in tex
+    assert "\\begin{itemize}" in tex and "\\end{itemize}" in tex
+    assert tex.count("\\item ") == 2
+    assert "\\footnote{\\texttt{../math\\_audit\\_final.md}}" in tex
+    assert "table omitted in LaTeX rendering" in tex
+    assert "| a | b |" not in tex
+    assert "foo\\_bar" in tex
+    assert re.search(r"(?<!\\)_", tex) is None  # every underscore escaped
+    assert "tail" in tex
+
+
+# ---------------------------------------------------------------------------
+# 10. render_paper(bundle, "latex"): tex written, data-derived strings escaped
+# ---------------------------------------------------------------------------
+
+
+def _hostile_rdd_bundle(tmp_path):
+    """rdd bundle with a forcing column renamed to the LaTeX-hostile 'x_0%'."""
+    bundle, _, _ = make_rdd_bundle(tmp_path)
+    r = bundle.results
+    r["data"]["forcing"] = ["x_0%" if f == "x0" else f for f in r["data"]["forcing"]]
+    for cfg in r["configs"]:
+        cand = cfg.get("candidate") or {}
+        if cand.get("forcing"):
+            cand["forcing"] = ["x_0%" if f == "x0" else f for f in cand["forcing"]]
+        infl = (cfg.get("summary") or {}).get("forcing_influence")
+        if isinstance(infl, dict) and "x0" in infl:
+            infl["x_0%"] = infl.pop("x0")
+    return bundle
+
+
+def test_render_latex_content(tmp_path, monkeypatch):
+    pytest.importorskip("jinja2")
+    import natex.report.paper as paper_mod
+
+    monkeypatch.setattr(paper_mod.shutil, "which", lambda _cmd: None)
+    bundle = _hostile_rdd_bundle(tmp_path)
+    res = render_paper(bundle, "latex")
+    assert res.markdown is None  # markdown NOT written on the latex branch
+    assert res.tex is not None and res.tex.is_file()
+    assert res.tex.parent == bundle.paper_dir
+    text = res.tex.read_text(encoding="utf-8")
+    assert "\\documentclass{article}" in text
+    for pkg in ("graphicx", "booktabs", "hyperref"):
+        assert f"\\usepackage{{{pkg}}}" in text
+    assert "\\fbox{" in text  # framed banner after \maketitle
+    assert "AI-generated draft" in text
+    for sec in ("Introduction", "Data", "Methods", "Results", "Robustness"):
+        assert f"\\section{{{sec}}}" in text
+    assert "\\begin{thebibliography}" in text
+    assert text.count("Herlands") >= 2
+    assert "x\\_0\\%" in text
+    assert "x_0%" not in text  # the raw form never survives
+    assert re.search(r"\bnan\b|\bNone\b", text) is None
+
+
+# ---------------------------------------------------------------------------
+# 11. tectonic missing: graceful message, tex still written, never raises
+# ---------------------------------------------------------------------------
+
+
+def test_render_latex_tectonic_missing(rdd, monkeypatch):
+    pytest.importorskip("jinja2")
+    import natex.report.paper as paper_mod
+
+    monkeypatch.setattr(paper_mod.shutil, "which", lambda _cmd: None)
+    bundle, _, _ = rdd
+    res = render_paper(bundle, "latex")  # must not raise
+    assert res.compiled is False
+    assert res.pdf is None
+    assert "tectonic" in res.message
+    assert res.tex is not None and res.tex.is_file()
+
+
+# ---------------------------------------------------------------------------
+# 12. figures manifest -> \includegraphics with the pdf variant preferred
+# ---------------------------------------------------------------------------
+
+
+def test_render_latex_includes_figures(tmp_path, monkeypatch):
+    pytest.importorskip("jinja2")
+    import natex.report.paper as paper_mod
+
+    monkeypatch.setattr(paper_mod.shutil, "which", lambda _cmd: None)
+    bundle, _, _ = make_rdd_bundle(tmp_path)
+    png = bundle.figures_dir / "discovery_scatter.png"
+    pdf = bundle.figures_dir / "discovery_scatter.pdf"
+    png.write_bytes(b"\x89PNG stub")
+    pdf.write_bytes(b"%PDF stub")
+    bundle.add_figure("discovery_scatter", png, pdf)
+    res = render_paper(bundle, "latex")
+    text = res.tex.read_text(encoding="utf-8")
+    assert "\\includegraphics" in text
+    assert "../figures/discovery_scatter.pdf" in text
+
+
+# ---------------------------------------------------------------------------
+# 13. real tectonic compile (skips in CI; runs locally when installed)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("tectonic") is None, reason="tectonic not installed")
+def test_render_latex_real_compile(tmp_path):
+    pytest.importorskip("jinja2")
+    bundle, _, _ = make_rdd_bundle(tmp_path)
+    res = render_paper(bundle, "latex")
+    assert res.compiled is True, res.message
+    assert res.pdf is not None and res.pdf.exists()
+    assert res.message == "compiled"

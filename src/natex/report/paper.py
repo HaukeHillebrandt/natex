@@ -15,6 +15,9 @@ dash — the strings "nan" and "None" never reach a rendered page.
 from __future__ import annotations
 
 import math
+import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +66,165 @@ class PaperResult:
     pdf: Path | None
     compiled: bool
     message: str
+
+
+_TABLE_OMITTED = "(table omitted in LaTeX rendering --- see the markdown card)"
+_TECTONIC_MISSING = (
+    "tectonic not found — wrote paper.tex; install tectonic "
+    "(https://tectonic-typesetting.github.io) to compile, or use --format md"
+)
+
+_CODE_RE = re.compile(r"`([^`]*)`")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_EMPH_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_HEADING_RE = re.compile(r"^(#{1,4})\s+(.*)$")
+_ITEM_RE = re.compile(r"^[-*]\s+(.*)$")
+_HEADINGS = {
+    1: r"\section*",
+    2: r"\subsection*",
+    3: r"\subsubsection*",
+    4: r"\paragraph",
+}
+
+
+def texesc(s) -> str:
+    """Escape LaTeX specials in ORDER (backslash first): ``\\ { } & % $ # _ ~ ^``.
+
+    Em/en dashes are additionally normalized to the LaTeX en-dash ligature
+    ``--`` so :func:`_fmt`'s missing-value em dash renders as an en dash in
+    tables (plan contract) and prose stays inside Latin Modern's glyph set.
+    NOT idempotent (escaping twice escapes the introduced backslashes) —
+    apply exactly once, at render time. No character is ever dropped.
+    """
+    s = str(s)
+    s = s.replace("\\", "\x00")  # sentinel: keep introduced braces unescaped
+    s = s.replace("{", r"\{").replace("}", r"\}")
+    s = s.replace("\x00", r"\textbackslash{}")
+    for ch, rep in (
+        ("&", r"\&"),
+        ("%", r"\%"),
+        ("$", r"\$"),
+        ("#", r"\#"),
+        ("_", r"\_"),
+        ("~", r"\textasciitilde{}"),
+        ("^", r"\textasciicircum{}"),
+    ):
+        s = s.replace(ch, rep)
+    return s.replace("—", "--").replace("–", "--")
+
+
+def _tex_emph(text: str) -> str:
+    parts = _EMPH_RE.split(text)
+    return "".join(
+        texesc(p) if i % 2 == 0 else r"\emph{" + texesc(p) + "}"
+        for i, p in enumerate(parts)
+    )
+
+
+def _tex_bold(text: str) -> str:
+    parts = _BOLD_RE.split(text)
+    return "".join(
+        _tex_emph(p) if i % 2 == 0 else r"\textbf{" + _tex_emph(p) + "}"
+        for i, p in enumerate(parts)
+    )
+
+
+def _tex_prose(text: str) -> str:
+    """Non-code fragment: [t](u) -> t\\footnote{\\texttt{u}}, then bold/emph."""
+    pieces = _LINK_RE.split(text)  # [text, label, url, text, label, url, ...]
+    out: list[str] = []
+    i = 0
+    while i < len(pieces):
+        if i % 3 == 0:
+            out.append(_tex_bold(pieces[i]))
+            i += 1
+        else:
+            label, url = pieces[i], pieces[i + 1]
+            out.append(_tex_bold(label) + r"\footnote{\texttt{" + texesc(url) + "}}")
+            i += 2
+    return "".join(out)
+
+
+def _tex_inline(line: str) -> str:
+    """One markdown line -> LaTeX: code spans first, prose rules elsewhere."""
+    parts = _CODE_RE.split(line)
+    return "".join(
+        _tex_prose(p) if i % 2 == 0 else r"\texttt{" + texesc(p) + "}"
+        for i, p in enumerate(parts)
+    )
+
+
+def _md_to_tex(md: str) -> str:
+    """Minimal, bounded markdown -> LaTeX for method-card bodies ONLY.
+
+    LOSSY BY DESIGN: #/##/###/#### become starred sections (\\paragraph for
+    ####); ``code`` -> \\texttt; **b** -> \\textbf; *i* -> \\emph; ``-``/``*``
+    bullets -> itemize (blank/indented lines inside a list stay inside it as
+    item continuations); [t](u) -> t\\footnote{\\texttt{u}}; markdown tables
+    are replaced by one omission marker pointing at the markdown card; every
+    other line is texesc'd verbatim. Numbered lists, nesting, and block
+    quotes degrade to escaped plain text.
+    """
+    out: list[str] = []
+    in_list = False
+    in_table = False
+    for line in md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            if not in_table:
+                if in_list:
+                    out.append(r"\end{itemize}")
+                    in_list = False
+                out.append(_TABLE_OMITTED)
+                in_table = True
+            continue
+        in_table = False
+        heading = _HEADING_RE.match(stripped)
+        item = _ITEM_RE.match(stripped)
+        if in_list and not item:
+            # blank or indented lines continue the current item; anything
+            # else (heading, new paragraph at column 0) closes the list
+            if stripped and not line.startswith(" "):
+                out.append(r"\end{itemize}")
+                in_list = False
+        if heading is not None:
+            if in_list:
+                out.append(r"\end{itemize}")
+                in_list = False
+            cmd = _HEADINGS[len(heading.group(1))]
+            out.append(cmd + "{" + _tex_inline(heading.group(2)) + "}")
+        elif item is not None:
+            if not in_list:
+                out.append(r"\begin{itemize}")
+                in_list = True
+            out.append(r"\item " + _tex_inline(item.group(1)))
+        else:
+            out.append(_tex_inline(line))
+    if in_list:
+        out.append(r"\end{itemize}")
+    return "\n".join(out)
+
+
+def _compile_tex(tex: Path, timeout: int = 300) -> tuple[Path | None, bool, str]:
+    """Compile ``tex`` with tectonic when present; NEVER raises for a missing
+    or failed compiler. Returns ``(pdf_or_None, compiled, message)``."""
+    exe = shutil.which("tectonic")
+    if exe is None:
+        return None, False, _TECTONIC_MISSING
+    try:
+        proc = subprocess.run(
+            [exe, tex.name], cwd=tex.parent,
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None, False, f"tectonic timed out after {timeout}s compiling {tex.name}"
+    if proc.returncode != 0:
+        return None, False, (proc.stdout + proc.stderr)[-2000:]
+    pdf = tex.with_suffix(".pdf")
+    if not pdf.is_file():
+        return None, False, "tectonic reported success but wrote no PDF"
+    return pdf, True, "compiled"
 
 
 def _fmt(x, nd: int = 3) -> str:
@@ -335,7 +497,9 @@ def _paper_context(bundle: ResultsBundle, fmt: str,
     ext = "pdf" if fmt == "latex" else "png"
     figures = []
     for entry in r.get("figures") or []:
-        rel = entry.get(ext) if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        rel = entry.get(ext) or entry.get("png")  # pdf preferred for latex
         if not rel:
             continue
         relpath = rel if Path(rel).is_absolute() else f"../{rel}"
@@ -390,6 +554,8 @@ def _env():
         lstrip_blocks=True,
     )
     env.filters["fmt"] = _fmt
+    env.filters["texesc"] = texesc
+    env.filters["md_to_tex"] = _md_to_tex
     return env
 
 
@@ -397,18 +563,25 @@ def render_paper(bundle: ResultsBundle, format: str = "md",
                  out_dir: str | Path | None = None, *,
                  cards_dir: str | Path | None = None) -> PaperResult:
     """Render the bundle to a paper draft. ``format="md"`` always works with
-    the report extra installed; the latex/tectonic branch arrives in a later
-    task. ``out_dir`` defaults to ``bundle.paper_dir``."""
+    the report extra installed. ``format="latex"`` writes ``paper.tex``
+    (markdown is NOT written on that branch) and compiles it when tectonic is
+    on PATH — a missing/failed compiler degrades to a message, never an
+    exception. ``out_dir`` defaults to ``bundle.paper_dir``."""
     if format not in _FORMATS:
         raise ValueError(f"format must be one of {_FORMATS}, got {format!r}")
-    if format == "latex":
-        raise NotImplementedError(
-            "latex rendering is not implemented yet; use format='md'"
-        )
     env = _env()
     ctx = _paper_context(bundle, format, cards_dir=cards_dir)
     out = Path(out_dir) if out_dir is not None else bundle.paper_dir
     out.mkdir(parents=True, exist_ok=True)
+    if format == "latex":
+        text = env.get_template("paper.tex.j2").render(**ctx)
+        tex_path = out / "paper.tex"
+        tex_path.write_text(text, encoding="utf-8")
+        pdf, compiled, message = _compile_tex(tex_path)
+        return PaperResult(
+            markdown=None, tex=tex_path, pdf=pdf, compiled=compiled,
+            message=message,
+        )
     text = env.get_template("paper.md.j2").render(**ctx)
     path = out / "paper.md"
     path.write_text(text, encoding="utf-8")

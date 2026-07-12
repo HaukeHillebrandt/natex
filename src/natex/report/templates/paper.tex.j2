@@ -1,0 +1,201 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{ {{ title | texesc }} }
+\author{natex-discovery {{ version | texesc }} (seed {{ seed | texesc }})}
+\date{ {{ created | texesc }} }
+
+\begin{document}
+\maketitle
+
+\noindent\fbox{\parbox{\linewidth}{\centering\textbf{ {{ banner | texesc }} }}}
+
+\section{Introduction}
+
+This draft reports the output of an automated natural-experiment discovery run. The
+method lineage is LoRD3: the local regression-discontinuity discovery scan of Herlands,
+McFowland III, Wilson \& Neill (2018, KDD), extended in Herlands (2019, CMU thesis) to
+the subset-scan difference-in-differences design (SuDDDS, ch.~6), and connected to
+downstream effect estimation by Jakubowski, Somanchi, McFowland III \& Neill (2023).
+The pipeline fits a smooth treatment model, scans local neighborhoods (rdd) or
+covariate-subset/time configurations (did) for treatment-assignment discontinuities,
+validates each discovery with a falsification battery, and only then estimates effects.
+
+{{ corrections_note | md_to_tex }}
+
+\section{Data}
+
+{% if data %}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+field & value \\
+\midrule
+rows & {{ data.n_rows | texesc }} \\
+treatment & {{ data.treatment | texesc }} \\
+outcome & {{ data.outcome | texesc }} \\
+forcing & {{ data.forcing | texesc }} \\
+time & {{ data.time | texesc }} \\
+unit & {{ data.unit | texesc }} \\
+covariates & {{ data.n_covariates | texesc }} \\
+source & {{ data.source | texesc }} \\
+\bottomrule
+\end{tabular}
+\end{center}
+{% else %}
+No dataset metadata was recorded in this results bundle.
+{% endif %}
+
+Discovery never reads the outcome column: the scan sees only covariates, forcing
+columns, and the treatment; the outcome enters solely at the effect-estimation stage.
+{% if intake %}
+
+Intake understanding: shape = {{ intake.shape | texesc }}; unit of observation =
+{{ intake.unit_of_observation | texesc }}.
+{% if intake.quirks %}
+Quirks noted at intake:
+\begin{itemize}
+{% for q in intake.quirks %}
+\item {{ q | texesc }}
+{% endfor %}
+\end{itemize}
+{% endif %}
+{% if intake.notes %}
+Intake notes: {{ intake.notes | texesc }}
+{% endif %}
+{% endif %}
+
+\section{Methods}
+
+{% for card in method_cards %}
+{{ card.body | md_to_tex }}
+
+{% endfor %}
+{% if not method_cards %}
+No configuration was scanned, so no method card applies to this run.
+{% endif %}
+
+\section{Results}
+
+\subsection{Discovery scan}
+
+\begin{center}
+\begin{tabular}{llllll}
+\toprule
+design & source & status & max LLR & MC p-value & discoveries \\
+\midrule
+{% for row in discovery_rows %}
+{{ row.design | texesc }} & {{ row.source | texesc }} & {{ row.status | texesc }} & {{ row.llr | texesc }} & {{ row.p_value | texesc }} & {{ row.n_discoveries }} \\
+{% endfor %}
+\bottomrule
+\end{tabular}
+\end{center}
+
+All p-values are +1-rank Monte Carlo estimates against fitted-null replicas.
+{% if best %}
+
+\subsection{Best configuration --- {{ best.label | texesc }}}
+
+\begin{itemize}
+\item Max LLR = {{ best.llr | texesc }}; MC p-value = {{ best.p_value | texesc }}.
+{% if best.design == "rdd" %}
+\item Cutoff center (raw forcing coordinates): {{ best.center | texesc }}.
+\item Forcing-variable influence (absolute normal components): {{ best.forcing_influence | texesc }}.
+\item Density falsification p (frozen discovered geometry): {{ best.density_p | texesc }}.
+{% else %}
+\item Treated subset: {{ best.subset | texesc }}.
+\item Intervention time $T_0$ = {{ best.t0 | texesc }}; scan window = {{ best.window | texesc }}.
+{% endif %}
+\end{itemize}
+{% endif %}
+{% if effects_rows %}
+
+\subsection{Effects}
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+estimator & tau & SE & 95\% CI & flags \\
+\midrule
+{% for row in effects_rows %}
+{{ row.estimator | texesc }} & {{ row.tau | texesc }} & {{ row.se | texesc }} & {{ row.ci | texesc }} & {{ row.flags | texesc }} \\
+{% endfor %}
+\bottomrule
+\end{tabular}
+\end{center}
+{% if best and best.design == "did" %}
+
+SE is the standard deviation of per-post-period mean gaps divided by the square root
+of the number of post periods --- a documented simple choice, not a model-based
+standard error; the placebo p in the flags column is a two-sided studentized +1-rank
+Monte Carlo p-value over shape-matched placebo subsets.
+{% endif %}
+{% else %}
+
+No outcome column was available for the best configuration, so no effects were
+estimated (discovery and validation ran outcome-blind).
+{% endif %}
+{% if figures %}
+
+\subsection{Figures}
+
+{% for f in figures %}
+\begin{center}
+{{ "\\includegraphics[width=.8\\linewidth]{%s}" | format(f.relpath) }}
+
+{{ f.name | texesc }}
+\end{center}
+{% endfor %}
+{% endif %}
+
+\section{Robustness}
+
+{% if validation %}
+{% if validation.design == "rdd" %}
+The scan max-LLR was calibrated by randomization against fitted-null replicas
+(+1-rank Monte Carlo p = {{ validation.p_value | texesc }}; a parametric bootstrap,
+never an exact test --- audit item 1). Local intercept-continuity placebo tests over
+the remaining covariates: {{ validation.placebo | texesc }}, Holm-corrected
+p = {{ validation.placebo_holm | texesc }}. The density falsification test on the
+signed distance along the frozen discovered normal gives
+p = {{ validation.density_p | texesc }}; it is valid only for the frozen discovered
+geometry --- search selection is not accounted for (audit item 6) --- and is reported
+as a falsification check, not a confirmation.
+{% else %}
+The scan max-LLR was calibrated by randomization against fitted-null replicas of kind
+``{{ validation.null_kind | texesc }}'' (+1-rank Monte Carlo
+p = {{ validation.p_value | texesc }}; a parametric bootstrap, never an exact test ---
+audit item 1). Composition check (pre/post unit-mix independence inside the window):
+{{ validation.composition | texesc }}. Anticipation placebo jumps before $T_0$ (Holm
+across shifts): {{ validation.anticipation | texesc }}. These checks replace
+McCrary-in-time, which is information-free when record times are design-determined
+(audit item 18).
+{% endif %}
+{% else %}
+No configuration was scanned, so no validation battery ran.
+{% endif %}
+{% if coverage %}
+
+Of {{ coverage.n_total | fmt }} enumerated configurations, {{ coverage.n_scanned | fmt }} were scanned, {{ coverage.n_skipped_budget | fmt }} skipped by budget, {{ coverage.n_failed | fmt }} failed, {{ coverage.n_invalid | fmt }} invalid.
+{% if coverage.not_searched %}
+
+Configurations not scanned:
+\begin{itemize}
+{% for label in coverage.not_searched %}
+\item {{ label | texesc }}
+{% endfor %}
+\end{itemize}
+{% else %}
+Every enumerated configuration was scanned.
+{% endif %}
+{% endif %}
+
+\begin{thebibliography}{9}
+{% for ref in references %}
+\bibitem{ref{{ loop.index }}} {{ ref | texesc }}
+{% endfor %}
+\end{thebibliography}
+
+\end{document}
