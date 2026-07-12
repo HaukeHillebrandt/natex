@@ -21,10 +21,14 @@ from natex.did.background import fit_did_background
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
 from natex.did.suddds import suddds_scan
+from natex.discover import discover as run_discover
 from natex.estimate.local2sls import local_2sls, wald_estimate
+from natex.intake.analyst import IntakeReport
+from natex.intake.analyst import study as run_study
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
+from natex.llm import AgentBackend, AnthropicBackend, GeminiBackend, GuidanceBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
@@ -109,10 +113,172 @@ def fetch_data(
         raise typer.Exit(code=1)
 
 
+_BACKEND_HELP = (
+    "null|agent|anthropic|gemini. 'null' (default) needs no network or API key; "
+    "anthropic/gemini require: pip install 'natex-discovery[llm]'"
+)
+
+
+def _make_backend(
+    backend: str, model: str | None, workdir: Path | None
+) -> GuidanceBackend | None:
+    """Guidance backend from the CLI flags, or None for the no-LLM default.
+
+    ``"null"`` returns None: ``study()``/``discover()`` substitute NullBackend
+    internally where needed (``natex study`` ALWAYS uses at least NullBackend
+    heuristics), and passing None keeps ``discover`` hook-free for the null
+    case. A missing ``[llm]`` extra exits 2 with the install message, no
+    traceback; an unknown backend name exits 2 naming it.
+    """
+    try:
+        if backend == "null":
+            return None
+        if backend == "agent":
+            return AgentBackend(workdir)
+        if backend == "anthropic":
+            return AnthropicBackend(**({"model": model} if model else {}))
+        if backend == "gemini":
+            return GeminiBackend(**({"model": model} if model else {}))
+    except ImportError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    typer.echo(f"--backend must be one of null|agent|anthropic|gemini, got {backend!r}")
+    raise typer.Exit(code=2)
+
+
+@app.command()
+def study(
+    csv: Path,
+    context: str = typer.Option(None, help="free-text dataset context passed to the analyst"),
+    backend: str = typer.Option("null", help=_BACKEND_HELP),
+    model: str = typer.Option(None, help="LLM model name (--backend anthropic|gemini)"),
+    workdir: Path = typer.Option(
+        None, help="agent-backend request/response dir; default OUT/agent"
+    ),
+    seed: int = typer.Option(0),
+    out: Path = typer.Option(Path("out")),
+):
+    """Stage-0 analyst pass: profile -> understand -> prep plan -> search plan.
+
+    Writes ``out/intake_report.json`` (feed it to ``natex discover --plan``),
+    ``out/prep_plan.json`` (the declarative prep plan alone, user-editable) and
+    ``out/guidance_log.jsonl`` (every guidance request+response). Works fully
+    offline with the default ``--backend null`` — study always applies at
+    least the deterministic NullBackend heuristics.
+    """
+    guidance = _make_backend(
+        backend, model, workdir if workdir is not None else out / "agent"
+    )
+    report = run_study(
+        csv, context=context, guidance=guidance, rng=np.random.default_rng(seed), out=out
+    )
+    report_path = report.save(out)
+    und = report.understanding
+    typer.echo(f"shape: {und.shape}  unit of observation: {und.unit_of_observation}")
+    ranked = report.search_plan.ranked()
+    if ranked:
+        typer.echo(f"candidates: {len(ranked)}  top: {_candidate_line(ranked[0])}")
+    else:
+        typer.echo("candidates: 0")
+    for err in report.guidance_errors:
+        typer.echo(f"warning: {err}")
+    typer.echo(f"report: {report_path}")
+    typer.echo(f"prep plan: {out / 'prep_plan.json'}")
+    typer.echo(f"guidance log: {out / 'guidance_log.jsonl'}")
+
+
+def _candidate_line(c) -> str:
+    """One-line design/treatment/forcing-or-time rendering of a DesignCandidate."""
+    where = "forcing=" + ",".join(c.forcing) if c.design == "rdd" else f"time={c.time}"
+    return f"{c.design} treatment={c.treatment} {where}"
+
+
+def _discover_plan(
+    ctx: typer.Context,
+    *,
+    csv: Path | None,
+    plan: Path,
+    backend: str,
+    model: str | None,
+    workdir: Path | None,
+    max_configs: int | None,
+    design: str,
+    k: int,
+    q: int,
+    coarse: bool,
+    n_coarse: int,
+    seed: int,
+    out: Path,
+) -> None:
+    """Plan-driven branch of ``discover`` (spec 6b through the CLI).
+
+    Loads the ``natex study`` IntakeReport, re-applies its prep plan to the
+    csv (or the report's recorded source), and runs :func:`natex.discover`
+    with the report's search plan: ranked candidates first, exhaustive
+    remainder still, every budget cut listed as ``skipped_budget``. Budget =
+    plan hints overridden by CLI options the user explicitly passed
+    (k/q/coarse/n-coarse) plus ``--max-configs``. Exits 1 when no
+    configuration scanned successfully.
+    """
+
+    def given(name: str) -> bool:
+        # compared by enum NAME: typer >= 0.16 vendors click, so the
+        # click.core.ParameterSource class itself is not importable
+        src = ctx.get_parameter_source(name)
+        return src is not None and src.name == "COMMANDLINE"
+
+    plan_design = design if given("design") else "auto"
+    if plan_design not in ("auto", "rdd", "did"):
+        typer.echo(f"--design must be 'auto', 'rdd' or 'did' with --plan, got {design!r}")
+        raise typer.Exit(code=2)
+    try:
+        report = IntakeReport.load(plan)
+    except (OSError, ValueError, KeyError) as exc:
+        typer.echo(f"could not load --plan {plan}: {exc}")
+        raise typer.Exit(code=2) from None
+    df = pd.read_csv(csv) if csv is not None else None
+    try:
+        ds = report.prepare(df=df)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    guidance = _make_backend(
+        backend,
+        model if given("model") else None,  # bare --model default is the did scan model
+        workdir if workdir is not None else out / "agent",
+    )
+    budget: dict = {}
+    for key, value in (("k", k), ("q", q), ("coarse", coarse), ("n_coarse", n_coarse)):
+        if given(key):
+            budget[key] = value
+    if max_configs is not None:
+        budget["max_configs"] = max_configs
+    rep = run_discover(
+        ds, design=plan_design, guidance=guidance, search_plan=report.search_plan,
+        rng=np.random.default_rng(seed), budget=budget, out=out,
+    )
+    path = rep.save(out)
+    s = rep.searched
+    typer.echo(
+        f"scanned {s['n_scanned']}/{s['n_total']} configs "
+        f"({s['n_skipped_budget']} skipped by budget)"
+    )
+    best = rep.best()
+    if best is None:
+        typer.echo(f"no configuration scanned successfully; report: {path}")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"best: {_candidate_line(best.candidate)}  "
+        f"llr={best.llr:.2f}  p={best.p_value:.3f}"
+    )
+    typer.echo(f"report: {path}")
+
+
 @app.command()
 def discover(
-    csv: Path,
-    treatment: str = typer.Option(...),
+    ctx: typer.Context,
+    csv: Path = typer.Argument(None),
+    treatment: str = typer.Option(None, help="treatment column (required without --plan)"),
     outcome: str = typer.Option(None),
     forcing: str = typer.Option(None, help="comma-separated; default: all numeric"),
     k: int = typer.Option(50),
@@ -134,10 +300,37 @@ def discover(
         "single_delta", help="single_delta|wcc|greedy (--design did)"
     ),
     model: str = typer.Option(
-        "auto", help="auto|normal|bernoulli (--design did; audit-19 model matching)"
+        "auto", help="auto|normal|bernoulli (--design did; audit-19 model matching); "
+                     "with --plan: LLM model name for --backend anthropic|gemini"
+    ),
+    plan: Path = typer.Option(
+        None, help="intake_report.json from `natex study`: plan candidates scan first, "
+                   "the exhaustive remainder still runs within budget (spec 6b)"
+    ),
+    backend: str = typer.Option("null", help=f"{_BACKEND_HELP} (--plan mode)"),
+    workdir: Path = typer.Option(
+        None, help="agent-backend request/response dir (--plan mode); default OUT/agent"
+    ),
+    max_configs: int = typer.Option(
+        None, "--max-configs",
+        help="scan-attempt budget across configurations (--plan mode); the "
+             "remainder is listed as skipped_budget, never dropped",
     ),
     out: Path = typer.Option(Path("out")),
 ):
+    if plan is not None:
+        _discover_plan(
+            ctx, csv=csv, plan=plan, backend=backend, model=model, workdir=workdir,
+            max_configs=max_configs, design=design, k=k, q=q, coarse=coarse,
+            n_coarse=n_coarse, seed=seed, out=out,
+        )
+        return
+    if csv is None or treatment is None:
+        typer.echo(
+            "natex discover requires CSV and --treatment COLUMN "
+            "(or --plan intake_report.json from `natex study`)"
+        )
+        raise typer.Exit(code=2)
     if design not in ("rdd", "did"):
         typer.echo(f"--design must be 'rdd' or 'did', got {design!r}")
         raise typer.Exit(code=2)
