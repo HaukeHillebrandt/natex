@@ -195,6 +195,13 @@ Honest-inference caveats — state these whenever you summarize results:
   underpowered** — report it as such and NEVER substitute a number.
 - Guidance (including everything you wrote in step 4) is advisory only: the
   statistics are identical with and without it.
+- **Single-event time series limitation**: when the treatment is one global step on
+  a monotone time index (a single policy/device change in one unit's history), the
+  smooth background treatment model absorbs the step (perfect separation), so the
+  LoRD3 scan localizes the cutoff well but its LLR/p-value is uninformative about
+  the outcome — expect non-significant scan p-values *by construction*. Treat such
+  designs as **estimation** problems (interrupted time series with HAC errors), not
+  discovery problems, and say so in the summary.
 
 ## 7. Warnings
 

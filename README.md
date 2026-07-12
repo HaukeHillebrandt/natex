@@ -90,7 +90,10 @@ declarative prep plan (drops, filters, optional seeded subsample — user-editab
 `natex discover --plan` then scans the ranked candidates first and the exhaustive
 remainder after, within budget — the report always records what was and wasn't searched
 (`scanned` / `skipped_budget` / `failed` / `invalid` per configuration; budget cuts are
-listed, never silently dropped).
+listed, never silently dropped). Plan mode writes `out/discover_report.json` (only the
+plain, non-plan `natex discover` path writes `out/results.json`). The exhaustive
+remainder is derived from the bound dataset spec, so `exhaustive_candidates` is 0
+whenever the plan already covers those configurations — that is dedup, not a budget cut.
 
 The default `--backend null` is deterministic, offline heuristics — no network, no API
 key. `--backend agent` writes each question as a JSON file under `out/guidance/requests/`
