@@ -168,6 +168,36 @@ def test_render_md_embeds_figures(tmp_path):
     assert "../figures/discovery_scatter.png" in text
 
 
+def test_validation_block_empty_holm_renders_em_dash():
+    """F-D3: an empty placebo_holm dict must render as an em dash (plus the
+    vacuous-battery caveat), never the literal Python repr '{}'; None renders
+    as a plain em dash. README promises missing numbers render as '—'."""
+    from natex.report.paper import _EM, _validation_block
+
+    cfg = {
+        "candidate": {"design": "rdd"},
+        "p_value": 0.02,
+        "summary": {"placebo_passed": True, "placebo_holm": {}, "density_p": 0.5},
+    }
+    v = _validation_block(cfg)
+    assert "{}" not in v["placebo_holm"]  # legacy: _fmt({}) == "{}"
+    assert v["placebo_holm"].startswith(_EM)
+    assert "no covariate was testable" in v["placebo_holm"]  # vacuous-pass caveat
+    cfg["summary"]["placebo_holm"] = None
+    assert _validation_block(cfg)["placebo_holm"] == _EM
+
+
+def test_render_md_empty_holm_never_prints_dict(tmp_path):
+    """F-D3 at the rendered layer: 'Holm-corrected p = {}' never appears."""
+    pytest.importorskip("jinja2")
+    bundle, _ = make_scan_payload_bundle(tmp_path)
+    bundle.results["configs"][0]["summary"]["placebo_holm"] = {}
+    res = render_paper(bundle, "md")
+    text = res.markdown.read_text(encoding="utf-8")
+    assert "= {}" not in text
+    assert "Holm-corrected p = —" in text
+
+
 def test_render_md_plain_scan_bundle(tmp_path):
     """F-D1: `natex paper` on a plain single-scan results.json bundle renders
     the run — discovery row, validation numbers, effects — never the empty

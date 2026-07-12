@@ -19,7 +19,7 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 # Pinned collected-test counts, from a fresh `uv run pytest --collect-only -q`
 # (and `-m backtest`) at authoring time. Drift is a conscious two-line edit:
 # update these constants AND the same numbers in README's Project status text.
-N_NONBACKTEST = 811
+N_NONBACKTEST = 813
 N_BACKTEST = 32
 
 SKILLS = (

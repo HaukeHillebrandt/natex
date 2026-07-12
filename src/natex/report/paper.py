@@ -434,12 +434,16 @@ def _validation_block(cfg: dict) -> dict:
     if design == "rdd":
         v["placebo"] = _passfail(summ.get("placebo_passed"))
         holm = summ.get("placebo_holm")
-        if isinstance(holm, dict) and holm:
+        if isinstance(holm, dict):
             finite = {k: p for k, p in holm.items()
                       if isinstance(p, (int, float)) and math.isfinite(float(p))}
             if finite:
                 worst = min(finite, key=finite.get)
                 v["placebo_holm"] = f"{_fmt(finite[worst])} (smallest; covariate {worst})"
+            elif not holm:
+                # Empty battery: never the dict repr "{}" (F-D3), and say WHY
+                # a vacuous battery reports "passed".
+                v["placebo_holm"] = f"{_EM} (no covariate was testable)"
             else:
                 v["placebo_holm"] = _EM
         else:

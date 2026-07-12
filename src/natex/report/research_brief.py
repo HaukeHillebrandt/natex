@@ -198,13 +198,10 @@ def _validation_lines(scanned: list[dict]) -> list[str]:
         v = _validation_block(cfg)
         label = _candidate_label(cfg.get("candidate") or {})
         if v["design"] == "rdd":
-            holm = v["placebo_holm"]
-            if holm == "{}":  # _fmt of an empty holm dict — render as missing
-                holm = _EM
             lines.append(
                 f"- {label}: Monte Carlo p = {v['p_value']}; covariate "
                 f"placebo {v['placebo']} (Holm-adjusted p = "
-                f"{holm}); density test p = {v['density_p']}"
+                f"{v['placebo_holm']}); density test p = {v['density_p']}"
             )
         else:
             lines.append(
