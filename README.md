@@ -103,7 +103,49 @@ with and without it. Every request+response lands in `out/guidance_log.jsonl`.
 `natex datasets [--root PATH]` (default root: env `NATEX_DATA`) prints one line per
 registered benchmark dataset — found/missing, row count, row-count check — and, for
 missing ones, the instructions for obtaining the file (see
-[Backtests on real data](#backtests-on-real-data)). It always exits 0.
+[Backtests on real data](#backtests-on-real-data)). It always exits 0. Real output
+(paths truncated to `…`):
+
+```console
+$ uv run natex datasets
+test_score_2012  found  rows=2767  ok=True  path=…/data/test_score_2012/RDD_Guide_Dataset_0.csv
+academic_probation  found  rows=44362  ok=True  path=…/data/AcademicProbation_LSO_2010/data_orig.csv
+ed_visits  found  rows=161  ok=True  path=…/data/ED_visits/P03_ED_Analysis_File.csv
+inpatient_visits  found  rows=73  ok=True  path=…/data/Inpatient_visits/P10_Inpatient_CSV_File.csv
+egger_koethenbuerger  found  rows=43175  ok=True  path=…/data/EggerKoethenbuerger_AEJ_Data (1).csv
+prop99  found  rows=1209  ok=True  path=…/data/prop99/smoking_data.csv
+```
+
+### A 30-second seeded demo
+
+Generate a synthetic dataset with a known discontinuity (strength ζ = 6) and let natex
+rediscover it — same seed, same numbers, every time:
+
+```bash
+mkdir -p /tmp/natex-demo
+uv run python - <<'EOF'
+import numpy as np
+from natex.data.synthetic import make_synthetic
+
+ds, _ = make_synthetic(n=500, zeta=6.0, kind="binary", rng=np.random.default_rng(0))
+ds.df.to_csv("/tmp/natex-demo/synth.csv", index=False)
+EOF
+uv run natex discover /tmp/natex-demo/synth.csv --treatment T --outcome y \
+  --k 40 --q 49 --seed 0 --out /tmp/natex-demo/out
+```
+
+Output (real run; results path truncated):
+
+```console
+model=bernoulli  max LLR=21.16  scan p=0.020
+top center (raw z): [0.757951   0.51275872]
+placebo passed: True   density p: 0.559
+2SLS tau=2.047 CI=(1.024,3.070) weak_iv=False
+results: …/natex-demo/out/results.json
+```
+
+The planted effect is τ = 2 — the seeded scan finds the discontinuity (p = 0.020),
+the placebo and density falsification tests pass, and the 2SLS CI covers the truth.
 
 ### Python API
 
@@ -191,12 +233,13 @@ ADH's poor-pre-fit exclusion). Python API: `natex.iv.donors.select_donors` /
 ## From discovery to paper
 
 The reporting layer turns a finished run into a results bundle, publication figures, and
-an AI-drafted paper skeleton. Three commands end to end:
+an AI-drafted paper skeleton. Four commands end to end:
 
 ```bash
 natex study data.csv --context "where the data came from" --out out
 natex discover data.csv --plan out/intake_report.json --out out
 natex paper --bundle out --format md     # or --format latex (compiles when tectonic is installed)
+natex brief --bundle out                 # deep-research handoff (out/research-brief.md)
 ```
 
 `natex paper` accepts any of: a saved bundle directory (`results.json` written by
@@ -237,7 +280,8 @@ save PNG (150 dpi) + PDF and register themselves in the bundle. Missing numbers 
 
 ### Deep-research handoff
 
-`research_brief` writes `research-brief.md`: a self-contained brief (data context,
+`natex brief --bundle out` (CLI) and `research_brief` (Python) write
+`research-brief.md`: a self-contained brief (data context,
 discovered designs, effects, validation status, and numbered literature questions) meant
 to be pasted verbatim into a deep-research agent — e.g. a Gemini Deep Research query — to
 retrieve related work for the draft's related-work section. natex performs no research
@@ -256,6 +300,32 @@ Every rendered draft — markdown and LaTeX — opens with the banner
 warning on every run. The draft is a starting point: check every number against
 `results.json`, read the validation section skeptically, and review all claims before the
 draft is shared or submitted anywhere.
+
+## Agent skills
+
+Three Claude Code agent skills ship in [skills/](skills/) — each a directory whose
+`SKILL.md` an agent with zero repo context can follow end to end:
+
+- [discover-natural-experiments](skills/discover-natural-experiments/SKILL.md) — find and
+  validate natural experiments in a tabular dataset, serving natex's file-based guidance
+  protocol (`out/guidance/requests/`) as the LLM backend yourself.
+- [natex-write-paper](skills/natex-write-paper/SKILL.md) — render the AI-draft manuscript
+  from a results bundle and walk a human through verifying every number against
+  `results.json`.
+- [natex-lit-review](skills/natex-lit-review/SKILL.md) — generate the deterministic
+  research brief, hand it to deep-research tooling, vet every returned citation, and merge
+  the survivors into the draft.
+
+Install into Claude Code by symlinking (or copying) the skill directories into
+`~/.claude/skills`:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/skills/"*/ ~/.claude/skills/
+```
+
+[AGENTS.md](AGENTS.md) documents the same surface — install, CLI table, the guidance file
+protocol, testing conventions — for non-Claude agents.
 
 ## Backtests on real data
 
@@ -354,27 +424,35 @@ the governing document; headline corrections implemented from phase 1 onward:
 
 Legacy scan outputs are therefore **not** treated as ground truth in parity tests.
 
-## Roadmap
+## Project status
 
-Phase 1 delivered the scaffold, the corrected scan core, LoRD3 discovery, the validation
-battery, 2SLS estimation, the intake profiler, the CLI, and the first real-data backtest.
-Phase 2 delivered the remaining RDD backtests, the synthetic benchmark suite, and the
-scaling engineering ([status](docs/status/phase-2.md)); phase 3 the SuDDDS DiD scan and
-the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 the DEE debiasing layer
-([status](docs/status/phase-4.md)); phase 5 the IV/SC discovery layer
-([status](docs/status/phase-5.md)); phase 6 the LLM analyst pass and guidance backends
-([status](docs/status/phase-llm-analyst.md)); phase 7 (this repo state) the reporting and
-paper pipeline ([status](docs/status/phase-report-paper.md)). Next:
+All eight build phases are complete; v0.1.0 is the first tagged release. Run of record:
+`uv run pytest -q` collects 785 non-backtest tests (optional-extra tests skip gracefully
+when an extra is missing); `uv run pytest -m backtest` collects 32 real-data backtests
+over the six registered datasets; `uv run ruff check src tests` is clean.
 
 | Phase | Scope |
 |-------|-------|
+| 1 | **Done** — scaffold, corrected LoRD3 scan core, validation battery, frozen-side 2SLS, intake profiler, CLI, first real-data backtest (`test_score_2012`) |
 | 2 | **Done** — remaining RDD backtests + synthetic benchmarks (NIG/power curves); gate met: all RDD backtest rows pass ([status](docs/status/phase-2.md)) |
 | 3 | **Done** — SuDDDS difference-in-differences discovery (`did/`) + Prop 99 backtest; gate met: (California, 1989) recovered with Table 6.1-consistent signs ([status](docs/status/phase-3.md)) |
 | 4 | **Done** — DEE debiased-effect-estimation layer (`dee/`) + scaled simulation-1 benchmark; gate met: mixture beats the raw causal-forest MSE in every config's median ([status](docs/status/phase-4.md)) |
 | 5 | **Done** — IV/SC discovery (`iv/`): BCCH plug-in Lasso instrument search, honest 2SLS/J/AR estimation, SC donor selection + in-space placebo; gate met: Prop 99 donor backtest recovers the ADH pool (weight 0.955 on ADH's five donors, ATT −19.5) ([status](docs/status/phase-5.md)) |
 | 6 | **Done** — LLM analyst pass (`natex study` → `natex discover --plan`) + scan guidance (Null/Agent/Anthropic/Gemini backends, `[llm]` extra) with the blind-vs-informed eval scaffold; gate met: guidance provably never alters a statistic, coverage always reported ([status](docs/status/phase-llm-analyst.md)) |
 | 7 | **Done** — reporting & paper pipeline (`report/`): results bundle, standard figures, jinja2 md/LaTeX drafts with the AI-draft banner, `natex paper`, deep-research brief, paperbanana adapter; gate met: bundle → figures → paper renders end to end for rdd and did, markdown always, LaTeX compiling under tectonic ([status](docs/status/phase-report-paper.md)) |
-| 8 | Agent skills + docs; optional PyPI release |
+| 8 | **Done** — agent skills (skills/), AGENTS.md + CLAUDE.md, v0.1.0 release ([status](docs/status/phase-skills-docs.md)) |
+
+What each real-data backtest demonstrated (natex is never told the answer — it must
+rediscover it; details in the linked status files):
+
+| Dataset | Design | Result |
+|---------|--------|--------|
+| `test_score_2012` | Sharp RDD | Pretest-215 cutoff recovered; known τ ≈ 10 inside the 2SLS CI with a strong first stage |
+| `academic_probation` | Fuzzy RDD | `dist_from_cut` ranked #1 of 4 candidate forcing variables; runs through the coarse-to-fine scan |
+| `ed_visits` | Fuzzy RDD | Insurance-loss cutoffs at ages 19 and 23 recovered among the top clusters |
+| `inpatient_visits` | Fuzzy RDD | Age-23 cutoff recovered on only 73 aggregated cells (small-n robustness) |
+| `egger_koethenbuerger` | Multi-cutoff RDD | ≥ 2 statutory council-size population thresholds discovered on `log_pop` (4 of 5 observed) |
+| `prop99` | DiD + synthetic control | (California, 1989) recovered with Table 6.1-consistent signs; SC donors recover the ADH pool (weight 0.955 on ADH's five donors, ATT −19.5) |
 
 ## Development
 
