@@ -9,7 +9,9 @@ regression), and the per-dimension placebo tests with Holm correction.
 import numpy as np
 import pytest
 
+from natex.data.spec import Dataset
 from natex.data.synthetic_did import make_did_synthetic
+from natex.did import PeriodGaps, period_gaps
 from natex.did.controls import dd_control
 from natex.did.effects import (
     ESTIMATOR_BACKENDS,
@@ -20,7 +22,7 @@ from natex.did.effects import (
     tau_randomization_test,
 )
 from natex.did.panel import CategoricalPanel, build_panel
-from natex.did.suddds import DiDDiscovery
+from natex.did.suddds import DiDDiscovery, suddds_scan
 
 # ---------------------------------------------------------------------------
 # builders
@@ -507,3 +509,71 @@ def test_placebo_dimensions_detect_composition_jump():
     rep = placebo_dimension_tests(panel, disc, control="dd")
     assert rep.p_holm["h"] <= 0.05
     assert rep.passed is False
+
+
+# ---------------------------------------------------------------------------
+# period_gaps (phase report-paper, task 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def scanned_synthetic():
+    """Seeded end-to-end scan: synthetic DGP -> panel -> top discovery."""
+    ds, _truth = make_did_synthetic(
+        n=1500, d=2, V=3, zeta=10.0, tau=10.0, rng=np.random.default_rng(0)
+    )
+    panel = build_panel(ds, bins=3)
+    result = suddds_scan(ds, bins=3, panel=panel, rng=np.random.default_rng(0))
+    return ds, panel, result.discoveries[0]
+
+
+class TestPeriodGaps:
+    def test_sorted_times_matched_shapes_and_metadata(self, scanned_synthetic):
+        _ds, panel, top = scanned_synthetic
+        g = period_gaps(panel, top, "dd")
+        assert isinstance(g, PeriodGaps)
+        assert np.all(np.diff(g.times) > 0)  # sorted, unique
+        assert g.times.shape == g.gap.shape == g.n.shape
+        assert np.issubdtype(g.n.dtype, np.integer)
+        assert np.all(g.n >= 1)  # zero-usable periods are OMITTED, never zero-filled
+        assert np.all(np.isfinite(g.gap))
+        assert g.t0 == top.t0
+        assert g.control == "dd"
+
+    def test_pre_gaps_near_zero_post_gaps_large(self, scanned_synthetic):
+        # Raw (un-normalized) gaps: the continuous-theta DGP plants a y jump of
+        # zeta * tau = 100 on s_tau post-T0, so post >> pre by construction.
+        # Calibration (seeds 0-3): pre mean in [-0.17, 0.09], post mean in
+        # [99.5, 103.1] — thresholds stay loose against seed drift; seed 0
+        # pinned in the fixture.
+        _ds, panel, top = scanned_synthetic
+        g = period_gaps(panel, top, "dd")
+        pre = g.times < g.t0
+        post = ~pre
+        assert pre.any() and post.any()
+        assert abs(float(np.mean(g.gap[pre]))) < 2.0
+        assert float(np.mean(g.gap[post])) > 5.0
+        assert float(np.mean(g.gap[post])) > float(np.mean(g.gap[pre])) + 4.0
+
+    def test_post_gap_average_matches_did_effect_tau(self, scanned_synthetic):
+        # Same records, same fitted contrast (audit 19): the n-weighted post
+        # average equals did_effect's tau (reduced-form tau_rf when the effect
+        # is dose-normalized — period_gaps reports raw y gaps).
+        _ds, panel, top = scanned_synthetic
+        g = period_gaps(panel, top, "dd")
+        eff = did_effect(panel, top, "dd")
+        post = g.times >= g.t0
+        pooled = float(np.average(g.gap[post], weights=g.n[post]))
+        target = eff.tau if eff.dose is None else eff.extras["tau_rf"]
+        assert pooled == pytest.approx(target, rel=1e-6)
+        assert int(g.n[post].sum()) == eff.n_treated_post
+
+    def test_requires_outcome(self, scanned_synthetic):
+        # Rebuilt from a no-outcome Dataset: reporting never fabricates y.
+        ds, _panel, top = scanned_synthetic
+        spec_no_y = ds.spec.model_copy(update={"outcome": None})
+        ds_no_y = Dataset(ds.df.drop(columns=["y"]), spec_no_y)
+        panel_no_y = build_panel(ds_no_y, bins=3)
+        assert panel_no_y.y is None
+        with pytest.raises(ValueError, match="outcome"):
+            period_gaps(panel_no_y, top, "dd")

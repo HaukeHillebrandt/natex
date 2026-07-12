@@ -245,6 +245,69 @@ def did_effect(
 
 
 # ---------------------------------------------------------------------------
+# per-period gaps (reporting; phase report-paper task 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PeriodGaps:
+    """Per-period treated-minus-control mean gaps (descriptive, for reporting).
+
+    ``gap[i]`` is the mean of ``y - y0_hat`` over the usable ``s_tau`` records
+    of period ``times[i]``; ``n[i]`` counts them. Feeds the pretrend figure:
+    pre-``t0`` gaps near zero support the control fit, post-``t0`` gaps show
+    the (raw, un-dose-normalized) effect path.
+    """
+
+    times: np.ndarray  # sorted unique usable s_tau periods (pre AND post)
+    gap: np.ndarray  # per-period mean of y - y0_hat over usable s_tau records
+    n: np.ndarray  # usable record count per period (int)
+    t0: float
+    control: str  # "dd" | "synthetic" | "gess"
+
+
+def period_gaps(
+    panel: CategoricalPanel,
+    discovery: DiDDiscovery,
+    control: str | ControlResult = "dd",
+) -> PeriodGaps:
+    """Per-period mean treated-minus-control gap for the pretrend figure.
+
+    Descriptive ONLY — no new inference. The counterfactual reuses the FITTED
+    control contrast via :func:`_resolve_control` + :func:`_apply_control_to`
+    (audit 19: same contrast, same control set as :func:`did_effect`), so the
+    ``n``-weighted average of the post-period gaps equals :func:`did_effect`'s
+    reduced-form ``tau``. Gaps are RAW ``y`` contrasts, never dose-normalized.
+    Periods with zero usable (finite ``y`` and counterfactual) records are
+    OMITTED, never zero-filled.
+
+    Raises ``ValueError`` when ``panel.y`` is None — reporting never
+    fabricates outcomes.
+    """
+    if panel.y is None:
+        raise ValueError(
+            "period_gaps requires an outcome (panel.y is None); "
+            "reporting never fabricates outcomes"
+        )
+    ctrl = _resolve_control(panel, discovery, control)
+    y = np.asarray(panel.y, dtype=float)
+    y0_hat = _apply_control_to(panel, discovery, ctrl, y)
+    tau_idx = np.flatnonzero(np.asarray(discovery.mask, dtype=bool))
+    usable = np.isfinite(y[tau_idx]) & np.isfinite(y0_hat)
+    gaps = y[tau_idx][usable] - y0_hat[usable]
+    times, code = np.unique(panel.t[tau_idx][usable], return_inverse=True)
+    counts = np.bincount(code, minlength=times.size)  # >= 1 per unique time
+    gap = np.bincount(code, weights=gaps, minlength=times.size) / np.maximum(counts, 1)
+    return PeriodGaps(
+        times=times,
+        gap=gap,
+        n=counts.astype(np.int64),
+        t0=float(discovery.t0),
+        control=ctrl.method,
+    )
+
+
+# ---------------------------------------------------------------------------
 # pluggable estimator backends (spec non-goal boundary: interface only)
 # ---------------------------------------------------------------------------
 
