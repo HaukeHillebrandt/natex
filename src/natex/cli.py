@@ -30,6 +30,8 @@ from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
 from natex.llm import AgentBackend, AnthropicBackend, GeminiBackend, GuidanceBackend
 from natex.rdd.lord3 import lord3_scan
+from natex.report.bundle import ResultsBundle
+from natex.report.paper import render_paper
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
 from natex.validate.panel import (
@@ -880,3 +882,34 @@ def _discover_did(
             f"gess tau={effects['gess']['tau']:.3f})"
         )
     typer.echo(f"results: {out / 'results.json'}")
+
+
+@app.command()
+def paper(
+    bundle: Path = typer.Option(..., "--bundle",
+        help="results bundle dir (ResultsBundle.save, or a discover --out dir)"),
+    format: str = typer.Option("md", help="md|latex; latex also compiles when tectonic is on PATH"),
+    out: Path = typer.Option(None, help="output dir; default BUNDLE/paper"),
+):
+    """Render the AI-draft paper from a results bundle (markdown always works)."""
+    if format not in ("md", "latex"):
+        typer.echo(f"--format must be md or latex, got {format!r}")
+        raise typer.Exit(code=2)
+    try:
+        loaded = ResultsBundle.load(bundle)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        # ValueError covers json.JSONDecodeError (its subclass).
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    try:
+        result = render_paper(loaded, format=format, out_dir=out)
+    except ImportError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    artifact = result.markdown if result.markdown is not None else result.tex
+    typer.echo(f"paper: {artifact}")
+    if result.pdf is not None:
+        typer.echo(f"pdf: {result.pdf}")
+    elif result.tex is not None:
+        typer.echo(result.message)  # tectonic skip/failure message, verbatim
+    typer.echo("review before sharing — AI-generated draft")
