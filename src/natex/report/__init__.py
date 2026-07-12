@@ -7,6 +7,7 @@ combiner (documented as indicative only).
 
 from natex.report.bundle import BUNDLE_SCHEMA, PooledEffect, ResultsBundle, ivw_pooled
 from natex.report.paper import BANNER, PaperResult, render_paper
+from natex.report.research_brief import research_brief
 
 __all__ = [
     "BANNER",
@@ -16,4 +17,5 @@ __all__ = [
     "ResultsBundle",
     "ivw_pooled",
     "render_paper",
+    "research_brief",
 ]
