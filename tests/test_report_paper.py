@@ -17,7 +17,7 @@ import pytest
 
 from natex.report.bundle import ResultsBundle
 from natex.report.paper import BANNER, _fmt, _paper_context, render_paper
-from report_helpers import make_did_bundle, make_rdd_bundle
+from report_helpers import make_did_bundle, make_rdd_bundle, make_scan_payload_bundle
 
 CONTEXT_KEYS = {
     "banner", "title", "version", "seed", "created", "data", "intake",
@@ -166,6 +166,22 @@ def test_render_md_embeds_figures(tmp_path):
     res = render_paper(bundle, "md")
     text = res.markdown.read_text(encoding="utf-8")
     assert "../figures/discovery_scatter.png" in text
+
+
+def test_render_md_plain_scan_bundle(tmp_path):
+    """F-D1: `natex paper` on a plain single-scan results.json bundle renders
+    the run — discovery row, validation numbers, effects — never the empty
+    'No configuration was scanned' document README promises it accepts."""
+    pytest.importorskip("jinja2")
+    bundle, payload = make_scan_payload_bundle(tmp_path)
+    res = render_paper(bundle, "md")
+    text = res.markdown.read_text(encoding="utf-8")
+    assert "No configuration was scanned" not in text
+    assert _fmt(payload["scan"]["p_value"]) in text
+    assert _fmt(payload["effects"]["2sls"]["tau"]) in text
+    assert _fmt(payload["validation"]["density_p"]) in text
+    assert "Method card — LoRD3" in text
+    assert re.search(r"\bnan\b|\bNone\b", text) is None
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import pytest
 from natex.report.bundle import ResultsBundle
 from natex.report.paper import _fmt
 from natex.report.research_brief import research_brief
-from report_helpers import make_did_bundle, make_rdd_bundle
+from report_helpers import make_did_bundle, make_rdd_bundle, make_scan_payload_bundle
 
 HEADINGS = (
     "## Discovery context",
@@ -135,6 +135,20 @@ def test_no_outcome_bundle(tmp_path):
     assert "no effect estimates (no outcome column was provided)" in text
     for heading in HEADINGS:
         assert heading in text
+    assert re.search(r"\bnan\b|\bNone\b", text) is None
+
+
+def test_brief_renders_plain_scan_bundle(tmp_path):
+    """F-D1: `natex brief` on a plain single-scan results.json bundle carries
+    the run's designs/effects/validation — never 'No configuration was
+    scanned in this bundle'."""
+    bundle, payload = make_scan_payload_bundle(tmp_path)
+    text = research_brief(bundle, tmp_path).read_text(encoding="utf-8")
+    assert "No configuration was scanned" not in text
+    assert _fmt(payload["scan"]["p_value"]) in text
+    assert _fmt(payload["effects"]["2sls"]["tau"]) in text
+    for value in payload["discoveries"][0]["center_z"]:
+        assert _fmt(value) in text
     assert re.search(r"\bnan\b|\bNone\b", text) is None
 
 

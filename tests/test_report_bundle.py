@@ -7,7 +7,7 @@ import pytest
 
 import natex
 from natex.report.bundle import ResultsBundle, ivw_pooled
-from report_helpers import make_did_bundle, make_rdd_bundle
+from report_helpers import make_did_bundle, make_rdd_bundle, make_scan_payload_bundle
 
 # ---------------------------------------------------------------------------
 # session-scoped seeded runs shared across assertions (discover is the slow bit)
@@ -129,6 +129,57 @@ def test_load_adapts_single_scan_payload(tmp_path):
     assert bundle.results["scan"] == payload
     assert bundle.results["seed"] == 7
     assert bundle.results["natex_version"] is None
+
+
+def test_scan_payload_builds_one_config_view(tmp_path):
+    """F-D1: a plain single-scan results.json (rdd path) adapts into ONE
+    scanned config with best_index 0, so paper/brief render the run instead
+    of an empty document."""
+    bundle, payload = make_scan_payload_bundle(tmp_path)
+    r = bundle.results
+    assert r["scan"] == payload  # raw payload still carried verbatim
+    assert r["best_index"] == 0
+    (cfg,) = r["configs"]
+    assert cfg["status"] == "scanned"
+    assert cfg["candidate"]["design"] == "rdd"
+    assert cfg["candidate"]["forcing"] == ["x0", "x1"]  # from forcing_influence
+    assert cfg["llr"] == payload["scan"]["observed_max_llr"]
+    assert cfg["p_value"] == payload["scan"]["p_value"]
+    assert cfg["n_discoveries"] == len(payload["discoveries"])
+    s = cfg["summary"]
+    assert s["center_z"] == payload["discoveries"][0]["center_z"]
+    assert s["placebo_passed"] is True
+    assert s["placebo_holm"] == {"x2": 0.7}
+    assert s["density_p"] == 0.559
+    assert s["effects"]["2sls"]["tau"] == 2.047
+
+
+def test_did_scan_payload_one_config_view(tmp_path):
+    """F-D1, did shape: the plain `natex discover --design did` payload."""
+    bundle, payload = make_scan_payload_bundle(tmp_path, design="did")
+    r = bundle.results
+    assert r["best_index"] == 0
+    (cfg,) = r["configs"]
+    assert cfg["status"] == "scanned"
+    assert cfg["candidate"]["design"] == "did"
+    assert cfg["candidate"]["time"] == "t"
+    assert cfg["candidate"]["unit"] == "state"
+    assert cfg["llr"] == payload["did"]["scan"]["observed_max_llr"]
+    assert cfg["p_value"] == payload["did"]["scan"]["p_value"]
+    s = cfg["summary"]
+    assert s["subset_values"] == {"x0": [1, 2]}
+    assert s["t0"] == 15.0 and s["window"] == 8.0
+    assert s["null_kind"] == "ar1_unit"
+    assert s["composition_passed"] is True and s["anticipation_passed"] is True
+    assert s["effects"]["dd"]["tau"] == -0.2
+
+
+def test_unrecognized_payload_keeps_null_configs(tmp_path):
+    """A marker-less results.json that is not a scan payload stays configs=None."""
+    (tmp_path / "results.json").write_text(json.dumps({"foo": 1}), encoding="utf-8")
+    bundle = ResultsBundle.load(tmp_path)
+    assert bundle.results["configs"] is None
+    assert bundle.results["best_index"] is None
 
 
 def test_load_adapts_discover_report(tmp_path, rdd):

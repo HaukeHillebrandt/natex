@@ -427,7 +427,7 @@ Legacy scan outputs are therefore **not** treated as ground truth in parity test
 ## Project status
 
 All eight build phases are complete; v0.1.0 is the first tagged release. Run of record:
-`uv run pytest -q` collects 806 non-backtest tests (optional-extra tests skip gracefully
+`uv run pytest -q` collects 811 non-backtest tests (optional-extra tests skip gracefully
 when an extra is missing); `uv run pytest -m backtest` collects 32 real-data backtests
 over the six registered datasets; `uv run ruff check src tests` is clean.
 

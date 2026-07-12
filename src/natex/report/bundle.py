@@ -105,6 +105,77 @@ def _intake_block(intake: IntakeReport | None) -> dict | None:
     }
 
 
+def _scan_payload_config(payload: dict) -> dict | None:
+    """One ConfigRecord-shaped view of a plain single-scan results.json.
+
+    The non-plan ``natex discover`` payload (rdd: params/scan/discoveries/
+    validation/effects; did: the same nested under ``"did"``) becomes a single
+    ``status="scanned"`` config so ``_paper_context``/``_scanned_configs`` —
+    and therefore ``natex paper`` / ``natex brief`` — render the run (F-D1).
+    Returns None when the payload has neither shape (nothing is fabricated).
+    """
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    if isinstance(payload.get("did"), dict):
+        did = payload["did"]
+        scan = did.get("scan") or {}
+        discoveries = did.get("discoveries") or []
+        validation = did.get("validation") or {}
+        top = discoveries[0] if discoveries else {}
+        candidate = {
+            "design": "did",
+            "treatment": params.get("treatment"),
+            "outcome": params.get("outcome"),
+            "forcing": [],
+            "unit": params.get("unit"),
+            "time": params.get("time"),
+        }
+        summary = {
+            "design": "did",
+            "subset_values": top.get("subset_values"),
+            "t0": top.get("t0"),
+            "window": top.get("window"),
+            "null_kind": scan.get("null_kind"),
+            "composition_passed": validation.get("composition_passed"),
+            "anticipation_passed": validation.get("anticipation_passed"),
+            "effects": did.get("effects") or {},
+        }
+    elif isinstance(payload.get("scan"), dict):
+        scan = payload["scan"]
+        discoveries = payload.get("discoveries") or []
+        validation = payload.get("validation") or {}
+        top = discoveries[0] if discoveries else {}
+        influence = top.get("forcing_influence") or {}
+        candidate = {
+            "design": "rdd",
+            "treatment": params.get("treatment"),
+            "outcome": params.get("outcome"),
+            "forcing": list(influence),
+        }
+        summary = {
+            "design": "rdd",
+            "center_z": top.get("center_z"),
+            "normal": top.get("normal"),
+            "forcing_influence": influence,
+            "placebo_passed": validation.get("placebo_passed"),
+            "placebo_holm": validation.get("placebo_holm"),
+            "density_p": validation.get("density_p"),
+            "effects": payload.get("effects") or {},
+        }
+        if payload.get("coarse") is not None:
+            summary["coarse"] = payload["coarse"]
+    else:
+        return None
+    return {
+        "candidate": candidate,
+        "source": "scan",
+        "status": "scanned",
+        "llr": scan.get("observed_max_llr"),
+        "p_value": scan.get("p_value"),
+        "n_discoveries": len(discoveries),
+        "summary": summary,
+    }
+
+
 class ResultsBundle:
     """A results directory: results.json + figures/ + paper/ (spec section 7)."""
 
@@ -159,11 +230,15 @@ class ResultsBundle:
     @classmethod
     def from_scan_payload(cls, payload: dict, out_dir: str | Path) -> ResultsBundle:
         """Wrap a single-scan results.json payload (the non-plan ``natex
-        discover`` schema: params/scan/discoveries/validation/effects) under
-        ``{"scan": payload}``, lifting seed from ``payload["params"]["seed"]``
-        when present. Provenance fields it cannot know stay null."""
+        discover`` schema: params/scan/discoveries/validation/effects, or the
+        did variant under ``"did"``) under ``{"scan": payload}``, lifting seed
+        from ``payload["params"]["seed"]`` when present, AND adapt it into a
+        one-config view (``configs``/``best_index``) so the paper and brief
+        renderers show the run instead of an empty document (finding F-D1).
+        Provenance fields it cannot know stay null."""
         params = payload.get("params")
         seed = params.get("seed") if isinstance(params, dict) else None
+        config = _scan_payload_config(payload)
         results = {
             "natex_bundle": BUNDLE_SCHEMA,
             "natex_version": None,
@@ -171,8 +246,8 @@ class ResultsBundle:
             "seed": seed,
             "params": params,
             "searched": None,
-            "configs": None,
-            "best_index": None,
+            "configs": [config] if config is not None else None,
+            "best_index": 0 if config is not None else None,
             "guidance_log_path": None,
             "data": None,
             "intake": None,

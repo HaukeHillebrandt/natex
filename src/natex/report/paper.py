@@ -262,11 +262,17 @@ def _cards_dir(explicit: str | Path | None) -> Path | None:
 
 
 def _candidate_label(cand: dict) -> str:
-    """Human-readable one-line label for a candidate dict (coverage lists)."""
+    """Human-readable one-line label for a candidate dict (coverage lists).
+
+    Missing fields render as an em dash — a plain single-scan bundle (F-D1)
+    does not record the treatment column name, and "None" must never reach
+    the page.
+    """
+    treatment = cand.get("treatment") or _EM
     if cand.get("design") == "rdd":
         forcing = ", ".join(cand.get("forcing") or []) or _EM
-        return f"rdd: {cand.get('treatment')} ~ {forcing}"
-    label = f"did: {cand.get('treatment')} over {cand.get('time')}"
+        return f"rdd: {treatment} ~ {forcing}"
+    label = f"did: {treatment} over {cand.get('time') or _EM}"
     unit = cand.get("unit")
     return label if unit is None else f"{label} by {unit}"
 
