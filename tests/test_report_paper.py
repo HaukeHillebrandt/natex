@@ -80,6 +80,19 @@ def test_context_rdd(rdd):
 # ---------------------------------------------------------------------------
 
 
+def test_reference_without_version_has_no_double_dash(rdd, tmp_path):
+    """Dogfood regression (Fitbit run): a bundle loaded from a bare
+    discover_report.json has no version, and the software reference rendered
+    'natex-discovery — — automated ...' (double em dash)."""
+    bundle, _, _ = rdd
+    results = dict(bundle.results)
+    results["natex_version"] = None
+    ctx = _paper_context(ResultsBundle(tmp_path, results), "md")
+    ref = ctx["references"][-1]
+    assert ref.startswith("natex-discovery — automated")
+    assert "— —" not in ref
+
+
 def test_context_no_outcome(tmp_path):
     bundle, _, ds = make_rdd_bundle(tmp_path, with_outcome=False)
     assert ds.y is None

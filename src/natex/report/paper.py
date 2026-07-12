@@ -523,8 +523,11 @@ def _paper_context(bundle: ResultsBundle, fmt: str,
         if data["outcome"] != _EM:
             title += f" -> {data['outcome']}"
 
+    # No version => plain "natex-discovery", not "natex-discovery — —" (the
+    # missing-value em dash must not collide with the separator; dogfood finding).
+    software = "natex-discovery" if version == _EM else f"natex-discovery {version}"
     references = [*_REFERENCES,
-                  f"natex-discovery {version} — automated natural-experiment "
+                  f"{software} — automated natural-experiment "
                   "discovery software (LoRD3 lineage). "
                   "https://github.com/HaukeHillebrandt/natex"]
 
