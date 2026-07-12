@@ -215,3 +215,17 @@ hyperparameters is analytic (tested at atol 1e-3; observed ~1e-8, float64).
 7. **Weighted-BLOOCV mixture weights**: the paper's weighted-BLOOCV scoring drops the mixture
    weights from the predictive density; natex's stacking objective scores the full two-model
    mixture density directly.
+
+### Paper typos absorbed (audit typo list, no code impact)
+
+* **LOOCV σᵢ prose (Codex #31)** — the paper's Gaussian log predictive density uses σᵢ as an
+  SD while the prose calls it the predictive variance; natex's noise model states its variance
+  scale explicitly (`natex/dee/noise.py` works on log SE², i.e. log variances).
+* **Algorithm 2 return type (Codex #34)** — Algorithm 2 inserts `(s_{i,k}, v_{i,k}, LLR)`
+  into the candidate list, but Algorithm 1 needs the CENTER `x_i` to form `K[x]` and `V[x]`;
+  natex candidates carry both the center index and the member set (`Discovery`).
+* **Assumption 4 (Codex #35)** — the printed `E[Y(1)−Y(0)] ⊥ T | X` is ill-typed (the
+  left-hand side is an unconditional scalar); the intended assumption is conditional mean
+  independence, `E[Y(1)−Y(0) | X, T] = E[Y(1)−Y(0) | X]`, which the bias derivation relies on.
+* **Appendix F.2 α_Y → α_B (Codex #36)** — the balance regression for a baseline covariate B
+  prints the outcome intercept `α_Y`; it should be `α_B` (or a generic intercept).

@@ -51,6 +51,25 @@ def _future_work_rows() -> list[list[str]]:
     return rows
 
 
+CARDS = ROOT / "docs" / "method_cards"
+
+
+def test_method_cards_carry_all_audit_typos():
+    """F-B1 (audit section-2 pure-typos block, task-3 protocol): every listed
+    typo appears in the relevant method card. The six that were missing:
+    Eq 5.21 (inverse-logit + log mu) in lord3.md; the thesis 6.26 -> 5.22
+    cross-reference in suddds.md; Codex #31/#34/#35/#36 in dee.md."""
+    lord3 = (CARDS / "lord3.md").read_text(encoding="utf-8")
+    assert "5.21" in lord3, "Eq 5.21 typo missing from lord3.md"
+    assert "inverse logit" in lord3.lower().replace("-", " ")
+    assert "log μ" in lord3, "the missing log mu_i correction (Codex) absent"
+    suddds = (CARDS / "suddds.md").read_text(encoding="utf-8")
+    assert "6.26" in suddds and "5.22" in suddds, "thesis xref 6.26->5.22 missing"
+    dee = " ".join((CARDS / "dee.md").read_text(encoding="utf-8").split())
+    for token in ("#31", "#34", "#35", "#36", "conditional mean independence"):
+        assert token in dee, f"DEE typo marker {token!r} missing from dee.md"
+
+
 def test_future_work_rows_have_rationales():
     """Task 6: the future-work register is populated and every row is complete.
 

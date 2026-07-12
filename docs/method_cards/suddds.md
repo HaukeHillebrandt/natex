@@ -103,6 +103,9 @@ floor (audit item 24).
 * **Eq 6.27** — creates heteroskedasticity (time-scaled noise), not correlation; implemented
   as printed-intent with the docstring stating what it actually does.
 * **Eq 6.28** — set notation corrected (`s_g = s_tau ∪ s_c`, `s_c ⊆ D \ s_tau`).
+* **Thesis xref 6.26 → 5.22** — the thesis's chapter-5 results text ("the data
+  generating process of y in Eq. (6.26)") cites this chapter's outcome DGP where
+  Eq. (5.22) is meant; the KDD parallel passage correctly cites Eq. (22).
 
 ## Validation battery (audit items 1, 2, 5, 18)
 

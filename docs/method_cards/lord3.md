@@ -63,7 +63,12 @@ Given `(x, T, y)` with real-valued forcing columns `z ⊆ x`, LoRD3
   as ground truth in parity tests.
 * **Printed-equation typos absorbed** (adjudicated typo list): the `γ_r x^R`
   polynomial exponent is `x^r` (the typo repeats in the KDD paper and both thesis
-  chapters — confirmed by 576-dpi rendering); Eq 5.18's union is an intersection.
+  chapters — confirmed by 576-dpi rendering); Eq 5.18's union is an intersection;
+  Eq 5.21 (binary-treatment DGP, = KDD Eq 21) has two defects — `Logit` must be
+  the inverse logit (a raw linear index is not a probability), and the odds
+  multiplier `μᵢ = exp(±ζ/2)` must enter the linear predictor as
+  `log μᵢ = ±ζ/2`, not `+μᵢ` (Codex sharpening). `natex.data.synthetic`
+  implements the additive log-odds shift.
 
 ## Hyperparameters and defaults
 
