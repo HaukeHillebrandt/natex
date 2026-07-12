@@ -8,7 +8,8 @@ description: Generate the deterministic natex research brief, hand it to the use
 ## 1. Generate the brief
 
 From a finished results bundle directory (the `--out` dir of a completed
-`natex discover` run, containing `results.json`):
+`natex discover` run — a plain run leaves `results.json` there, a plan-mode
+run leaves `discover_report.json`; the loader accepts either):
 
 ```bash
 uv run natex brief --bundle OUT
@@ -16,9 +17,10 @@ uv run natex brief --bundle OUT
 
 This writes `OUT/research-brief.md` and prints its path. Pass
 `--out some/dir` (or `--out some/path.md` to name the file exactly) to write
-elsewhere. The brief is **deterministic**: pure text built from
-`OUT/results.json` alone — no network, no LLM, no timestamps — so reruns are
-byte-identical and safe to repeat.
+elsewhere. The brief is **deterministic**: pure text built from the bundle's
+report JSON (`OUT/results.json` or `OUT/discover_report.json`) alone — no
+network, no LLM, no timestamps — so reruns are byte-identical and safe to
+repeat.
 
 Python API alternative (core deps only, no extras needed):
 

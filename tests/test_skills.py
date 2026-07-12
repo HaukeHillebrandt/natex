@@ -217,6 +217,25 @@ def test_paper_skill_review_requirements():
     assert "every number" in text
 
 
+def test_paper_skill_names_both_bundle_files():
+    """F-D4: a plan-mode bundle (the sibling discover skill's own flow)
+    contains discover_report.json and never results.json, so the verify-
+    numbers instruction must name BOTH files."""
+    text = flat(body_of(PAPER))
+    assert "discover_report.json" in text, (
+        "natex-write-paper must name discover_report.json for plan bundles"
+    )
+
+
+def test_lit_skill_names_both_bundle_files():
+    """F-D4, same contract for the lit-review skill's brief source."""
+    text = flat(body_of(LIT))
+    assert "results.json" in text
+    assert "discover_report.json" in text, (
+        "natex-lit-review must name discover_report.json for plan bundles"
+    )
+
+
 # --- natex-lit-review specifics ------------------------------------------------
 
 

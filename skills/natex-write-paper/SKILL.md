@@ -9,7 +9,9 @@ description: Render the AI-draft manuscript from a natex results bundle and walk
 
 You need a finished results bundle directory — the `--out` dir of a completed
 `natex discover` run (ideally produced via the discover-natural-experiments
-skill), containing `results.json` and its companion files.
+skill). A plain `natex discover` run leaves `results.json` there; a plan-mode
+run (`natex discover --plan ...`) leaves `discover_report.json` instead. The
+bundle loader accepts either file.
 
 The paper renderer needs the `report` extra (jinja2 templates); add `plot` too
 if you want figures embedded:
@@ -53,12 +55,13 @@ Every rendered draft opens with the banner, verbatim from the code:
 Do not remove it, and walk the user through earning it before the draft goes
 anywhere:
 
-- **Check every number in the draft against `OUT/results.json`** — the single
-  source every rendered number comes from. Open the draft and the bundle side
-  by side and confirm each estimate, standard error, confidence interval,
-  p-value, and count matches. Never fabricate or "fix" a number that looks off;
-  if the draft and `results.json` disagree, the render is stale — re-run
-  `natex paper`, do not hand-edit statistics.
+- **Check every number in the draft against the bundle's report JSON** —
+  `OUT/results.json` for a plain run, `OUT/discover_report.json` for a
+  plan-mode run: the single source every rendered number comes from. Open the
+  draft and the bundle side by side and confirm each estimate, standard error,
+  confidence interval, p-value, and count matches. Never fabricate or "fix" a
+  number that looks off; if the draft and the report JSON disagree, the render
+  is stale — re-run `natex paper`, do not hand-edit statistics.
 - **Read the validation section skeptically.** Only discoveries that passed
   the validation battery (randomization, placebo, density) belong in headline
   claims; surface `weak_instrument` flags and honest-split caveats rather than
