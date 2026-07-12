@@ -39,8 +39,9 @@ Requires Python ≥ 3.11. Core dependencies: numpy, scipy, pandas, scikit-learn,
 pydantic. The import name is `natex` (the distribution is named `natex-discovery`; not yet
 on PyPI). Optional extras: `natex-discovery[plot]` (benchmark charts),
 `natex-discovery[ml]` (econml causal forest for the DEE observational layer),
-`natex-discovery[gp]` (GPyTorch/botorch GP backend for scale) — everything runs on core
-deps without them.
+`natex-discovery[gp]` (GPyTorch/botorch GP backend for scale),
+`natex-discovery[llm]` (Anthropic/Gemini API guidance backends for the analyst pass) —
+everything runs on core deps without them.
 
 ## Quickstart
 
@@ -71,6 +72,31 @@ It prints a short summary and writes `out/results.json` with the top-20 discover
 (center values, LLR, hyperplane normal, per-variable forcing influence), the scan
 p-value, placebo/density validation p-values, effect estimates (2SLS + Wald with
 first-stage diagnostics), and the parameters/seed used.
+
+Don't know the treatment column, or facing a messy CSV? Run the Stage-0 analyst pass
+first and let it plan the scan ([method card](docs/method_cards/llm_analyst.md)):
+
+```bash
+uv run natex study data.csv --context "county-level school funding, 2004-2012" \
+  --backend null --seed 0 --out out/
+uv run natex discover --plan out/intake_report.json --seed 0 --out out/
+```
+
+`natex study` profiles the data, infers column roles and dataset shape, applies a
+declarative prep plan (drops, filters, optional seeded subsample — user-editable at
+`out/prep_plan.json`), and ranks candidate designs into `out/intake_report.json`.
+`natex discover --plan` then scans the ranked candidates first and the exhaustive
+remainder after, within budget — the report always records what was and wasn't searched
+(`scanned` / `skipped_budget` / `failed` / `invalid` per configuration; budget cuts are
+listed, never silently dropped).
+
+The default `--backend null` is deterministic, offline heuristics — no network, no API
+key. `--backend agent` writes each question as a JSON file under `out/agent/requests/`
+and waits for a matching response file (zero-cost guidance from a calling coding agent);
+`--backend anthropic|gemini` use the respective APIs (`pip install
+'natex-discovery[llm]'`). Guidance is advisory only: it orders the search and annotates
+the results (`advisory` blocks, veto flags), but the statistics are bitwise identical
+with and without it. Every request+response lands in `out/guidance_log.jsonl`.
 
 `natex datasets [--root PATH]` (default root: env `NATEX_DATA`) prints one line per
 registered benchmark dataset — found/missing, row count, row-count check — and, for
@@ -264,8 +290,9 @@ battery, 2SLS estimation, the intake profiler, the CLI, and the first real-data 
 Phase 2 delivered the remaining RDD backtests, the synthetic benchmark suite, and the
 scaling engineering ([status](docs/status/phase-2.md)); phase 3 the SuDDDS DiD scan and
 the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 the DEE debiasing layer
-([status](docs/status/phase-4.md)); phase 5 (this repo state) the IV/SC discovery layer
-([status](docs/status/phase-5.md)). Next:
+([status](docs/status/phase-4.md)); phase 5 the IV/SC discovery layer
+([status](docs/status/phase-5.md)); phase 6 (this repo state) the LLM analyst pass and
+guidance backends ([status](docs/status/phase-llm-analyst.md)). Next:
 
 | Phase | Scope |
 |-------|-------|
@@ -273,7 +300,7 @@ the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 the DEE debiasi
 | 3 | **Done** — SuDDDS difference-in-differences discovery (`did/`) + Prop 99 backtest; gate met: (California, 1989) recovered with Table 6.1-consistent signs ([status](docs/status/phase-3.md)) |
 | 4 | **Done** — DEE debiased-effect-estimation layer (`dee/`) + scaled simulation-1 benchmark; gate met: mixture beats the raw causal-forest MSE in every config's median ([status](docs/status/phase-4.md)) |
 | 5 | **Done** — IV/SC discovery (`iv/`): BCCH plug-in Lasso instrument search, honest 2SLS/J/AR estimation, SC donor selection + in-space placebo; gate met: Prop 99 donor backtest recovers the ADH pool (weight 0.955 on ADH's five donors, ATT −19.5) ([status](docs/status/phase-5.md)) |
-| 6 | LLM analyst pass + scan guidance (Null/Agent/API backends) with a guided-vs-unguided evaluation on the backtest suite |
+| 6 | **Done** — LLM analyst pass (`natex study` → `natex discover --plan`) + scan guidance (Null/Agent/Anthropic/Gemini backends, `[llm]` extra) with the blind-vs-informed eval scaffold; gate met: guidance provably never alters a statistic, coverage always reported ([status](docs/status/phase-llm-analyst.md)) |
 | 7 | Reporting & paper pipeline (`report/`) |
 | 8 | Agent skills + docs; optional PyPI release |
 
