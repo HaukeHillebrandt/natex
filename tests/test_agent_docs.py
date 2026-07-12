@@ -15,11 +15,17 @@ from doc_helpers import ROOT, flat, json_blocks, registered_commands, commands_t
 from natex.llm.backends import TASKS
 
 AGENTS_PATH = ROOT / "AGENTS.md"
+CLAUDE_PATH = ROOT / "CLAUDE.md"
 
 
 def agents_text() -> str:
     assert AGENTS_PATH.exists(), "missing AGENTS.md at repo root"
     return AGENTS_PATH.read_text(encoding="utf-8")
+
+
+def claude_text() -> str:
+    assert CLAUDE_PATH.exists(), "missing CLAUDE.md at repo root"
+    return CLAUDE_PATH.read_text(encoding="utf-8")
 
 
 def test_agents_md_exists_and_opens_with_what_natex_is():
@@ -89,3 +95,31 @@ def test_testing_conventions():
     low = flat(agents_text())
     for phrase in ("uv run pytest -q", "-m backtest", "NATEX_DATA", "never commit"):
         assert phrase in low, f"missing testing-convention phrase {phrase!r}"
+
+
+def test_claude_md_conventions():
+    text = claude_text()
+    low = flat(text)
+    for phrase in (
+        "uv ",
+        "line-length 100",
+        "uv run pytest -q",
+        "-m backtest",
+        "NATEX_DATA",
+        "never commit",
+        "numpy.random.Generator",
+        "NaN",
+        "0.0",
+        "math_audit_final.md",
+        "governs",
+        "conventional commit",
+    ):
+        assert phrase in low, f"CLAUDE.md missing convention phrase {phrase!r}"
+    # Pointers to the deeper docs an agent should follow next.
+    assert "AGENTS.md" in text, "CLAUDE.md must point at AGENTS.md"
+    assert "docs/plans/" in text, "CLAUDE.md must point at docs/plans/"
+
+
+def test_claude_md_is_short():
+    lines = claude_text().splitlines()
+    assert len(lines) < 60, f"CLAUDE.md is {len(lines)} lines; keep the card under 60"
