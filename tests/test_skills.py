@@ -21,14 +21,16 @@ from natex.llm.backends import TASKS
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
 
-# Grows per task: task 3 appends "natex-write-paper", task 4 "natex-lit-review".
+# Grows per task: task 4 appends "natex-lit-review".
 SKILL_DIRS = [
     "discover-natural-experiments",
+    "natex-write-paper",
 ]
 
 KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 DISCOVER = "discover-natural-experiments"
+PAPER = "natex-write-paper"
 
 
 def frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -201,3 +203,38 @@ def test_discover_skill_states_honest_inference():
         "estimation",
     ):
         assert phrase in low, f"missing honest-inference phrase {phrase!r}"
+
+
+# --- natex-write-paper specifics ---------------------------------------------
+
+
+def test_paper_skill_triggers():
+    meta, _ = frontmatter(skill_path(PAPER))
+    assert "write up the discovery as a paper" in meta["description"]
+
+
+def test_paper_skill_commands():
+    body = body_of(PAPER)
+    assert "natex paper --bundle" in body
+    assert "--format md" in body
+    assert "--format latex" in body
+    assert "tectonic" in body
+
+
+def test_paper_skill_quotes_real_banner():
+    from natex.report.paper import BANNER
+
+    assert BANNER in flat(body_of(PAPER)), "skill must quote the AI-draft banner verbatim"
+
+
+def test_paper_skill_google_docs_route_is_manual():
+    text = flat(body_of(PAPER))
+    assert "Google Docs" in text
+    assert "Google Drive" in text
+    assert "does not integrate" in text.lower()
+
+
+def test_paper_skill_review_requirements():
+    text = flat(body_of(PAPER))
+    assert "results.json" in text
+    assert "every number" in text
