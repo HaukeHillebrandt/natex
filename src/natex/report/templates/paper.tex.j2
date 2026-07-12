@@ -84,10 +84,10 @@ No configuration was scanned, so no method card applies to this run.
 \begin{center}
 \begin{tabular}{llllll}
 \toprule
-design & source & status & max LLR & MC p-value & discoveries \\
+configuration & source & status & max LLR & MC p-value & discoveries \\
 \midrule
 {% for row in discovery_rows %}
-{{ row.design | texesc }} & {{ row.source | texesc }} & {{ row.status | texesc }} & {{ row.llr | texesc }} & {{ row.p_value | texesc }} & {{ row.n_discoveries }} \\
+{{ row.label | texesc }} & {{ row.source | texesc }} & {{ row.status | texesc }} & {{ row.llr | texesc }} & {{ row.p_value | texesc }} & {{ row.n_discoveries }} \\
 {% endfor %}
 \bottomrule
 \end{tabular}

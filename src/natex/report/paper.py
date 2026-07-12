@@ -472,6 +472,9 @@ def _paper_context(bundle: ResultsBundle, fmt: str,
     discovery_rows = [
         {
             "design": (cfg.get("candidate") or {}).get("design") or _EM,
+            # candidate identity in every row (dogfood finding: a 13-row scan
+            # table with no way to tell which treatment/outcome a row was)
+            "label": _candidate_label(cfg.get("candidate") or {}),
             "source": cfg.get("source") or _EM,
             "status": cfg.get("status") or _EM,
             "llr": _fmt(cfg.get("llr")),

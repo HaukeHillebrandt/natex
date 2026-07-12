@@ -80,6 +80,17 @@ def test_context_rdd(rdd):
 # ---------------------------------------------------------------------------
 
 
+def test_discovery_rows_carry_candidate_label(rdd):
+    """Dogfood regression (Fitbit run): a 13-row scan table rendered with no
+    candidate identity — every row read 'rdd | plan | scanned | ...' and the
+    reader could not tell which treatment/outcome a row belonged to."""
+    bundle, _report, _ds = rdd
+    ctx = _paper_context(bundle, "md")
+    row = ctx["discovery_rows"][0]
+    cand = bundle.results["configs"][0]["candidate"]
+    assert cand["treatment"] in row["label"]
+
+
 def test_reference_without_version_has_no_double_dash(rdd, tmp_path):
     """Dogfood regression (Fitbit run): a bundle loaded from a bare
     discover_report.json has no version, and the software reference rendered

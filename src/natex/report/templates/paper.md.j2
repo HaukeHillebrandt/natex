@@ -65,10 +65,10 @@ No configuration was scanned, so no method card applies to this run.
 
 ### Discovery scan
 
-| design | source | status | max LLR | MC p-value | discoveries |
+| configuration | source | status | max LLR | MC p-value | discoveries |
 |---|---|---|---|---|---|
 {% for row in discovery_rows %}
-| {{ row.design }} | {{ row.source }} | {{ row.status }} | {{ row.llr }} | {{ row.p_value }} | {{ row.n_discoveries }} |
+| {{ row.label }} | {{ row.source }} | {{ row.status }} | {{ row.llr }} | {{ row.p_value }} | {{ row.n_discoveries }} |
 {% endfor %}
 
 All p-values are +1-rank Monte Carlo estimates against fitted-null replicas.
