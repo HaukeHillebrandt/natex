@@ -158,8 +158,8 @@ def study(
     workdir: Path = typer.Option(
         None, help="agent-backend request/response dir; default OUT/guidance"
     ),
-    seed: int = typer.Option(0),
-    out: Path = typer.Option(Path("out")),
+    seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
+    out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """Stage-0 analyst pass: profile -> understand -> prep plan -> search plan.
 
@@ -282,11 +282,13 @@ def discover(
     ctx: typer.Context,
     csv: Path = typer.Argument(None),
     treatment: str = typer.Option(None, help="treatment column (required without --plan)"),
-    outcome: str = typer.Option(None),
+    outcome: str = typer.Option(
+        None, help="outcome column (discovery never reads it; needed for effect estimates)"
+    ),
     forcing: str = typer.Option(None, help="comma-separated; default: all numeric"),
-    k: int = typer.Option(50),
+    k: int = typer.Option(50, help="scan neighborhood size"),
     q: int = typer.Option(99, help="randomization replicas"),
-    seed: int = typer.Option(0),
+    seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
     degree: int = typer.Option(1, help="background polynomial degree of the treatment model"),
     coarse: bool = typer.Option(False, "--coarse/--no-coarse",
                                 help="coarse-to-fine scan (large datasets)"),
@@ -319,7 +321,7 @@ def discover(
         help="scan-attempt budget across configurations (--plan mode); the "
              "remainder is listed as skipped_budget, never dropped",
     ),
-    out: Path = typer.Option(Path("out")),
+    out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """Scan for natural experiments: LoRD3 RDD scan or SuDDDS DiD scan, with
     the validation battery and honest effect estimates.
@@ -420,7 +422,7 @@ def discover(
 @app.command()
 def debias(
     csv: Path,
-    treatment: str = typer.Option(...),
+    treatment: str = typer.Option(..., help="treatment column"),
     outcome: str = typer.Option(None, help="outcome column (required for debiasing)"),
     forcing: str = typer.Option(None, help="comma-separated; default: all numeric"),
     k: int = typer.Option(50, help="scan neighborhood size"),
@@ -433,8 +435,8 @@ def debias(
     t_side: int = typer.Option(15, "--t-side", help="min support per hyperplane side"),
     grid: int = typer.Option(15, help="query lattice points per forcing dimension"),
     weighting: str = typer.Option("stacking", help="stacking|loo|mll"),
-    seed: int = typer.Option(0),
-    out: Path = typer.Option(Path("out")),
+    seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
+    out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """DEE debiasing: scan -> VKNN repair -> local 2SLS -> GP debiasing.
 
@@ -543,7 +545,7 @@ def debias(
 @app.command()
 def instruments(
     csv: Path,
-    treatment: str = typer.Option(...),
+    treatment: str = typer.Option(..., help="treatment column (the endogenous regressor)"),
     pool: str = typer.Option(
         None, help="comma-separated candidate instruments; "
                    "default: all numeric columns except treatment/outcome/controls"
@@ -557,8 +559,8 @@ def instruments(
         help="select on a discovery half, estimate on the other (post-selection guarantee)",
     ),
     lam: str = typer.Option("plugin", help="plugin|cv|<positive float>"),
-    seed: int = typer.Option(0),
-    out: Path = typer.Option(Path("out")),
+    seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
+    out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """Belloni-style instrument selection (+ honest 2SLS/J/AR estimation block).
 
@@ -660,10 +662,10 @@ def instruments(
 @app.command()
 def donors(
     csv: Path,
-    outcome: str = typer.Option(...),
-    unit: str = typer.Option(...),
-    time: str = typer.Option(...),
-    treated_unit: str = typer.Option(..., "--treated-unit"),
+    outcome: str = typer.Option(..., help="outcome column (the panel series being matched)"),
+    unit: str = typer.Option(..., help="panel unit column"),
+    time: str = typer.Option(..., help="panel time column"),
+    treated_unit: str = typer.Option(..., "--treated-unit", help="the treated unit's value in the UNIT column"),
     t0: float = typer.Option(..., help="first post-treatment time"),
     n_donors: int = typer.Option(
         None, "--n-donors",
@@ -677,7 +679,7 @@ def donors(
         None, "--exclude-poor-fit",
         help="drop placebos with pre-RMSPE > MULT x the treated unit's",
     ),
-    out: Path = typer.Option(Path("out")),
+    out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """Synthetic-control donor selection, ATT and in-space placebo inference.
 

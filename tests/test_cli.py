@@ -1,7 +1,9 @@
+import ast
 import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -28,6 +30,28 @@ def test_every_command_has_help_text():
     for name, desc in sorted(rows.items()):
         assert desc, f"command {name!r} has no help text in `natex --help`"
     assert "LoRD3" in CliRunner().invoke(app, ["discover", "--help"]).output
+
+
+def test_every_option_has_help_text():
+    """F-C2: every ``typer.Option(...)`` in the CLI carries non-empty help
+    text, so no option row in ``<command> --help`` is a bare ``[required]`` or
+    an undocumented default (positional arguments are out of scope)."""
+    src = (Path(__file__).resolve().parents[1] / "src" / "natex" / "cli.py").read_text(
+        encoding="utf-8"
+    )
+    missing = []
+    for node in ast.walk(ast.parse(src)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "Option"
+            and getattr(node.func.value, "id", None) == "typer"
+        ):
+            helps = [k.value for k in node.keywords if k.arg == "help"]
+            empty = helps and isinstance(helps[0], ast.Constant) and not helps[0].value
+            if not helps or empty:
+                missing.append(node.lineno)
+    assert not missing, f"typer.Option without help= at src/natex/cli.py lines {missing}"
 
 
 def test_discover_end_to_end(tmp_path):
