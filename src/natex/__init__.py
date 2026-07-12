@@ -9,6 +9,9 @@ from natex.dee.vknn import voronoi_knn_repair
 from natex.did.effects import did_effect
 from natex.did.panel import build_panel
 from natex.did.suddds import DiDDiscovery, SuDDDSResult, suddds_scan
+from natex.intake.analyst import IntakeReport, study
+from natex.intake.plans import DesignCandidate, SearchPlan
+from natex.intake.prep import PrepPlan
 from natex.rdd.lord3 import LoRD3Result, lord3_scan
 from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
 
@@ -18,8 +21,12 @@ __all__ = [
     "DEEResult",
     "Dataset",
     "DatasetSpec",
+    "DesignCandidate",
     "DiDDiscovery",
+    "IntakeReport",
     "LoRD3Result",
+    "PrepPlan",
+    "SearchPlan",
     "SuDDDSResult",
     "build_panel",
     "coarse_to_fine_scan",
@@ -29,6 +36,7 @@ __all__ = [
     "lord3_scan",
     "make_dee_synthetic",
     "make_did_synthetic",
+    "study",
     "suddds_scan",
     "voronoi_knn_repair",
     "__version__",

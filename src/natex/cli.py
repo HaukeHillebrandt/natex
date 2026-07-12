@@ -24,6 +24,7 @@ from natex.did.suddds import suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
+from natex.jsonutil import jsonable
 from natex.rdd.lord3 import lord3_scan
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
@@ -43,21 +44,7 @@ def main() -> None:
     """Automated natural-experiment discovery."""
 
 
-def _clean(obj):
-    if isinstance(obj, dict):
-        return {k: _clean(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_clean(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return _clean(obj.tolist())
-    if isinstance(obj, (bool, np.bool_)):
-        return bool(obj)
-    if isinstance(obj, (np.floating, float)):
-        f = float(obj)
-        return f if np.isfinite(f) else None
-    if isinstance(obj, (np.integer, int)):
-        return int(obj)
-    return obj
+_clean = jsonable  # extracted to natex.jsonutil; alias kept for the commands below
 
 
 @app.command()
