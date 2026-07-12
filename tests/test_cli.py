@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 
@@ -10,6 +11,23 @@ from natex.cli import app
 from natex.data.registry import REGISTRY
 from natex.data.synthetic import make_synthetic
 from natex.data.synthetic_did import make_did_synthetic
+
+
+def test_every_command_has_help_text():
+    """Every row of the `natex --help` Commands table carries a non-empty
+    description (convention pin — a command docstring's first line becomes
+    the row text), and `discover --help` names the LoRD3 scan."""
+    output = CliRunner().invoke(app, ["--help"]).output
+    tail = output[output.index("Commands") :]
+    rows: dict[str, str] = {}
+    for line in tail.splitlines():
+        m = re.match(r"^[│|]?\s{1,3}([a-z][a-z0-9-]+)\s*(.*)$", line)
+        if m:
+            rows[m.group(1)] = m.group(2).rstrip("│| ").strip()
+    assert len(rows) >= 9, f"help parser lost commands: {sorted(rows)}"
+    for name, desc in sorted(rows.items()):
+        assert desc, f"command {name!r} has no help text in `natex --help`"
+    assert "LoRD3" in CliRunner().invoke(app, ["discover", "--help"]).output
 
 
 def test_discover_end_to_end(tmp_path):

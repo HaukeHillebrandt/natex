@@ -321,6 +321,13 @@ def discover(
     ),
     out: Path = typer.Option(Path("out")),
 ):
+    """Scan for natural experiments: LoRD3 RDD scan or SuDDDS DiD scan, with
+    the validation battery and honest effect estimates.
+
+    Requires CSV + --treatment, or --plan intake_report.json from `natex study`
+    (plan candidates scan first, the exhaustive remainder runs within budget).
+    Writes OUT/results.json; plan mode writes OUT/discover_report.json.
+    """
     if plan is not None:
         _discover_plan(
             ctx, csv=csv, plan=plan, backend=backend, model=model, workdir=workdir,
