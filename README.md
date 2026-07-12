@@ -93,7 +93,7 @@ remainder after, within budget — the report always records what was and wasn't
 listed, never silently dropped).
 
 The default `--backend null` is deterministic, offline heuristics — no network, no API
-key. `--backend agent` writes each question as a JSON file under `out/agent/requests/`
+key. `--backend agent` writes each question as a JSON file under `out/guidance/requests/`
 and waits for a matching response file (zero-cost guidance from a calling coding agent);
 `--backend anthropic|gemini` use the respective APIs (`pip install
 'natex-discovery[llm]'`). Guidance is advisory only: it orders the search and annotates

@@ -32,6 +32,7 @@ from natex.llm import AgentBackend, AnthropicBackend, GeminiBackend, GuidanceBac
 from natex.rdd.lord3 import lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.report.paper import render_paper
+from natex.report.research_brief import research_brief
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
 from natex.validate.panel import (
@@ -155,7 +156,7 @@ def study(
     backend: str = typer.Option("null", help=_BACKEND_HELP),
     model: str = typer.Option(None, help="LLM model name (--backend anthropic|gemini)"),
     workdir: Path = typer.Option(
-        None, help="agent-backend request/response dir; default OUT/agent"
+        None, help="agent-backend request/response dir; default OUT/guidance"
     ),
     seed: int = typer.Option(0),
     out: Path = typer.Option(Path("out")),
@@ -169,7 +170,7 @@ def study(
     least the deterministic NullBackend heuristics.
     """
     guidance = _make_backend(
-        backend, model, workdir if workdir is not None else out / "agent"
+        backend, model, workdir if workdir is not None else out / "guidance"
     )
     report = run_study(
         csv, context=context, guidance=guidance, rng=np.random.default_rng(seed), out=out
@@ -247,7 +248,7 @@ def _discover_plan(
     guidance = _make_backend(
         backend,
         model if given("model") else None,  # bare --model default is the did scan model
-        workdir if workdir is not None else out / "agent",
+        workdir if workdir is not None else out / "guidance",
     )
     budget: dict = {}
     for key, value in (("k", k), ("q", q), ("coarse", coarse), ("n_coarse", n_coarse)):
@@ -311,7 +312,7 @@ def discover(
     ),
     backend: str = typer.Option("null", help=f"{_BACKEND_HELP} (--plan mode)"),
     workdir: Path = typer.Option(
-        None, help="agent-backend request/response dir (--plan mode); default OUT/agent"
+        None, help="agent-backend request/response dir (--plan mode); default OUT/guidance"
     ),
     max_configs: int = typer.Option(
         None, "--max-configs",
@@ -913,3 +914,22 @@ def paper(
     elif result.tex is not None:
         typer.echo(result.message)  # tectonic skip/failure message, verbatim
     typer.echo("review before sharing — AI-generated draft")
+
+
+@app.command()
+def brief(
+    bundle: Path = typer.Option(..., "--bundle",
+        help="results bundle dir (ResultsBundle.save, or a discover --out dir)"),
+    out: Path = typer.Option(None,
+        help="output dir or .md path; default BUNDLE/research-brief.md"),
+):
+    """Write the deep-research handoff brief (research-brief.md) from a results bundle."""
+    try:
+        loaded = ResultsBundle.load(bundle)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        # ValueError covers json.JSONDecodeError (its subclass).
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+    path = research_brief(loaded, out if out is not None else bundle)
+    typer.echo(f"brief: {path}")
+    typer.echo("hand this file to your deep-research tooling; verify everything it returns")
