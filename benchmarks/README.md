@@ -70,3 +70,30 @@ weak at scaled-down n) and an extra `m_prime` column auditing the
 The CI-small seeded slice — the spec §8 phase-4 gate, scaled — runs in
 default CI: `tests/test_dee_benchmarks_small.py` (2 pinned seeds at n=1500;
 calibration table in the test docstring).
+
+# Blind-vs-informed guidance eval (phase llm-analyst)
+
+`guidance_eval.py` measures whether an informed guidance backend puts the
+TRUE design configuration earlier in the Stage-0 search plan than the blind
+`NullBackend` heuristics. Each `natex.guidance_eval.EvalCase` buries a known
+synthetic truth — rdd: `("rdd", "T", ("x0", "x1"))`, did: matched on
+`(design, treatment, time)` — behind a binary decoy column inserted BEFORE
+`T` (so blind column-order heuristics rank the decoy treatment first) plus a
+pure-noise numeric column, and carries a free-text `context` hint only an
+informed backend can exploit.
+
+```sh
+uv run python benchmarks/guidance_eval.py --backend null                 # smoke: blind arm twice
+uv run python benchmarks/guidance_eval.py --backend agent --workdir DIR  # file-based agent arm
+uv run python benchmarks/guidance_eval.py --backend anthropic            # API arm (manual only)
+```
+
+Output: `guidance_eval.csv` (one row per case; columns =
+`natex.guidance_eval.EVAL_COLUMNS`) plus the per-arm mean rank of truth on
+stdout; an empty rank cell means the truth was absent from that arm's plan
+(worse than any finite rank). The gate question: `rank_backend` should be
+lower than `rank_null`. API arms need `uv sync --extra llm` and a provider
+key and are MANUAL ONLY — never CI. The CI slice
+(`tests/test_guidance_eval.py`, MockBackend only, seeds 0–4 pinned per the
+statistical-test policy) asserts `rank_backend == 0` on every case while
+`rank_null >= 1` on every rdd case.
