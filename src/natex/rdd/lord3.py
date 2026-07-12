@@ -72,6 +72,20 @@ def lord3_scan(
 ) -> LoRD3Result:
     if model == "auto":
         model = "bernoulli" if dataset.treatment_is_binary else "normal"
+    if model == "bernoulli":
+        classes = np.unique(dataset.T[~np.isnan(dataset.T)])
+        if classes.size < 2:
+            # Diagnose instead of surfacing sklearn's raw "needs samples of at
+            # least 2 classes" error (dogfood finding): Dataset listwise-deletes
+            # rows with NaN in any forcing/covariate column, which can silently
+            # remove every row on one side of a cutoff.
+            raise ValueError(
+                f"treatment '{dataset.spec.treatment}' has a single class "
+                f"({classes.tolist()}) across the {dataset.n} scan rows -- "
+                "Dataset drops rows with NaN in any forcing/covariate column, "
+                "which can delete every row on one side of a cutoff; check "
+                "covariate missingness (or drop the offending covariates)"
+            )
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
     predict, kind = fit_treatment_model(X, T, model, degree)
     if geometry is None:

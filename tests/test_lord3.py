@@ -1,8 +1,25 @@
 import numpy as np
+import pandas as pd
+import pytest
 
+from natex.data.spec import Dataset, DatasetSpec
 from natex.data.synthetic import make_synthetic
 from natex.rdd.lord3 import lord3_scan
 from natex.rdd.metrics import normalized_information_gain
+
+
+def test_single_class_treatment_raises_diagnostic_error():
+    """Dogfood regression (Fitbit run): listwise deletion can leave a one-class
+    treatment; the scan must name the treatment column and the row count, not
+    surface sklearn's raw 'needs samples of at least 2 classes' error."""
+    rng = np.random.default_rng(0)
+    n = 60
+    df = pd.DataFrame(
+        {"T": np.ones(n), "z": rng.normal(size=n), "y": rng.normal(size=n)}
+    )
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["z"], covariates=["z"]))
+    with pytest.raises(ValueError, match=r"treatment 'T' has a single class"):
+        lord3_scan(ds, k=10, rng=np.random.default_rng(0))
 
 
 def test_scan_finds_planted_boundary_real_T():
