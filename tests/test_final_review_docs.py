@@ -6,6 +6,7 @@ section headings, and the task-8/9 gate tests key on them. Pure text
 assertions — no rendering, no CLI runs.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,53 @@ def test_method_cards_carry_all_audit_typos():
     dee = " ".join((CARDS / "dee.md").read_text(encoding="utf-8").split())
     for token in ("#31", "#34", "#35", "#36", "conditional mean independence"):
         assert token in dee, f"DEE typo marker {token!r} missing from dee.md"
+
+
+FINDINGS_HEADER = "| ID | Source | Severity | Where | Defect | Resolution |"
+
+
+def _findings_rows() -> list[list[str]]:
+    """Data rows of the findings-register table (cells may contain ``\\|``)."""
+    lines = FINAL_REVIEW.read_text(encoding="utf-8").splitlines()
+    start = lines.index(FINDINGS_HEADER)
+    rows = []
+    for line in lines[start + 2 :]:  # skip header + |---| separator
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", line)[1:-1]]
+        rows.append(cells)
+    return rows
+
+
+def test_findings_register_fully_resolved():
+    """Task 8 gate: every F-* row is triaged and resolved, none left open.
+
+    Written at the START of task 8 (it fails while findings are open and
+    gates the task's completion mechanically): every row's Resolution cell is
+    non-empty and never ``open``/``TBD``; must-fix rows cite a commit
+    (``fixed <sha>``); noted rows point at future_work.md, and their finding
+    ID appears there.
+    """
+    rows = _findings_rows()
+    assert len(rows) >= 20, f"register lost rows: found only {len(rows)}"
+    future = FUTURE_WORK.read_text(encoding="utf-8")
+    for cells in rows:
+        assert len(cells) == 6, f"malformed register row: {cells[:2]}"
+        fid, _source, severity, _where, _defect, resolution = cells
+        assert re.fullmatch(r"F-[A-E]\d+", fid), f"bad finding ID: {fid!r}"
+        assert resolution, f"{fid}: unresolved (empty Resolution cell)"
+        low = resolution.lower()
+        assert not low.startswith(("open", "tbd")), f"{fid}: still open: {resolution!r}"
+        if severity.startswith("must-fix"):
+            assert re.match(r"fixed [0-9a-f]{7,40}\b", resolution), (
+                f"{fid}: must-fix row without a 'fixed <sha>' resolution: {resolution!r}"
+            )
+        else:
+            assert severity == "noted", f"{fid}: unknown severity {severity!r}"
+            assert "future_work.md" in resolution, (
+                f"{fid}: noted row must resolve to future_work.md: {resolution!r}"
+            )
+            assert fid in future, f"{fid}: noted row missing from future_work.md"
 
 
 def test_future_work_rows_have_rationales():
