@@ -37,7 +37,9 @@ uv sync --extra dev
 
 Requires Python ≥ 3.11. Core dependencies: numpy, scipy, pandas, scikit-learn, typer,
 pydantic. The import name is `natex` (the distribution is named `natex-discovery`; not yet
-on PyPI). Optional extras: `natex-discovery[plot]` (benchmark charts),
+on PyPI). Optional extras: `natex-discovery[plot]` (figures and benchmark charts),
+`natex-discovery[report]` (jinja2 paper templates for `natex paper`),
+`natex-discovery[paperbanana]` (methodology diagrams; needs its own provider key),
 `natex-discovery[ml]` (econml causal forest for the DEE observational layer),
 `natex-discovery[gp]` (GPyTorch/botorch GP backend for scale),
 `natex-discovery[llm]` (Anthropic/Gemini API guidance backends for the analyst pass) —
@@ -186,6 +188,75 @@ pre/post RMSPE, `att_post`, and the placebo block (`--exclude-poor-fit MULT` opt
 ADH's poor-pre-fit exclusion). Python API: `natex.iv.donors.select_donors` /
 `sc_placebo_test`.
 
+## From discovery to paper
+
+The reporting layer turns a finished run into a results bundle, publication figures, and
+an AI-drafted paper skeleton. Three commands end to end:
+
+```bash
+natex study data.csv --context "where the data came from" --out out
+natex discover data.csv --plan out/intake_report.json --out out
+natex paper --bundle out --format md     # or --format latex (compiles when tectonic is installed)
+```
+
+`natex paper` accepts any of: a saved bundle directory (`results.json` written by
+`ResultsBundle.save()`), a `natex discover --out` directory (`discover_report.json`), or a
+single-scan `results.json` from the plain `natex discover` path. `--format md` writes
+`paper/paper.md` (always works); `--format latex` writes `paper/paper.tex` and compiles it
+to `paper.pdf` when [tectonic](https://tectonic-typesetting.github.io) is on `PATH` — a
+missing or failing compiler prints a message and leaves the `.tex`, never an error.
+Rendering needs the `report` extra, figures the `plot` extra, and the optional methodology
+diagram the `paperbanana` extra (which needs its own image-model provider key):
+
+```bash
+uv add 'natex-discovery[report]'         # jinja2 — natex paper / render_paper
+uv add 'natex-discovery[plot]'           # matplotlib — figures
+uv add 'natex-discovery[paperbanana]'    # optional method diagram (own provider key)
+```
+
+### Python API
+
+```python
+from natex.report import ResultsBundle, render_paper, research_brief
+from natex.report.figures import rdd_figures  # or did_figures
+
+bundle = ResultsBundle.from_discover(report, "out/", dataset=ds, intake=intake, seed=0)
+bundle.save()                                # out/results.json + figures/ + paper/
+figs = rdd_figures(bundle, ds, res)          # PNG+PDF per figure, manifest in results.json
+draft = render_paper(bundle, format="md")    # out/paper/paper.md
+brief = research_brief(bundle, "out/")       # out/research-brief.md
+```
+
+`results.json` is JSON-native (NaN → null) and records the natex version, seed,
+parameters, full search coverage (`scanned` / `skipped_budget` / `failed` / `invalid` per
+configuration), the guidance-log path, and the figure manifest — every number the paper
+renders comes from this one file. `rdd_figures` (discovery scatter, signed-distance
+density histogram, effect forest) and `did_figures` (pre-trend plot, effect forest) each
+save PNG (150 dpi) + PDF and register themselves in the bundle. Missing numbers render as
+"—", never `nan`.
+
+### Deep-research handoff
+
+`research_brief` writes `research-brief.md`: a self-contained brief (data context,
+discovered designs, effects, validation status, and numbered literature questions) meant
+to be pasted verbatim into a deep-research agent — e.g. a Gemini Deep Research query — to
+retrieve related work for the draft's related-work section. natex performs no research
+calls itself; the handoff is a text file, and what comes back is for you to vet and merge.
+
+### Getting the draft into Google Docs
+
+natex does **not** integrate the Google Docs API. The manual route: render markdown
+(`natex paper --bundle out --format md`) and paste `paper/paper.md` into a Google Doc, or
+upload the `.md` file to Google Drive and choose "Open with → Google Docs" to convert it.
+
+### Human in the loop
+
+Every rendered draft — markdown and LaTeX — opens with the banner
+"AI-generated draft — verify all claims before circulation", and the CLI repeats the
+warning on every run. The draft is a starting point: check every number against
+`results.json`, read the validation section skeptically, and review all claims before the
+draft is shared or submitted anywhere.
+
 ## Backtests on real data
 
 Unit and synthetic tests run by default (`uv run pytest`). Real-data backtests are marked
@@ -291,8 +362,9 @@ Phase 2 delivered the remaining RDD backtests, the synthetic benchmark suite, an
 scaling engineering ([status](docs/status/phase-2.md)); phase 3 the SuDDDS DiD scan and
 the Prop 99 backtest ([status](docs/status/phase-3.md)); phase 4 the DEE debiasing layer
 ([status](docs/status/phase-4.md)); phase 5 the IV/SC discovery layer
-([status](docs/status/phase-5.md)); phase 6 (this repo state) the LLM analyst pass and
-guidance backends ([status](docs/status/phase-llm-analyst.md)). Next:
+([status](docs/status/phase-5.md)); phase 6 the LLM analyst pass and guidance backends
+([status](docs/status/phase-llm-analyst.md)); phase 7 (this repo state) the reporting and
+paper pipeline ([status](docs/status/phase-report-paper.md)). Next:
 
 | Phase | Scope |
 |-------|-------|
@@ -301,7 +373,7 @@ guidance backends ([status](docs/status/phase-llm-analyst.md)). Next:
 | 4 | **Done** — DEE debiased-effect-estimation layer (`dee/`) + scaled simulation-1 benchmark; gate met: mixture beats the raw causal-forest MSE in every config's median ([status](docs/status/phase-4.md)) |
 | 5 | **Done** — IV/SC discovery (`iv/`): BCCH plug-in Lasso instrument search, honest 2SLS/J/AR estimation, SC donor selection + in-space placebo; gate met: Prop 99 donor backtest recovers the ADH pool (weight 0.955 on ADH's five donors, ATT −19.5) ([status](docs/status/phase-5.md)) |
 | 6 | **Done** — LLM analyst pass (`natex study` → `natex discover --plan`) + scan guidance (Null/Agent/Anthropic/Gemini backends, `[llm]` extra) with the blind-vs-informed eval scaffold; gate met: guidance provably never alters a statistic, coverage always reported ([status](docs/status/phase-llm-analyst.md)) |
-| 7 | Reporting & paper pipeline (`report/`) |
+| 7 | **Done** — reporting & paper pipeline (`report/`): results bundle, standard figures, jinja2 md/LaTeX drafts with the AI-draft banner, `natex paper`, deep-research brief, paperbanana adapter; gate met: bundle → figures → paper renders end to end for rdd and did, markdown always, LaTeX compiling under tectonic ([status](docs/status/phase-report-paper.md)) |
 | 8 | Agent skills + docs; optional PyPI release |
 
 ## Development
