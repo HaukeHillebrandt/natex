@@ -21,16 +21,17 @@ from natex.llm.backends import TASKS
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ROOT / "skills"
 
-# Grows per task: task 4 appends "natex-lit-review".
 SKILL_DIRS = [
     "discover-natural-experiments",
     "natex-write-paper",
+    "natex-lit-review",
 ]
 
 KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 DISCOVER = "discover-natural-experiments"
 PAPER = "natex-write-paper"
+LIT = "natex-lit-review"
 
 
 def frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -238,3 +239,32 @@ def test_paper_skill_review_requirements():
     text = flat(body_of(PAPER))
     assert "results.json" in text
     assert "every number" in text
+
+
+# --- natex-lit-review specifics ------------------------------------------------
+
+
+def test_lit_skill_triggers():
+    meta, _ = frontmatter(skill_path(LIT))
+    assert "literature review for my discovery" in meta["description"]
+
+
+def test_lit_skill_brief_generation():
+    body = body_of(LIT)
+    assert "natex brief --bundle" in body, "CLI route missing"
+    assert "research_brief" in body, "Python API route missing"
+    assert "research-brief.md" in body
+
+
+def test_lit_skill_handoff_and_merge():
+    low = flat(body_of(LIT)).lower()
+    assert "deep research" in low or "deep-research" in low
+    assert "related work" in low
+    assert "citation" in low
+
+
+def test_lit_skill_vetting_warning():
+    low = flat(body_of(LIT)).lower()
+    assert "verify" in low
+    assert "never fabricate" in low
+    assert "every citation" in low
