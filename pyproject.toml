@@ -24,6 +24,10 @@ ml = ["econml>=0.15", "numba>=0.60", "shap>=0.48"]
 # botorch supplies fit_gpytorch_mll (the maintained fit API; the removed
 # fit_gpytorch_model was the DEE repo's breakage, repo risk 9).
 gp = ["torch>=2.2", "gpytorch>=1.13", "botorch>=0.12"]
+# API-mode guidance backends (SDKs imported lazily). Deliberately NOT installed
+# in CI: tests/test_llm_api.py injects fake clients (no network, no keys) and its
+# real-SDK smoke tests skip gracefully when this extra is absent.
+llm = ["anthropic>=0.40", "google-genai>=1.0"]
 dev = ["pytest>=8", "ruff>=0.4", "pytest-cov"]
 
 [project.scripts]

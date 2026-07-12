@@ -5,6 +5,7 @@ Backends answer :class:`GuidanceRequest`\\ s with structured
 """
 
 from natex.llm.agent import AgentBackend
+from natex.llm.api import AnthropicBackend, GeminiBackend
 from natex.llm.backends import (
     TASKS,
     GuidanceBackend,
@@ -18,6 +19,8 @@ from natex.llm.log import GuidanceLog, LoggedBackend
 __all__ = [
     "TASKS",
     "AgentBackend",
+    "AnthropicBackend",
+    "GeminiBackend",
     "GuidanceBackend",
     "GuidanceLog",
     "GuidanceRequest",
