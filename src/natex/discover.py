@@ -32,7 +32,7 @@ from natex.did.suddds import suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.plans import DesignCandidate, SearchPlan
 from natex.jsonutil import jsonable
-from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
+from natex.llm import GuidanceBackend, GuidanceLog, GuidanceRequest, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.scan.coarse import coarse_to_fine_scan
 from natex.validate.density import density_test
@@ -54,6 +54,67 @@ _DESIGNS = ("auto", "rdd", "did")
 # never a bare except — programming errors still propagate.
 _CONFIG_EXCEPTIONS = (ValueError, RuntimeError, np.linalg.LinAlgError)
 
+# Guidance-hook failures that become advisory errors (spec 6c): the config
+# stays scanned and its statistics are untouched. Never a bare except.
+_HOOK_EXCEPTIONS = (TimeoutError, ValueError, RuntimeError)
+
+
+class _GuidanceHooks:
+    """Advisory in-scan hooks for ONE config (spec 6c), no-ops without a backend.
+
+    Order per scanned config (contract for MockBackend response lists):
+    ``interpret_discovery`` -> ``audit_assumptions`` -> (did GESS path only)
+    ``review_control_group``. Guidance proposes and vetoes but NEVER gates or
+    alters statistics — a veto is only ever a flag in the output. Payloads are
+    coerced with :func:`jsonable` and carry only summary statistics already
+    destined for the results bundle: no raw data arrays, no outcome values
+    (audit "discovery never reads y" lineage). A hook failure in
+    ``_HOOK_EXCEPTIONS`` is recorded as ``advisory[<hook>] = {"error": ...}``.
+    """
+
+    def __init__(self, guidance: GuidanceBackend | None,
+                 candidate: DesignCandidate, advisory: dict):
+        self._guidance = guidance
+        self._candidate = candidate
+        self._advisory = advisory
+
+    def _call(self, task: str, payload: dict, key: str) -> dict | None:
+        """Fire one hook; returns its content, or None (no backend / failure)."""
+        if self._guidance is None:
+            return None
+        request = GuidanceRequest(task=task, payload=jsonable(payload))
+        try:
+            content = self._guidance.complete(request).content
+        except _HOOK_EXCEPTIONS as exc:
+            self._advisory[key] = {"error": str(exc)}
+            return None
+        self._advisory[key] = content
+        return content
+
+    def interpret(self, summary: dict) -> None:
+        """``interpret_discovery`` over the summary WITHOUT the effects key."""
+        self._call(
+            "interpret_discovery",
+            {"candidate": self._candidate.model_dump(), "summary": dict(summary),
+             "context": None},
+            "interpret_discovery",
+        )
+
+    def audit(self, validation: dict, summary: dict) -> None:
+        """``audit_assumptions``; a truthy veto sets FLAGS only (never gates)."""
+        content = self._call(
+            "audit_assumptions",
+            {"candidate": self._candidate.model_dump(), "validation": validation},
+            "audit_assumptions",
+        )
+        if content is not None and content.get("veto"):
+            self._advisory["vetoed"] = True
+            summary["advisory_veto"] = True  # flag only; effects still computed
+
+    def review_control(self, payload: dict) -> dict | None:
+        """``review_control_group`` over the GESS extras; returns the content."""
+        return self._call("review_control_group", payload, "control_review")
+
 
 @dataclass
 class ConfigRecord:
@@ -66,7 +127,7 @@ class ConfigRecord:
     p_value: float | None = None  # randomization-test p; None unless scanned
     n_discoveries: int = 0
     summary: dict = field(default_factory=dict)  # design-specific block; {} unless scanned
-    advisory: dict = field(default_factory=dict)  # guidance hooks (task 8); ALWAYS advisory
+    advisory: dict = field(default_factory=dict)  # guidance hooks (spec 6c); ALWAYS advisory
     error: str | None = None
 
     def to_dict(self) -> dict:
@@ -188,7 +249,8 @@ def _dataset_for(data: Dataset, c: DesignCandidate) -> Dataset:
     return Dataset(data.df, new_spec)
 
 
-def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
+def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
+             hooks: _GuidanceHooks) -> tuple:
     """LoRD3 scan + randomization/placebo/density + local 2SLS effects."""
     k, q, degree = int(budget["k"]), int(budget["q"]), int(budget["degree"])
     coarse_block = None
@@ -205,14 +267,6 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
     top = res.discoveries[0]
     placebo = placebo_tests(ds, top)
     dens = density_test(ds, top)
-    effects: dict = {}
-    if ds.y is not None:
-        for est in (local_2sls(ds, top), wald_estimate(ds, top)):
-            effects[est.method] = {
-                "tau": est.tau, "se": est.se, "ci": list(est.ci),
-                "first_stage_t": est.first_stage_t,
-                "weak_instrument": est.weak_instrument,
-            }
     summary = {
         "design": "rdd",
         "center_z": ds.Z[top.center_index].tolist(),
@@ -225,13 +279,28 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
         "placebo_passed": placebo.passed,
         "placebo_holm": placebo.p_holm,
         "density_p": dens.p_value,
-        "effects": effects,
         "coarse": coarse_block,
     }
+    # Advisory hooks after validation, before effects (spec 6c); the audit
+    # fires even when outcome is None — it is about the design, and a veto is
+    # a flag only: effects below are computed regardless.
+    hooks.interpret(summary)
+    hooks.audit({"p_value": rand.p_value, "placebo_passed": placebo.passed,
+                 "placebo_holm": placebo.p_holm, "density_p": dens.p_value}, summary)
+    effects: dict = {}
+    if ds.y is not None:
+        for est in (local_2sls(ds, top), wald_estimate(ds, top)):
+            effects[est.method] = {
+                "tau": est.tau, "se": est.se, "ci": list(est.ci),
+                "first_stage_t": est.first_stage_t,
+                "weak_instrument": est.weak_instrument,
+            }
+    summary["effects"] = effects
     return float(rand.observed_max_llr), float(rand.p_value), len(res.discoveries), summary
 
 
-def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
+def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
+             hooks: _GuidanceHooks) -> tuple:
     """SuDDDS scan + panel randomization/composition/anticipation + effects."""
     q, degree, bins = int(budget["q"]), int(budget["degree"]), int(budget["bins"])
     windows = budget["windows"]
@@ -249,18 +318,6 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
     comp = composition_test(panel, top)
     background = fit_did_background(panel, model=res.model, degree=degree)
     antic = anticipation_test(panel, background, top)
-    effects: dict = {}
-    if ds.y is not None:
-        # gess control precomputed ONCE and passed to did_effect: task 8's
-        # review_control_group hook slots in between without a refit.
-        controls: dict[str, object] = {
-            "dd": "dd", "synthetic": "synthetic", "gess": gess_control(panel, top),
-        }
-        for name, control in controls.items():
-            eff = did_effect(panel, top, control=control)
-            tau_rand = tau_randomization_test(panel, top, control=name, rng=rng)
-            effects[name] = {"tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
-                             "pre_mse": eff.pre_mse, "dose": eff.dose}
     summary = {
         "design": "did",
         "subset_values": top.subset_values,
@@ -271,10 +328,37 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator) -> tuple:
         "null_kind": rand.null_kind,
         "composition_passed": comp.passed,
         "anticipation_passed": antic.passed,
-        "effects": effects,
         "searched_windows": list(res.windows),
         "restarts": res.restarts,
     }
+    # Advisory hooks after validation, before effects (spec 6c) — see _run_rdd.
+    hooks.interpret(summary)
+    hooks.audit({"p_value": rand.p_value, "null_kind": rand.null_kind,
+                 "composition_passed": comp.passed,
+                 "anticipation_passed": antic.passed}, summary)
+    effects: dict = {}
+    if ds.y is not None:
+        # gess control precomputed ONCE: review_control_group slots between
+        # the fit and the reporting without a refit; τ̂/se/p are computed and
+        # reported REGARDLESS of the review — a veto is only ever a flag.
+        gess = gess_control(panel, top)
+        review = hooks.review_control({
+            "profile": gess.extras["profile"],
+            "expansions": gess.extras["expansions"],
+            "mse_trace": gess.extras["mse_trace"],
+            "subset_values": top.subset_values,
+            "n_control": gess.extras["n_control"],
+            "n_tau": gess.extras["n_tau"],
+        })
+        controls: dict[str, object] = {"dd": "dd", "synthetic": "synthetic", "gess": gess}
+        for name, control in controls.items():
+            eff = did_effect(panel, top, control=control)
+            tau_rand = tau_randomization_test(panel, top, control=name, rng=rng)
+            effects[name] = {"tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
+                             "pre_mse": eff.pre_mse, "dose": eff.dose}
+        if review is not None:
+            effects["gess"]["vetoed_by_guidance"] = bool(review.get("veto", False))
+    summary["effects"] = effects
     return float(rand.observed_max_llr), float(rand.p_value), len(res.discoveries), summary
 
 
@@ -299,9 +383,22 @@ def discover(
     (spec 6b). A failing config is isolated (``status="failed"``, llr/p stay
     None) and never kills the sweep.
 
-    ``guidance`` is accepted now and wrapped in :class:`LoggedBackend` when
-    ``out`` is given (exactly as ``study()`` does); the in-scan hooks that
-    consume it land in task 8 — ``advisory`` stays ``{}`` until then.
+    With ``guidance``, three ADVISORY hooks fire per scanned config, in this
+    order (the contract MockBackend response lists rely on):
+    ``interpret_discovery`` (candidate + summary WITHOUT effects) ->
+    ``audit_assumptions`` (candidate + validation block; a truthy ``veto``
+    sets ``advisory["vetoed"]`` and ``summary["advisory_veto"]`` — flags
+    only) -> on the did GESS path ``review_control_group`` (over the
+    ``gess_control`` extras; a veto sets
+    ``effects["gess"]["vetoed_by_guidance"]``). Statistics are NEVER gated or
+    altered and hooks consume no rng: stripping the advisory keys from the
+    report JSON yields output identical to a ``guidance=None`` run. A hook
+    failure (``TimeoutError``/``ValueError``/``RuntimeError``) is recorded as
+    ``advisory[<hook>] = {"error": ...}`` and the config stays ``scanned``.
+    Payloads carry only summary statistics — never raw outcome values. When
+    ``out`` is given the backend is wrapped in :class:`LoggedBackend`
+    (exactly as ``study()`` does): one ``guidance_log.jsonl`` line per hook
+    call.
     """
     if rng is None:
         raise ValueError("pass an explicit numpy Generator (reproducibility contract)")
@@ -314,7 +411,7 @@ def discover(
         log = GuidanceLog(Path(out) / "guidance_log.jsonl")
         guidance_log_path = str(log.path)
         if guidance is not None:
-            guidance = LoggedBackend(guidance, log)  # task 8 hooks consume this
+            guidance = LoggedBackend(guidance, log)  # one JSONL line per hook call
 
     # -- config list (spec 6b: plan orders, never truncates) ------------------
     records: list[ConfigRecord] = []
@@ -353,10 +450,11 @@ def discover(
             rec.status = "skipped_budget"  # still listed, spec 6b
             continue
         n_attempted += 1
+        hooks = _GuidanceHooks(guidance, rec.candidate, rec.advisory)
         try:
             ds = _dataset_for(data, rec.candidate)
             runner = _run_rdd if rec.candidate.design == "rdd" else _run_did
-            llr, p_value, n_disc, summary = runner(ds, eff_budget, rng)
+            llr, p_value, n_disc, summary = runner(ds, eff_budget, rng, hooks)
         except _CONFIG_EXCEPTIONS as exc:
             rec.status = "failed"
             rec.error = str(exc)  # llr/p stay None — never fabricated

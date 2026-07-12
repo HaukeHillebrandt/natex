@@ -11,6 +11,7 @@ from natex.data.synthetic import make_synthetic
 from natex.data.synthetic_did import make_did_synthetic
 from natex.discover import discover, enumerate_configs
 from natex.intake.plans import DesignCandidate, SearchPlan
+from natex.llm import GuidanceResponse, MockBackend
 
 # `from natex.discover import ...` resolves the submodule, but attribute access
 # on the package (`natex.discover`) returns the FUNCTION after __init__ rebinds
@@ -239,3 +240,166 @@ def test_identical_seed_bitwise_identical_json():
         return discover(ds, rng=np.random.default_rng(7), budget=SMALL).to_json()
 
     assert run() == run()
+
+
+# ---------------------------------------------------------------------------
+# spec 6c: advisory in-scan guidance hooks — statistics NEVER gated or altered
+# ---------------------------------------------------------------------------
+
+INTERP = {"summary": "canned interpretation", "confounded_risk": "low"}
+AUDIT_VETO = {"veto": True, "caveats": ["threshold looks confounded"]}
+GESS_REVIEW = {"face_valid": False, "veto": True,
+               "reason": "expanded into implausible profile"}
+DID_BUDGET = {"q": 9, "bins": 3, "restarts": 2, "windows": (4.0,)}
+_ADVISORY_KEYS = {"advisory", "advisory_veto", "vetoed_by_guidance"}
+
+
+def _did_dataset():
+    ds, _ = make_did_synthetic(n=300, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    return ds
+
+
+def _strip_advisory(obj):
+    """Remove every advisory-only key so guided vs unguided JSON can be compared."""
+    if isinstance(obj, dict):
+        return {k: _strip_advisory(v) for k, v in obj.items() if k not in _ADVISORY_KEYS}
+    if isinstance(obj, list):
+        return [_strip_advisory(v) for v in obj]
+    return obj
+
+
+class _VetoEverything:
+    """Vetoes every hook — used to prove hooks never gate statistics."""
+
+    name = "veto-everything"
+
+    def complete(self, request):
+        return GuidanceResponse(
+            content={"veto": True, "face_valid": False, "reason": "always veto"},
+            backend=self.name,
+        )
+
+
+class _SilentBackend:
+    """Raises on every hook — used to prove hook failures never kill a config."""
+
+    name = "silent"
+
+    def complete(self, request):
+        raise TimeoutError("agent silent")
+
+
+@pytest.fixture(scope="module")
+def rdd_hook_run(tmp_path_factory):
+    mock = MockBackend([INTERP, AUDIT_VETO])
+    out = tmp_path_factory.mktemp("rdd_hooks")
+    rep = discover(_rdd_dataset(), guidance=mock, rng=np.random.default_rng(1),
+                   budget=SMALL, out=out)
+    return rep, mock, out
+
+
+@pytest.fixture(scope="module")
+def did_hook_run():
+    mock = MockBackend([INTERP, {"veto": False}, GESS_REVIEW])
+    rep = discover(_did_dataset(), design="did", guidance=mock,
+                   rng=np.random.default_rng(0), budget=DID_BUDGET)
+    base = discover(_did_dataset(), design="did",
+                    rng=np.random.default_rng(0), budget=DID_BUDGET)
+    return rep, base, mock
+
+
+def test_mock_hooks_recorded_veto_is_flag_only(rdd_hook_run):
+    rep, mock, _ = rdd_hook_run
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rec.advisory["interpret_discovery"] == INTERP
+    assert rec.advisory["audit_assumptions"] == AUDIT_VETO
+    assert rec.advisory["vetoed"] is True
+    assert rec.summary["advisory_veto"] is True
+    # veto NEVER gates: effects still computed with finite tau
+    assert np.isfinite(rec.summary["effects"]["2sls"]["tau"])
+    # hook ORDER is a docstring contract for MockBackend users
+    assert [r.task for r in mock.requests] == ["interpret_discovery", "audit_assumptions"]
+    interp = mock.requests[0].payload
+    assert set(interp) == {"candidate", "summary", "context"}
+    assert "effects" not in interp["summary"]  # summary WITHOUT the effects key
+    assert interp["context"] is None
+    assert interp["candidate"]["design"] == "rdd"
+    audit = mock.requests[1].payload
+    assert set(audit) == {"candidate", "validation"}
+    assert {"p_value", "placebo_passed", "placebo_holm", "density_p"} <= set(audit["validation"])
+
+
+def test_never_gates_veto_everywhere_vs_none_identical_statistics():
+    def run(guidance) -> dict:
+        ds, _ = make_synthetic(n=300, zeta=6.0, kind="binary", rng=np.random.default_rng(0))
+        return json.loads(
+            discover(ds, guidance=guidance, rng=np.random.default_rng(7), budget=SMALL).to_json()
+        )
+
+    plain, vetoed = run(None), run(_VetoEverything())
+    assert vetoed["configs"][0]["advisory"]["vetoed"] is True  # veto really fired
+    assert _strip_advisory(plain) == _strip_advisory(vetoed)  # hooks consume no rng
+
+
+def test_did_gess_review_veto_flag_only(did_hook_run):
+    rep, base, mock = did_hook_run
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    gess = rec.summary["effects"]["gess"]
+    assert gess["vetoed_by_guidance"] is True
+    assert gess["tau"] == base.configs[0].summary["effects"]["gess"]["tau"]  # unchanged
+    assert rec.advisory["control_review"] == GESS_REVIEW
+    assert [r.task for r in mock.requests] == [
+        "interpret_discovery", "audit_assumptions", "review_control_group"]
+    assert set(mock.requests[2].payload) == {
+        "profile", "expansions", "mse_trace", "subset_values", "n_control", "n_tau"}
+    # audit responded veto=False: no flags set
+    assert "vetoed" not in rec.advisory
+    assert "advisory_veto" not in rec.summary
+    # full did-path mutation check: identical JSON once advisory keys are stripped
+    assert _strip_advisory(json.loads(base.to_json())) == _strip_advisory(
+        json.loads(rep.to_json()))
+
+
+def test_hook_error_isolated_config_still_scanned():
+    rep = discover(_rdd_dataset(), guidance=_SilentBackend(),
+                   rng=np.random.default_rng(1), budget=SMALL)
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert "agent silent" in rec.advisory["interpret_discovery"]["error"]
+    assert "agent silent" in rec.advisory["audit_assumptions"]["error"]
+    assert rec.llr is not None and rec.p_value is not None  # statistics untouched
+    assert np.isfinite(rec.summary["effects"]["2sls"]["tau"])
+    assert "advisory_veto" not in rec.summary  # errored hook can never veto
+
+
+def _assert_no_outcome_key(obj, outcome: str) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            assert not (k in ("y", outcome) and isinstance(v, list)), f"outcome list under {k!r}"
+            _assert_no_outcome_key(v, outcome)
+    elif isinstance(obj, list):
+        for v in obj:
+            _assert_no_outcome_key(v, outcome)
+
+
+def test_hook_payloads_carry_no_raw_outcome_values(rdd_hook_run, did_hook_run):
+    for mock, ds in ((rdd_hook_run[1], _rdd_dataset()), (did_hook_run[2], _did_dataset())):
+        y_reprs = [repr(float(v)) for v in ds.df[ds.spec.outcome].iloc[:5]]
+        assert mock.requests
+        for req in mock.requests:
+            text = json.dumps(req.payload)  # also proves the payload is JSON-clean
+            for y_repr in y_reprs:
+                assert y_repr not in text
+            _assert_no_outcome_key(req.payload, ds.spec.outcome)
+
+
+def test_guidance_log_one_line_per_hook(rdd_hook_run):
+    rep, mock, out = rdd_hook_run
+    assert rep.guidance_log_path == str(out / "guidance_log.jsonl")
+    lines = [json.loads(line)
+             for line in (out / "guidance_log.jsonl").read_text().splitlines() if line.strip()]
+    assert len(lines) == len(mock.requests) == 2
+    assert [e["task"] for e in lines] == ["interpret_discovery", "audit_assumptions"]
+    assert all(e["backend"] == "mock" for e in lines)
