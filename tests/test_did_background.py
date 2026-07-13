@@ -194,3 +194,16 @@ def test_bernoulli_path_deterministic():
     b = fit_did_background(panel, model="bernoulli")
     np.testing.assert_array_equal(a.fitted, b.fitted)
     np.testing.assert_array_equal(a.eta, b.eta)
+
+
+def test_issue_5_no_iprint_optimize_warning_from_bernoulli_background():
+    """Issue #5, DiD fit site: the sklearn/scipy 'iprint' OptimizeWarning must
+    be suppressed in fit_did_background's logistic fit as well (it fires per
+    replica in the panel randomization test)."""
+    import warnings
+
+    panel = binary_panel()
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        fit_did_background(panel, model="bernoulli")
+    assert not [w for w in rec if "iprint" in str(w.message)]

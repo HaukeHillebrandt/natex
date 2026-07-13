@@ -3,9 +3,11 @@ reimplemented per docs/math_audit_final.md."""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.optimize import OptimizeWarning
 from scipy.special import logit
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
@@ -54,7 +56,15 @@ def fit_treatment_model(X: np.ndarray, T: np.ndarray, model: str, degree: int):
     # likelihood under separation follows the audit's remedy (Firth-style); the
     # standardization makes the penalty independent of covariate units.
     scaler = StandardScaler().fit(Xp)
-    est = LogisticRegression(C=1.0, max_iter=1000).fit(scaler.transform(Xp), T.astype(int))
+    with warnings.catch_warnings():
+        # sklearn <= 1.6 still passes the removed 'iprint' option to
+        # scipy >= 1.18's L-BFGS-B — a known, data-independent upstream bug
+        # that fires once PER FIT (once per null replica). Suppress exactly
+        # that message; convergence/separation warnings stay visible (issue #5).
+        warnings.filterwarnings(
+            "ignore", message="Unknown solver options: iprint", category=OptimizeWarning
+        )
+        est = LogisticRegression(C=1.0, max_iter=1000).fit(scaler.transform(Xp), T.astype(int))
     return (
         lambda A: est.predict_proba(scaler.transform(poly.transform(A)))[:, 1],
         "bernoulli",

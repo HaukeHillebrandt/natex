@@ -61,3 +61,22 @@ def test_determinism():
     b = lord3_scan(ds, k=20, rng=np.random.default_rng(7))
     assert a.discoveries[0].llr == b.discoveries[0].llr
     assert a.discoveries[0].center_index == b.discoveries[0].center_index
+
+
+def test_issue_5_no_iprint_optimize_warning_from_logistic_fit():
+    """Issue #5: sklearn <= 1.6 passes the removed 'iprint' option to
+    scipy >= 1.18's L-BFGS-B, emitting one OptimizeWarning per logistic fit
+    (one per replica in the randomization test -> hundreds of stderr lines).
+    Exactly that upstream, data-independent warning must be suppressed at the
+    fit site; everything else (convergence, separation) stays visible."""
+    import warnings
+
+    from natex.rdd.lord3 import fit_treatment_model
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    T = (rng.uniform(size=60) < 0.5).astype(float)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        fit_treatment_model(X, T, "bernoulli", 1)
+    assert not [w for w in rec if "iprint" in str(w.message)]

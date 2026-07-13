@@ -28,9 +28,11 @@ Design notes (docs/math_audit_final.md):
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import OptimizeWarning
 from scipy.special import logit
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -148,9 +150,17 @@ def fit_did_background(
         return DiDBackground(kind="normal", fitted=fitted, r=r, sigma2=sigma2, eta=None)
 
     scaler = StandardScaler().fit(design)
-    est = LogisticRegression(C=1.0, max_iter=1000).fit(
-        scaler.transform(design), theta.astype(int)
-    )
+    with warnings.catch_warnings():
+        # sklearn <= 1.6 still passes the removed 'iprint' option to
+        # scipy >= 1.18's L-BFGS-B — a known, data-independent upstream bug
+        # that fires once PER FIT (once per null replica). Suppress exactly
+        # that message; convergence/separation warnings stay visible (issue #5).
+        warnings.filterwarnings(
+            "ignore", message="Unknown solver options: iprint", category=OptimizeWarning
+        )
+        est = LogisticRegression(C=1.0, max_iter=1000).fit(
+            scaler.transform(design), theta.astype(int)
+        )
     p_hat = est.predict_proba(scaler.transform(design))[:, 1]
     eta = logit(np.clip(p_hat, _P_CLIP, 1.0 - _P_CLIP))
     return DiDBackground(kind="bernoulli", fitted=p_hat, r=None, sigma2=None, eta=eta)
