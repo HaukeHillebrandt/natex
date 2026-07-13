@@ -570,6 +570,35 @@ def test_issue_12_one_class_bernoulli_pre_period_is_all_nan_fail():
     assert not rep.passed
 
 
+def test_issue_12_exact_normal_pre_period_fit_is_all_nan_fail():
+    # The normal-model analog of the one-class Bernoulli guard (prop99 shape):
+    # a policy dummy identically 0 before T0 is fit EXACTLY by the pre-period
+    # normal background, so every residual is 0 and the audit-24 data-scaled
+    # variance floor (1e-12 * s2_global) is itself 0 — no noise scale exists
+    # for the placebo z. Degenerate all-NaN report, passed=False; never a
+    # ValueError out of window_stats, never a silent pass.
+    rng = np.random.default_rng(4)
+    t = np.tile(np.arange(12, dtype=float), 6)
+    df = pd.DataFrame(
+        {
+            "unit": np.repeat(np.arange(6), 12),
+            "time": t,
+            "g": rng.integers(0, 2, size=t.size),
+            "theta": (t >= 6.0).astype(float),
+        }
+    )
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"],
+        time="time", unit="unit",
+    )
+    panel = build_panel(Dataset(df, spec))
+    disc = make_discovery(panel.n, t0=6.0, window=2.0, model="normal")
+    rep = anticipation_test(panel, disc, model="normal")
+    assert np.all(np.isnan(rep.estimates))
+    assert np.all(np.isnan(rep.p_values)) and np.all(np.isnan(rep.p_holm))
+    assert not rep.passed
+
+
 def test_anticipation_insufficient_support_is_nan():
     # shift=6 puts the placebo cutoff at t=0: the pre side is empty -> NaN p,
     # excluded from Holm; with no usable shift the report fails (never

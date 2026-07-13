@@ -227,21 +227,30 @@ def test_effects_in_line_with_table_6_1(panel, discovery):
 
 
 def test_validation_battery(ds, panel, discovery):
-    # Composition: the panel is perfectly balanced (every state observed every
-    # year), so the pre/post in-window composition table is uniform and the
-    # chi-square p is exactly 1.
+    # Composition: since issue #16 the counts are restricted to the
+    # discovery's own subset mask, and prop99's discovery masks a single
+    # unit (California) — one usable row, 10 pre / 10 post records. A
+    # one-row table admits no independence test, so the report is
+    # degenerate by design: NaN p, passed=False, never a silent pass.
     comp = composition_test(panel, discovery)
-    assert comp.passed and comp.p_value > 0.9
+    assert not comp.passed
+    assert np.isnan(comp.p_value)
+    np.testing.assert_array_equal(comp.table, [[10, 10]])
 
-    # Anticipation: California's pre-1989 background residuals are constant
-    # (degree-0 unit-effect fit on a policy dummy, refit on the pre-period
-    # sub-panel — issue #12), so every placebo jump at shifts 1-3 is exactly
-    # 0 -> Holm p = 1 everywhere.
+    # Anticipation: the policy dummy is identically 0 before T0=1988, so the
+    # issue-#12 pre-period refit is EXACT — every residual 0, audit-24
+    # data-scaled variance floor 0, no noise scale for the placebo z. That is
+    # the normal-model analog of the one-class Bernoulli guard: degenerate
+    # all-NaN report, passed=False (all-degenerate-fails rule, never a
+    # silent pass). Substantively there was no pre-1988 treatment movement,
+    # but the test honestly reports "cannot test" rather than fabricating
+    # p=1 from a 0/0 statistic.
     ant = anticipation_test(
         panel, discovery, shifts=(1, 2, 3), model="normal", degree=DEGREE
     )
-    assert ant.passed
-    assert np.all(np.abs(ant.estimates) < 1e-9)
+    assert not ant.passed
+    assert np.all(np.isnan(ant.estimates))
+    assert np.all(np.isnan(ant.p_holm))
 
     # Per-dimension composition placebos, Holm alpha = 0.05: prop99's derived
     # covariates are state-level time-invariant summaries, so composition

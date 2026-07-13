@@ -380,8 +380,11 @@ def anticipation_test(
     (excluded from Holm, visible in the report). ``passed`` requires at
     least one usable shift AND every usable Holm p above ``alpha`` —
     all-degenerate is a fail, never a silent pass. A pre period with fewer
-    than 2 distinct times, or a one-class Bernoulli pre period, admits no
-    refit at all: all-NaN report, ``passed = False``.
+    than 2 distinct times, a one-class Bernoulli pre period, or a pre period
+    the background fits EXACTLY (zero residual variance everywhere, so the
+    audit-24 data-scaled floor is 0 — e.g. a policy dummy identically 0
+    before ``T0``) admits no refit / no noise scale: all-NaN report,
+    ``passed = False``.
     """
     shifts = tuple(int(s) for s in shifts)
     if len(shifts) == 0 or any(s < 1 for s in shifts):
@@ -428,6 +431,13 @@ def anticipation_test(
     else:
         # Documented normal approximation for this diagnostic only.
         r, sigma2 = working_residuals(sub.theta, background.fitted)
+    if not np.all(np.isfinite(sigma2)) or np.any(sigma2 <= 0.0):
+        # Normal-model analog of the one-class Bernoulli guard: the pre-period
+        # fit is exact (e.g. a policy dummy identically 0 before T0), so every
+        # residual is 0 and the audit-24 data-scaled variance floor
+        # (1e-12 * s2_global) is itself 0 — there is no noise scale for the
+        # placebo z. All-NaN report, passed=False; never a silent pass.
+        return degenerate
 
     n_profiles = int(np.prod(sub.dim_sizes)) if sub.m else 1
     estimates = np.full(len(shifts), np.nan)
