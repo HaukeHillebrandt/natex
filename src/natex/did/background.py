@@ -149,6 +149,20 @@ def fit_did_background(
         sigma2 = _profile_sigma2(r, panel.profile_id, shrink)
         return DiDBackground(kind="normal", fitted=fitted, r=r, sigma2=sigma2, eta=None)
 
+    classes = np.unique(theta[~np.isnan(theta)])
+    if classes.size < 2:
+        # Issue #14: fail loudly instead of surfacing sklearn's raw "needs
+        # samples of at least 2 classes" error. A constant observed treatment
+        # carries no discontinuity signal to scan (mirrors the lord3_scan
+        # diagnostic); degenerate NULL REPLICA draws never reach this fit —
+        # panel_randomization_test short-circuits them to the empty-supremum
+        # score 0.0 before rescanning.
+        raise ValueError(
+            f"panel treatment theta has a single class ({classes.tolist()}) "
+            f"across all {panel.n} records — cannot fit a Bernoulli "
+            "background; check the treatment column and any row-dropping "
+            "upstream (NaN scan rows are deleted listwise)"
+        )
     scaler = StandardScaler().fit(design)
     with warnings.catch_warnings():
         # sklearn <= 1.6 still passes the removed 'iprint' option to

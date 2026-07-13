@@ -251,6 +251,37 @@ def test_bernoulli_auto_null():
     assert np.all(np.isfinite(rep.null_max_llrs))
 
 
+def test_issue_14_degenerate_bernoulli_replica_scores_empty_supremum():
+    """Issue #14: with a rare binary treatment, a Bernoulli(p_hat) replica draw
+    can be all-zero; the per-replica background refit then crashed inside
+    sklearn ('needs samples of at least 2 classes'). A one-class draw admits
+    no scoreable split, so it scores 0.0 — the supremum over an empty
+    candidate set, the same documented convention as a no-discovery replica —
+    and the test completes."""
+    theta = np.zeros(12)
+    theta[5] = 1.0  # a single treated record: p_hat ~ 1/12 per record
+    df = pd.DataFrame(
+        {
+            "g": [0, 1] * 6,
+            "time": np.tile(np.arange(6, dtype=float), 2),
+            "theta": theta,
+        }
+    )
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"], time="time"
+    )
+    ds = Dataset(df, spec)
+    scan_kw = dict(windows=(3.0,), restarts=2, method="greedy")
+    res = suddds_scan(ds, rng=np.random.default_rng(0), **scan_kw)
+    assert res.model == "bernoulli" and len(res.discoveries) == 1
+    # Seed 2 draws an all-zero replica (seeds 2-4 crashed before the fix).
+    rep = panel_randomization_test(
+        ds, res, Q=1, rng=np.random.default_rng(2), scan_kwargs=scan_kw
+    )
+    assert rep.null_max_llrs.tolist() == [0.0]
+    assert rep.p_value == 0.5  # (1 + 0) / (1 + 1): 0.0 < observed llr
+
+
 def test_randomization_invalid_arguments():
     ds = planted_frame(seed=5, n=200)
     scan_kw = dict(windows=(3.0,), restarts=2, method="greedy")

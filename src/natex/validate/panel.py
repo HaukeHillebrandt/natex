@@ -221,9 +221,19 @@ def panel_randomization_test(
     observed = float(scan_result.discoveries[0].llr)
     null_max = np.empty(Q)
     for q_i in range(Q):
+        theta_star = draw()
+        if null_kind == "bernoulli" and np.unique(theta_star).size < 2:
+            # Issue #14: a one-class Bernoulli(p_hat) draw (likely when p_hat
+            # is small) admits no background refit and no scoreable split —
+            # its max-LLR is the supremum over an empty candidate set, 0.0 by
+            # the documented convention above (the exact limit of the clipped
+            # LLR). Keeping the draw preserves i.i.d. sampling from the
+            # fitted null; redrawing would bias the null distribution.
+            null_max[q_i] = 0.0
+            continue
         # audit item 1: every replica refits its own background inside the
         # scan (background=None) — only the coded panel structure is reused.
-        panel_star = replace(panel, theta=draw())
+        panel_star = replace(panel, theta=theta_star)
         res_star = suddds_scan(dataset, rng=rng, panel=panel_star, **kwargs)
         null_max[q_i] = res_star.discoveries[0].llr if res_star.discoveries else 0.0
 
