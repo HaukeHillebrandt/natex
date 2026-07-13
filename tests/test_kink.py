@@ -5,7 +5,7 @@ import pytest
 from scipy import stats
 
 from natex.kink import difference_in_kinks, regression_kink
-from natex.kink.estimate import _fieller
+from natex.kink.estimate import _fieller, _kernel_weights
 
 
 def _grid(n_side: int = 30) -> np.ndarray:
@@ -63,6 +63,37 @@ def test_sharp_rkd_exact_slope_ratio_in_original_units():
     )
     assert np.isfinite(extreme_confidence.extras["critical_value"])
     assert np.isfinite(extreme_confidence.ci).all()
+
+
+def test_kernel_weight_shapes_are_pinned_pointwise_and_normalized():
+    u = np.array([-1.0, -0.5, 0.0, 0.25, 0.5, 1.0])
+    assert _kernel_weights(u, "triangular") == pytest.approx(
+        [0.0, 0.5, 1.0, 0.75, 0.5, 0.0], abs=0.0
+    )
+    assert _kernel_weights(u, "epanechnikov") == pytest.approx(
+        [0.0, 0.5625, 0.75, 0.703125, 0.5625, 0.0], abs=0.0
+    )
+    assert _kernel_weights(u, "uniform") == pytest.approx(np.ones(u.size), abs=0.0)
+    grid = np.linspace(-1.0, 1.0, 200_001)
+    for kernel in ("triangular", "epanechnikov"):
+        mass = float(np.trapezoid(_kernel_weights(grid, kernel), grid))
+        assert mass == pytest.approx(1.0, abs=1e-9)
+
+
+def test_kernel_choice_shifts_the_local_linear_fit_on_a_curved_dgp():
+    # The synthetic DGPs are piecewise linear, so any positive weighting
+    # fits them exactly; curvature is what makes the kernel shape matter.
+    x = _grid(200)
+    y = 0.5 * np.maximum(x, 0.0) + 1.3 * x**2
+    kinks = {
+        kernel: regression_kink(
+            y, x, policy_kink=1.0, bandwidth=1.0, kernel=kernel
+        ).reduced_form
+        for kernel in ("triangular", "uniform", "epanechnikov")
+    }
+    assert kinks["triangular"] == pytest.approx(2.6347175879396976, rel=1e-8)
+    assert kinks["uniform"] == pytest.approx(3.152, rel=1e-8)
+    assert kinks["epanechnikov"] == pytest.approx(2.739547976767615, rel=1e-8)
 
 
 def test_nonzero_cutoff_recenters_the_running_variable_exactly():
