@@ -73,7 +73,8 @@ class IntakeReport:
 
     def save(self, out: str | Path) -> Path:
         """Write ``out/intake_report.json`` (full report) and ``out/prep_plan.json``
-        (the plan alone, editable by the user); return the report path."""
+        (the plan alone, editable by the user — an edited copy feeds back via
+        ``natex discover --plan ... --prep-plan``); return the report path."""
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         report_path = out / "intake_report.json"

@@ -24,6 +24,7 @@ from natex.discover import discover as run_discover
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.analyst import IntakeReport
 from natex.intake.analyst import study as run_study
+from natex.intake.prep import PrepPlan
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
@@ -164,7 +165,8 @@ def study(
     """Stage-0 analyst pass: profile -> understand -> prep plan -> search plan.
 
     Writes ``out/intake_report.json`` (feed it to ``natex discover --plan``),
-    ``out/prep_plan.json`` (the declarative prep plan alone, user-editable) and
+    ``out/prep_plan.json`` (the declarative prep plan alone, user-editable —
+    feed an edited copy back via ``natex discover --plan ... --prep-plan``) and
     ``out/guidance_log.jsonl`` (every guidance request+response). Works fully
     offline with the default ``--backend null`` — study always applies at
     least the deterministic NullBackend heuristics.
@@ -201,6 +203,7 @@ def _discover_plan(
     *,
     csv: Path | None,
     plan: Path,
+    prep_plan: Path | None,
     backend: str,
     model: str | None,
     workdir: Path | None,
@@ -239,6 +242,23 @@ def _discover_plan(
     except (OSError, ValueError, KeyError) as exc:
         typer.echo(f"could not load --plan {plan}: {exc}")
         raise typer.Exit(code=2) from None
+    if prep_plan is not None:
+        # Issue #18: out/prep_plan.json is documented as user-editable, so an
+        # edited copy must be loadable back — and never silently: the override
+        # is echoed and recorded in guidance_errors (carried into the results
+        # bundle's intake block). Replaced BEFORE prepare(), so the plan is
+        # still validated against the real frame by PrepPlan.apply.
+        try:
+            content = json.loads(Path(prep_plan).read_text(encoding="utf-8"))
+            report.prep_plan = PrepPlan.model_validate(content)
+        except (OSError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError and pydantic.ValidationError
+            typer.echo(f"could not load --prep-plan {prep_plan}: {exc}")
+            raise typer.Exit(code=2) from None
+        typer.echo(f"prep plan overridden: {prep_plan}")
+        report.guidance_errors.append(
+            f"prep plan overridden from {prep_plan} (CLI --prep-plan)"
+        )
     df = pd.read_csv(csv) if csv is not None else None
     try:
         ds = report.prepare(df=df)
@@ -321,6 +341,12 @@ def discover(
         None, help="intake_report.json from `natex study`: plan candidates scan first, "
                    "the exhaustive remainder still runs within budget (spec 6b)"
     ),
+    prep_plan: Path = typer.Option(
+        None, "--prep-plan",
+        help="prep_plan.json overriding the plan's embedded prep plan, e.g. an "
+             "edited `natex study` out/prep_plan.json (--plan mode only); the "
+             "override is echoed and recorded in the bundle's intake provenance",
+    ),
     backend: str = typer.Option("null", help=f"{_BACKEND_HELP} (--plan mode)"),
     workdir: Path = typer.Option(
         None, help="agent-backend request/response dir (--plan mode); default OUT/guidance"
@@ -341,11 +367,17 @@ def discover(
     """
     if plan is not None:
         _discover_plan(
-            ctx, csv=csv, plan=plan, backend=backend, model=model, workdir=workdir,
-            max_configs=max_configs, design=design, k=k, q=q, coarse=coarse,
-            n_coarse=n_coarse, seed=seed, out=out,
+            ctx, csv=csv, plan=plan, prep_plan=prep_plan, backend=backend,
+            model=model, workdir=workdir, max_configs=max_configs, design=design,
+            k=k, q=q, coarse=coarse, n_coarse=n_coarse, seed=seed, out=out,
         )
         return
+    if prep_plan is not None:
+        typer.echo(
+            "--prep-plan requires --plan intake_report.json "
+            "(it overrides the plan's embedded prep plan)"
+        )
+        raise typer.Exit(code=2)
     if csv is None or treatment is None:
         typer.echo(
             "natex discover requires CSV and --treatment COLUMN "
