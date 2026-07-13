@@ -249,6 +249,26 @@ def test_failed_config_isolated_and_llr_p_null_in_json(monkeypatch):
     assert rep.best() is second
 
 
+def test_issue_19_default_k_exceeding_n_fails_config_not_sweep():
+    """Issue #19: on a tiny dataset the default budget k=50 exceeds n;
+    cKDTree.query pads with the sentinel index n and the sweep died with an
+    uncaught IndexError. The config must instead fail with a diagnostic
+    ValueError naming k and n, and the sweep must complete."""
+    rng = np.random.default_rng(0)
+    n = 10
+    df = pd.DataFrame({
+        "x": np.linspace(-1.0, 1.0, n),
+        "T": rng.normal(size=n),  # continuous treatment
+        "y": rng.normal(size=n),
+    })
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x"], covariates=["x"]))
+    rep = discover(ds, rng=np.random.default_rng(1))  # default budget: k=50
+    assert all(r.status != "scanned" for r in rep.configs)
+    failed = [r for r in rep.configs if r.status == "failed"]
+    assert failed and all("k=50" in r.error and "10" in r.error for r in failed)
+    assert rep.best_index is None
+
+
 # ---------------------------------------------------------------------------
 # did path
 # ---------------------------------------------------------------------------

@@ -37,6 +37,25 @@ def test_dedup_complements_and_duplicates():
     assert G2.shape[1] == 2
 
 
+def test_issue_19_k_bounds_validated():
+    """Issue #19: cKDTree.query(z, k) with k > n fills missing neighbors with
+    the sentinel index n, which later crashes the sweep with an uncaught
+    IndexError at r[idx]. knn_indices must validate 2 <= k <= n up front with
+    a ValueError (which discover() isolates as status="failed"); k == n stays
+    legal as an explicit whole-dataset neighborhood."""
+    import pytest
+
+    z = np.linspace(-1.0, 1.0, 10).reshape(-1, 1)
+    with pytest.raises(ValueError, match=r"2 <= k <= n"):
+        knn_indices(z, k=11)
+    with pytest.raises(ValueError, match=r"2 <= k <= n"):
+        knn_indices(z, k=1)
+    idx = knn_indices(z, k=10)  # k == n is an explicit, valid choice
+    assert idx.shape == (10, 10)
+    np.testing.assert_array_equal(idx[:, 0], np.arange(10))
+    assert (idx < 10).all()  # no sentinel index n
+
+
 def test_issue_8_antipodal_normals_keep_both_distinct_partitions():
     """Issue #8: the antipodal key (dots <= 0) deduped two genuinely different
     partitions — tied rows (the center at least) are group 1 under both

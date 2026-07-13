@@ -11,14 +11,21 @@ from scipy.spatial import cKDTree
 
 
 def knn_indices(z_std: np.ndarray, k: int) -> np.ndarray:
-    if k < 2:
-        raise ValueError("k must be >= 2")
+    n = z_std.shape[0]
+    if not 2 <= k <= n:
+        # k > n makes cKDTree.query pad rows with the sentinel index n, which
+        # crashes downstream indexing (issue #19). Never silently clamp: a
+        # k = n neighborhood is the whole dataset and must be an explicit
+        # user choice (it is valid when requested).
+        raise ValueError(
+            f"k must satisfy 2 <= k <= n ({n} scan rows); got k={k} -- "
+            "pass budget={'k': <= n} or a smaller k"
+        )
     tree = cKDTree(z_std)
     _, idx = tree.query(z_std, k=k)
     idx = np.atleast_2d(idx)
     # cKDTree returns self as the first neighbor for exact matches, but ties can
     # reorder; enforce self-first deterministically.
-    n = z_std.shape[0]
     for i in range(n):
         if idx[i, 0] != i and i in idx[i]:
             j = int(np.where(idx[i] == i)[0][0])
