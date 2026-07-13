@@ -65,6 +65,49 @@ def test_sharp_rkd_exact_slope_ratio_in_original_units():
     assert np.isfinite(extreme_confidence.ci).all()
 
 
+def test_nonzero_cutoff_recenters_the_running_variable_exactly():
+    cutoff = 5.0
+    v = cutoff + 100.0 * _grid()
+    kink = -0.4
+    tau = 2.5
+    b = _policy(v - cutoff, base_slope=0.7, kink=kink)
+    y = tau * b + 3.0 + 0.2 * v
+
+    est = regression_kink(
+        y,
+        v,
+        policy_kink=kink,
+        cutoff=cutoff,
+        bandwidth=100.0,
+        kernel="uniform",
+    )
+
+    assert est.extras["cutoff"] == cutoff
+    assert est.n_by_cell == {"left": 30, "right": 30}
+    assert est.reduced_form == pytest.approx(tau * kink, abs=1e-10)
+    assert est.tau == pytest.approx(tau, abs=1e-10)
+
+
+def test_donut_excludes_near_cutoff_rows_and_counts_them():
+    v = _grid(30)
+    b = _policy(v, base_slope=0.3, kink=0.9)
+    y = 1.5 * b + 0.1 * v
+    donut = 0.1
+    inside = int(np.sum(np.abs(v) < donut))
+    assert inside == 6  # three points per side of this grid
+
+    base = regression_kink(y, v, policy_kink=0.9, bandwidth=1.0, kernel="uniform")
+    donut_est = regression_kink(
+        y, v, policy_kink=0.9, bandwidth=1.0, kernel="uniform", donut=donut
+    )
+
+    assert base.extras["n_donut_excluded"] == 0
+    assert donut_est.extras["n_donut_excluded"] == inside
+    assert donut_est.n_used == v.size - inside
+    assert donut_est.n_by_cell == {"left": 27, "right": 27}
+    assert donut_est.tau == pytest.approx(1.5, abs=1e-10)
+
+
 def test_fuzzy_rkd_exact_first_stage_and_fieller_point_set():
     v = _grid()
     b = _policy(v, base_slope=0.4, kink=0.8)
