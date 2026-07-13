@@ -17,6 +17,7 @@ from natex.did.effects import (
     ESTIMATOR_BACKENDS,
     DiDEffect,
     DiDEstimatorBackend,
+    _mean_gap,
     did_effect,
     placebo_dimension_tests,
     tau_randomization_test,
@@ -208,6 +209,54 @@ def test_did_effect_all_nan_counterfactual_is_nan_never_zero():
     eff = did_effect(panel, disc, control="dd")
     assert np.isnan(eff.tau) and np.isnan(eff.se)
     assert eff.n_treated_post == 0
+
+
+def test_issue_17_mean_gap_se_is_se_of_the_record_weighted_tau():
+    # Issue #17: tau is the RECORD-weighted mean over usable post records, so
+    # its SE must be the CR1 cluster(=period)-robust SE of that estimator.
+    # The old equal-weight std(period_means, ddof=1)/sqrt(h) was invariant to
+    # the record weights: two post periods with gaps 0 (n1 records) and 10
+    # (1 record) kept se = 5.0 while tau collapsed ~5000x as n1 grew.
+    def build(n1):
+        t = np.array([0.0, 1.0] + [2.0] * n1 + [3.0])
+        n = t.size
+        panel = CategoricalPanel(
+            codes=np.zeros((n, 1), dtype=np.int64),
+            dim_names=["g"],
+            dim_values=[np.array(["a"])],
+            t=t,
+            theta=np.zeros(n),
+            y=None,
+            unit=np.zeros(n, dtype=np.int64),
+            unit_values=np.array(["u0"]),
+        )
+        disc = DiDDiscovery(
+            subset_values={},
+            mask=np.ones(n, dtype=bool),
+            t0=2.0,
+            window=2.0,
+            llr=1.0,
+            model="normal",
+            method="greedy",
+        )
+        v = np.zeros(n)
+        v[-1] = 10.0  # post gaps: n1 zeros at t=2, a single 10 at t=3
+        return panel, disc, v, np.zeros(n)
+
+    for n1 in (1, 10, 10000):
+        panel, disc, v, v0 = build(n1)
+        tau, se, n_used, _n_skipped, h = _mean_gap(panel, disc, v, v0)
+        assert (n_used, h) == (n1 + 1, 2)
+        N = n1 + 1
+        assert tau == pytest.approx(10.0 / N)
+        gbar, n_g = np.array([0.0, 10.0]), np.array([float(n1), 1.0])
+        expected = float(np.sqrt(2.0 * np.sum(((n_g / N) * (gbar - tau)) ** 2)))
+        assert se == pytest.approx(expected)
+    # Balanced cells (n1 = 1): the CR1 formula reduces EXACTLY to the old
+    # std(period_means, ddof=1)/sqrt(h).
+    panel, disc, v, v0 = build(1)
+    _tau, se, *_ = _mean_gap(panel, disc, v, v0)
+    assert se == pytest.approx(float(np.std([0.0, 10.0], ddof=1) / np.sqrt(2.0)))
 
 
 # ---------------------------------------------------------------------------
