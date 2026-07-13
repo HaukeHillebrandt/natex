@@ -57,12 +57,20 @@ def fit_treatment_model(X: np.ndarray, T: np.ndarray, model: str, degree: int):
     # standardization makes the penalty independent of covariate units.
     scaler = StandardScaler().fit(Xp)
     with warnings.catch_warnings():
-        # sklearn <= 1.6 still passes the removed 'iprint' option to
-        # scipy >= 1.18's L-BFGS-B — a known, data-independent upstream bug
-        # that fires once PER FIT (once per null replica). Suppress exactly
-        # that message; convergence/separation warnings stay visible (issue #5).
+        # sklearn <= 1.6 still passes the removed 'iprint' option to scipy's
+        # L-BFGS-B — a known, data-independent upstream bug that fires once
+        # PER FIT (once per null replica). scipy >= 1.18 reports it as an
+        # OptimizeWarning ("Unknown solver options"); scipy 1.17 (the locked
+        # Python 3.11 resolution) as a DeprecationWarning. Suppress exactly
+        # those messages; convergence/separation warnings stay visible
+        # (issue #5).
         warnings.filterwarnings(
             "ignore", message="Unknown solver options: iprint", category=OptimizeWarning
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"scipy\.optimize: The `disp` and `iprint` options",
+            category=DeprecationWarning,
         )
         est = LogisticRegression(C=1.0, max_iter=1000).fit(scaler.transform(Xp), T.astype(int))
     return (
