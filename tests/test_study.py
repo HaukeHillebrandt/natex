@@ -210,6 +210,61 @@ def test_prepare_covariates_respect_ignore_time_unit_roles(tmp_path):
     assert "x0" in ds.spec.covariates  # the candidate's own forcing stays
 
 
+def test_issue_7_prepare_reserves_every_known_outcome(tmp_path):
+    """Issue #7: prepare(candidate=0) excluded only the CURRENT candidate's
+    outcome, so another candidate's outcome leaked into the covariates — it
+    fed the treatment background model and a single NaN in it silently
+    listwise-deleted scan rows. Role-declared outcomes leaked the same way."""
+    csv = _write_synthetic_csv(tmp_path)
+    mock = MockBackend([
+        {"shape": "cross-section"},
+        {"version": 1, "column_roles": {"x2": "outcome"}},
+        {"candidates": [
+            {"design": "rdd", "treatment": "T", "outcome": "y", "forcing": ["x0"],
+             "priority": 0},
+            {"design": "rdd", "treatment": "T", "outcome": "x1", "forcing": ["x0"],
+             "priority": 1},
+        ], "budget": {}},
+    ])
+    report = study(csv, guidance=mock, rng=np.random.default_rng(0))
+    ds = report.prepare(candidate=0)
+    assert ds.spec.outcome == "y"
+    assert "x1" not in ds.spec.covariates  # candidate 1's outcome
+    assert "x2" not in ds.spec.covariates  # role-declared outcome
+    assert "x0" in ds.spec.covariates
+    # a NaN in the other candidate's outcome must not delete scan rows
+    df = pd.read_csv(csv)
+    df.loc[0, "x1"] = np.nan
+    assert report.prepare(df=df, candidate=0).n == len(df)
+    # the candidate's own outcome still rides along in the frame for estimation
+    assert "y" in report.prepare(df=df, candidate=0).df.columns
+
+
+def test_issue_7_candidate_role_wins_over_foreign_outcome(tmp_path):
+    """Issue #7: a column that is another candidate's outcome but THIS
+    candidate's forcing keeps the forcing role (forcing must stay a subset of
+    the covariates); the collision is recorded as an advisory warning only."""
+    csv = _write_synthetic_csv(tmp_path)
+    mock = MockBackend([
+        {"shape": "cross-section"},
+        {"version": 1},
+        {"candidates": [
+            {"design": "rdd", "treatment": "T", "outcome": "y", "forcing": ["x0", "x1"],
+             "priority": 0},
+            {"design": "rdd", "treatment": "T", "outcome": "x1", "forcing": ["x0"],
+             "priority": 1},
+        ], "budget": {}},
+    ])
+    report = study(csv, guidance=mock, rng=np.random.default_rng(0))
+    ds = report.prepare(candidate=0)
+    assert "x1" in ds.spec.forcing
+    assert "x1" in ds.spec.covariates  # the candidate's own role wins
+    warnings = [e for e in report.guidance_errors if "'x1'" in e and "collision" in e]
+    assert len(warnings) == 1
+    report.prepare(candidate=0)  # repeated calls never duplicate the warning
+    assert [e for e in report.guidance_errors if "collision" in e] == warnings
+
+
 def test_snooping_warning_advisory_only(tmp_path):
     csv = _write_synthetic_csv(tmp_path)
     mock = MockBackend([

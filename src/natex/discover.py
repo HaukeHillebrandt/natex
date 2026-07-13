@@ -224,11 +224,16 @@ def _candidate_error(candidate: DesignCandidate, df: pd.DataFrame) -> str | None
     return None
 
 
-def _dataset_for(data: Dataset, c: DesignCandidate) -> Dataset:
+def _dataset_for(data: Dataset, c: DesignCandidate, known_outcomes: set[str]) -> Dataset:
     """The bound Dataset when the candidate equals its spec, else a rebuilt one.
 
     The rebuilt spec mirrors ``Dataset.from_csv`` defaults: covariates = all
-    columns minus {treatment, outcome}.
+    columns minus {treatment, outcome} — and minus every OTHER candidate's
+    outcome (issue #7): a foreign outcome in the covariates feeds the
+    background treatment model and its NaNs listwise-delete scan rows. A
+    column the candidate itself uses as forcing/time/unit keeps that role.
+    The bound dataset is repaired the same way when its ``spec.covariates``
+    smuggle a foreign outcome in; otherwise it passes through untouched.
     """
     spec = data.spec
     same_roles = c.treatment == spec.treatment and c.outcome == spec.outcome
@@ -236,9 +241,15 @@ def _dataset_for(data: Dataset, c: DesignCandidate) -> Dataset:
         bound = same_roles and sorted(c.forcing) == sorted(spec.forcing)
     else:
         bound = same_roles and c.time == spec.time and c.unit == spec.unit
+    own_roles = {col for col in (*c.forcing, c.time, c.unit) if col is not None}
+    foreign_outcomes = known_outcomes - own_roles - {c.outcome}
     if bound:
-        return data
-    reserved = {c.treatment} | ({c.outcome} if c.outcome else set())
+        leaked = foreign_outcomes & set(spec.covariates)
+        if not leaked:
+            return data
+        kept = [col for col in spec.covariates if col not in leaked]
+        return Dataset(data.df, spec.model_copy(update={"covariates": kept}))
+    reserved = {c.treatment} | ({c.outcome} if c.outcome else set()) | foreign_outcomes
     covariates = [col for col in data.df.columns if col not in reserved]
     if c.design == "rdd":
         new_spec = DatasetSpec(treatment=c.treatment, outcome=c.outcome,
@@ -465,6 +476,13 @@ def discover(
             status="invalid" if err else "pending", error=err,
         ))
 
+    # Issue #7: every candidate's outcome (plus the bound spec's) is reserved
+    # from every scan's covariates — an outcome named by ONE candidate must
+    # never feed another candidate's background model or listwise deletion.
+    known_outcomes = {r.candidate.outcome for r in records if r.candidate.outcome is not None}
+    if data.spec.outcome is not None:
+        known_outcomes.add(data.spec.outcome)
+
     # -- sequential execution within budget ------------------------------------
     max_configs = eff_budget["max_configs"]
     n_attempted = 0
@@ -477,7 +495,7 @@ def discover(
         n_attempted += 1
         hooks = _GuidanceHooks(guidance, rec.candidate, rec.advisory)
         try:
-            ds = _dataset_for(data, rec.candidate)
+            ds = _dataset_for(data, rec.candidate, known_outcomes)
             runner = _run_rdd if rec.candidate.design == "rdd" else _run_did
             llr, p_value, n_disc, summary = runner(ds, eff_budget, rng, hooks)
         except _CONFIG_EXCEPTIONS as exc:

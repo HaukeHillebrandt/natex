@@ -115,10 +115,17 @@ class IntakeReport:
         Frame resolution: ``df`` arg, else the study() frame, else re-read
         ``source`` if it is an existing csv path. Spec mirrors
         ``Dataset.from_csv`` defaults: covariates = all prepared columns minus
-        {treatment, outcome} and minus columns the prep plan roles as
-        ``ignore``/``time``/``unit`` (unless the candidate itself uses them) —
-        role-ignored columns must not leak into the scan's covariate set, the
-        placebo battery, or listwise deletion (dogfood finding).
+        {treatment, outcome}, minus EVERY known outcome — each ranked
+        candidate's and each prep-plan ``outcome``-roled column (issue #7: a
+        foreign outcome in the covariates feeds the treatment background model
+        and its NaNs listwise-delete scan rows) — and minus columns the prep
+        plan roles as ``ignore``/``time``/``unit`` (unless the candidate
+        itself uses them) — role-ignored columns must not leak into the scan's
+        covariate set, the placebo battery, or listwise deletion (dogfood
+        finding). A column the candidate itself uses as
+        treatment/forcing/time/unit keeps that role even when it is an outcome
+        elsewhere; the collision is recorded in ``guidance_errors`` (advisory
+        only). The candidate's own outcome stays in the frame for estimation.
         """
         frame = df if df is not None else self._df
         if frame is None and self.source != "<dataframe>" and Path(self.source).exists():
@@ -134,9 +141,24 @@ class IntakeReport:
         c = ranked[candidate]
         roles = self.prep_plan.column_roles
         used = {c.treatment, c.outcome, c.unit, c.time, *c.forcing}
+        # Issue #7: reserve EVERY known outcome, not just this candidate's —
+        # unless the candidate itself uses the column in a non-outcome role
+        # (its own role wins; the collision is recorded, advisory only).
+        own_roles = {col for col in (c.treatment, c.unit, c.time, *c.forcing) if col is not None}
+        known_outcomes = {cand.outcome for cand in ranked if cand.outcome is not None}
+        known_outcomes |= {col for col, role in roles.items() if role == "outcome"}
+        for col in sorted(known_outcomes & own_roles):
+            msg = (
+                f"prepare: candidate {candidate} uses column '{col}' as "
+                "treatment/forcing/time/unit although it is an outcome elsewhere "
+                "-- kept in the candidate's role (role collision)"
+            )
+            if msg not in self.guidance_errors:
+                self.guidance_errors.append(msg)
+        reserved = {c.treatment, c.outcome} | (known_outcomes - own_roles)
         covariates = [
             col for col in df2.columns
-            if col not in {c.treatment, c.outcome}
+            if col not in reserved
             and not (roles.get(col) in ("ignore", "time", "unit") and col not in used)
         ]
         if c.design == "rdd":

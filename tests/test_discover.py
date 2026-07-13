@@ -295,6 +295,76 @@ def test_issue_19_default_k_exceeding_n_fails_config_not_sweep():
     assert rep.best_index is None
 
 
+def test_issue_7_rebuilt_dataset_reserves_every_candidate_outcome(monkeypatch):
+    """Issue #7: a per-candidate rebuilt Dataset put every OTHER candidate's
+    outcome into the covariates, where it fed the background treatment model
+    and its NaNs listwise-deleted scan rows."""
+    df = _rdd_dataset().df.copy()
+    rng = np.random.default_rng(5)
+    y2 = rng.normal(0.0, 1.0, len(df))
+    y2[df["x0"].to_numpy() > np.median(df["x0"])] = np.nan  # poison half the rows
+    df["y2"] = y2
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                   covariates=["x0", "x1"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0", "x1"], priority=0),
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0"], priority=1),
+    ])
+    captured = []
+    real = discover_mod.lord3_scan
+
+    def spy(ds, **kw):
+        captured.append(ds)
+        return real(ds, **kw)
+
+    monkeypatch.setattr(discover_mod, "lord3_scan", spy)
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
+    assert [r.status for r in rep.configs] == ["scanned", "scanned"]
+    ds0, ds1 = captured
+    assert "y" not in ds0.spec.covariates  # the other candidate's outcome
+    assert "y2" not in ds0.spec.covariates  # its own outcome, as before
+    assert "y2" not in ds1.spec.covariates
+    assert ds1.n == data.n  # y2's NaNs no longer listwise-delete scan rows
+
+
+def test_issue_7_bound_dataset_covariate_outcome_leak_repaired(monkeypatch):
+    """Issue #7: even the candidate that matches the bound spec must not scan
+    with another candidate's outcome sitting in ``spec.covariates``; without a
+    leak the bound dataset still passes through untouched."""
+    df = _rdd_dataset().df.copy()
+    df["y2"] = np.linspace(0.0, 1.0, len(df))
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                   covariates=["x0", "x1", "y2"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0", "x1"], priority=0),
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0"], priority=1),
+    ])
+    captured = []
+    real = discover_mod.lord3_scan
+
+    def spy(ds, **kw):
+        captured.append(ds)
+        return real(ds, **kw)
+
+    monkeypatch.setattr(discover_mod, "lord3_scan", spy)
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
+    assert [r.status for r in rep.configs] == ["scanned", "scanned"]
+    assert captured[0].spec.covariates == ["x0", "x1"]  # y2 repaired away
+    assert "y" not in captured[1].spec.covariates
+
+    # no cross-candidate outcome, no leak: the bound Dataset passes through
+    clean = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                    covariates=["x0", "x1"]))
+    captured.clear()
+    discover(clean, search_plan=SearchPlan(candidates=[plan.candidates[0]]),
+             rng=np.random.default_rng(2), budget=SMALL)
+    assert captured[0] is clean
+
+
 # ---------------------------------------------------------------------------
 # did path
 # ---------------------------------------------------------------------------
