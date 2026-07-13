@@ -221,6 +221,95 @@ def test_fewer_than_three_usable_gives_nan_not_zero(synth, cheap_result):
     assert not np.any(res.cate_debiased == 0.0)
 
 
+# --------------------------------------------- issue #23: non-finite obs CATE
+
+
+class _PlaneNaNEstimator:
+    """Protocol stub: predicts 0.0 where Z_std[:, 0] < thr, NaN elsewhere."""
+
+    def __init__(self, thr):
+        self.thr = thr
+
+    def fit(self, X, T, y):
+        return self
+
+    def predict_cate(self, Xq):
+        Xq = np.asarray(Xq, dtype=float)
+        out = np.zeros(Xq.shape[0])
+        out[Xq[:, 0] >= self.thr] = np.nan
+        return out
+
+
+def _bias_thr(cheap_result, n_finite):
+    """Threshold on Z_std[:, 0] leaving exactly ``n_finite`` used centers finite."""
+    c0 = np.array([float(e.projected_center[0]) for e in cheap_result.vknn.experiments])
+    lo = np.sort(c0[cheap_result.used])
+    assert lo.size > n_finite and lo[n_finite - 1] < lo[n_finite]
+    return float((lo[n_finite - 1] + lo[n_finite]) / 2.0)
+
+
+def test_issue_23_all_nan_obs_cate_degenerates_bias_side_only(synth, cheap_result):
+    """All-NaN cross-fitted obs CATE must trip a bias-side degenerate path --
+    gp_bias None, w_debias NaN, mixture None, cate_debiased NaN, dropped
+    entries + diagnostics reason -- while the healthy direct model survives."""
+    ds, truth, scan = synth
+    res = _cheap_run(ds, truth.query, scan, factory=lambda: _PlaneNaNEstimator(-np.inf))
+    assert np.array_equal(res.used, cheap_result.used)  # tau/se mask untouched
+    n_used = int(res.used.sum())
+    assert res.diagnostics["n_experiments_used"] == n_used >= 3
+    assert res.diagnostics["n_experiments_used_bias"] == 0
+    dropped_bias = [
+        d for d in res.diagnostics["dropped"] if d["reason"] == "non-finite cross-fitted obs CATE"
+    ]
+    assert {d["experiment"] for d in dropped_bias} == set(np.flatnonzero(res.used).tolist())
+    assert "reason" in res.diagnostics
+    assert res.gp_bias is None
+    assert res.gp_direct is not None
+    assert np.isnan(res.weights.w_debias)
+    assert res.mixture is None
+    assert np.all(np.isnan(res.cate_debiased))
+    assert np.all(np.isfinite(res.cate_direct))
+    assert not np.any(res.cate_debiased == 0.0)
+
+
+def test_issue_23_two_finite_bias_obs_is_degenerate_not_finite(synth, cheap_result):
+    """Exactly 2 finite bias observations sit below the documented 3-experiment
+    floor: the bias side must degenerate (NaN, never a finite 2-point surface)."""
+    ds, truth, scan = synth
+    thr = _bias_thr(cheap_result, 2)
+    res = _cheap_run(ds, truth.query, scan, factory=lambda: _PlaneNaNEstimator(thr))
+    assert res.diagnostics["n_experiments_used"] >= 3
+    assert res.diagnostics["n_experiments_used_bias"] == 2
+    assert res.gp_bias is None
+    assert res.gp_direct is not None
+    assert np.isnan(res.weights.w_debias)
+    assert res.mixture is None
+    assert np.all(np.isnan(res.cate_debiased))
+    assert np.all(np.isfinite(res.cate_direct))
+    assert "reason" in res.diagnostics
+    assert not np.any(res.cate_debiased == 0.0)
+
+
+def test_issue_23_partial_nan_obs_gp_bias_fits_only_finite_rows(synth, cheap_result):
+    """With >= 3 finite bias observations the pipeline runs, fitting gp_bias on
+    exactly the bias-usable rows (fit_report matches diagnostics) while
+    gp_direct keeps every tau/se-usable experiment."""
+    ds, truth, scan = synth
+    assert int(cheap_result.used.sum()) > 3  # ensure the NaN subset is non-empty
+    thr = _bias_thr(cheap_result, 3)
+    res = _cheap_run(ds, truth.query, scan, factory=lambda: _PlaneNaNEstimator(thr))
+    assert res.diagnostics["n_experiments_used_bias"] == 3
+    assert res.gp_bias is not None and res.gp_direct is not None
+    assert res.gp_bias.fit_report["n_used"] == 3
+    assert res.gp_bias.fit_report["n_dropped"] == 0
+    assert res.gp_direct.fit_report["n_used"] == int(res.used.sum())
+    assert res.mixture is not None
+    dropped_bias = [
+        d for d in res.diagnostics["dropped"] if d["reason"] == "non-finite cross-fitted obs CATE"
+    ]
+    assert len(dropped_bias) == int(res.used.sum()) - 3
+
+
 # ------------------------------------------------------------ strategy switch
 
 
