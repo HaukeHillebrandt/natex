@@ -203,7 +203,25 @@ Honest-inference caveats — state these whenever you summarize results:
   designs as **estimation** problems (interrupted time series with HAC errors), not
   discovery problems, and say so in the summary.
 
-## 7. Warnings
+## 7. Known-cutoff kink designs
+
+Discovery is for *unknown* designs. When the user already knows a policy cutoff where a
+schedule changes **slope** (a kink, not a jump) — e.g. a benefit formula, tax bracket, or
+subsidy taper — skip the scan and evaluate the design directly:
+
+```bash
+uv run natex kink data.csv --design rkd --outcome y --running score \
+  --policy-kink -0.4 --cutoff 0 --bandwidth 1500 --out out/
+```
+
+`--design dik` (difference-in-kinks) additionally needs `--time`/`--t0`; fuzzy variants
+take `--treatment` instead of the known `--policy-kink` / `--policy-kink-change`. A
+bandwidth is always required — there is no automatic selector. Estimands, identifying
+assumptions, and the required sensitivity analysis (bandwidths, donuts, placebo cutoffs)
+are documented in `docs/method_cards/kink.md`; report `out/kink.json` fields as-is,
+including `weak_first_stage` and Fieller set kinds, and treat `null` as failed, never zero.
+
+## 8. Warnings
 
 - **Never fabricate** statistics, p-values, or columns — every number you report must
   come from natex's output files or from a payload you were given.

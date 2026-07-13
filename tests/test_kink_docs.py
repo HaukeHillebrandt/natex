@@ -53,6 +53,15 @@ def test_agent_card_lists_kink_command_and_method_card():
     assert "docs/method_cards/kink.md" in text
 
 
+def test_discover_skill_points_agents_at_known_cutoff_kink_designs():
+    path = ROOT / "skills" / "discover-natural-experiments" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    assert "natex kink" in text
+    assert "docs/method_cards/kink.md" in text
+    low = " ".join(text.lower().split())
+    assert "known" in low and "cutoff" in low
+
+
 def test_kink_status_records_green_gate_and_deliberate_boundaries():
     path = ROOT / "docs" / "status" / "phase-kinks.md"
     assert path.is_file()
