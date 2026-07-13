@@ -158,9 +158,11 @@ def panel_randomization_test(
 
     Parametric bootstrap, NOT exact (audit item 1): replicas are drawn from a
     background model fitted to the observed data, each replica REFITS ITS OWN
-    background and reruns :func:`natex.did.suddds.suddds_scan` with the same
-    ``windows``/``method``/``restarts`` (overridable via ``scan_kwargs``) and
-    the shared ``rng``; the p-value is the +1-rank
+    background and reruns :func:`natex.did.suddds.suddds_scan` with the SAME
+    resolved configuration the observed scan recorded on ``scan_result`` —
+    windows/method/restarts plus bins/degree/dims/min_side/n_rho/
+    exhaustive_max_values (issue #13; ``scan_kwargs`` overrides explicitly) —
+    and the shared ``rng``; the p-value is the +1-rank
     ``(1 + #{null >= observed}) / (Q + 1)``.
 
     ``null="auto"`` selects ``"bernoulli"`` for a Bernoulli-model result
@@ -196,9 +198,17 @@ def panel_randomization_test(
     kwargs.setdefault("method", scan_result.method)
     kwargs.setdefault("restarts", scan_result.restarts)
     kwargs.setdefault("model", kind)
-    bins = kwargs.pop("bins", 4)
-    dims = kwargs.pop("dims", None)
-    degree = kwargs.get("degree", 1)
+    # Issue #13: every default comes from the RESOLVED config recorded on the
+    # scan result, never a hardcoded fallback — replicas searching a smaller
+    # space than the observed max-LLR understate the null maximum and give
+    # anti-conservative p-values. ``scan_kwargs`` stays an explicit override.
+    kwargs.setdefault("degree", scan_result.degree)
+    kwargs.setdefault("min_side", scan_result.min_side)
+    kwargs.setdefault("n_rho", scan_result.n_rho)
+    kwargs.setdefault("exhaustive_max_values", scan_result.exhaustive_max_values)
+    bins = kwargs.pop("bins", scan_result.bins)
+    dims = kwargs.pop("dims", scan_result.dims)
+    degree = kwargs["degree"]
 
     panel = build_panel(dataset, dims=dims, bins=bins)
     background = fit_did_background(panel, model=kind, degree=degree)

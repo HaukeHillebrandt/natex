@@ -282,6 +282,27 @@ def test_issue_14_degenerate_bernoulli_replica_scores_empty_supremum():
     assert rep.p_value == 0.5  # (1 + 0) / (1 + 1): 0.0 < observed llr
 
 
+def test_issue_13_replicas_search_the_observed_scan_config():
+    # Issue #13: with scan_kwargs omitted, the fitted-null background and
+    # every replica scan silently used hardcoded bins=4/dims=None/degree=1
+    # regardless of what produced the observed max-LLR — replicas searching a
+    # smaller space than the observed scan understate the null maximum and
+    # give anti-conservative p-values. Defaults must come from the RESOLVED
+    # config recorded on the SuDDDSResult; scan_kwargs stays as an override.
+    ds = planted_frame(seed=0)
+    scan_kw = dict(windows=(3.0,), restarts=2, method="greedy", bins=2, degree=0)
+    res = suddds_scan(ds, rng=np.random.default_rng(0), **scan_kw)
+    assert (res.bins, res.degree) == (2, 0)
+    assert res.dims is None
+    assert (res.min_side, res.n_rho, res.exhaustive_max_values) == (3, 10, 12)
+    implicit = panel_randomization_test(ds, res, Q=9, rng=np.random.default_rng(3))
+    explicit = panel_randomization_test(
+        ds, res, Q=9, rng=np.random.default_rng(3), scan_kwargs=scan_kw
+    )
+    np.testing.assert_array_equal(implicit.null_max_llrs, explicit.null_max_llrs)
+    assert implicit.p_value == explicit.p_value
+
+
 def test_randomization_invalid_arguments():
     ds = planted_frame(seed=5, n=200)
     scan_kw = dict(windows=(3.0,), restarts=2, method="greedy")

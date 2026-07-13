@@ -81,13 +81,27 @@ class DiDDiscovery:
 
 @dataclass
 class SuDDDSResult:
-    """Deduped, LLR-ranked discoveries; ``discoveries[0]`` is the global incumbent."""
+    """Deduped, LLR-ranked discoveries; ``discoveries[0]`` is the global incumbent.
+
+    The trailing fields record the RESOLVED search configuration actually used
+    (issue #13) so validation replicas can search the same space the observed
+    max-LLR came from. When :func:`suddds_scan` received a caller-built
+    ``panel``, ``bins``/``dims`` record the call's arguments — they never
+    reached :func:`natex.did.panel.build_panel` and must describe how that
+    panel was coded (every in-repo caller passes consistent values).
+    """
 
     discoveries: list[DiDDiscovery]
     model: str
     method: str
     windows: tuple[float, ...]
     restarts: int
+    bins: int = 4
+    degree: int = 1
+    dims: list[str] | None = None
+    min_side: int = 3
+    n_rho: int = 10
+    exhaustive_max_values: int = 12
 
     def top(self, m: int) -> list[DiDDiscovery]:
         return self.discoveries[:m]
@@ -393,4 +407,10 @@ def suddds_scan(
         method=method,
         windows=windows,
         restarts=restarts,
+        bins=bins,
+        degree=degree,
+        dims=dims,
+        min_side=min_side,
+        n_rho=n_rho,
+        exhaustive_max_values=exhaustive_max_values,
     )
