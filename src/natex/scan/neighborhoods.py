@@ -37,15 +37,16 @@ def candidate_partitions(cz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         s = int(col.sum())
         if s == 0 or s == k:
             continue  # degenerate (includes the center's own zero normal)
-        # DEE complement dedup (audit: legacy `~col` check was dead code because
-        # tied points -- the center at least -- are group 1 under BOTH
-        # orientations). The antipodal normal -n assigns group 1 to {dots <= 0},
-        # so that is the complement key.
-        b1, b2 = col.tobytes(), (dots[:, j] <= 0.0).tobytes()
-        if b1 in seen or b2 in seen:
+        # Dedup on actual membership masks only (issue #8). Under the tie
+        # convention every candidate mask contains the center, so exact
+        # complements are impossible among candidates; antipodal normals
+        # yield genuinely DISTINCT partitions (tied rows stay group 1 under
+        # both orientations) and both must be scored. Duplicate normals
+        # (identical masks) still collapse.
+        b1 = col.tobytes()
+        if b1 in seen:
             continue
         seen.add(b1)
-        seen.add(b2)
         keep.append(j)
     return G[:, keep], np.asarray(keep, dtype=int)
 

@@ -25,7 +25,25 @@ def test_partitions_match_naive_and_center_in_group1():
 
 
 def test_dedup_complements_and_duplicates():
-    # 1-d symmetric points: normals +1 and -1 give complementary splits -> one survives
+    # Under the tie rule (signed distance >= 0 -> group 1) the tied center is
+    # group 1 under BOTH orientations, so the +1 and -1 normals give DISTINCT
+    # partitions, not complements: both must survive. Only genuinely identical
+    # membership masks (duplicate normals) collapse.
     cz = np.array([[0.0], [1.0], [-1.0]])
     G, keep = candidate_partitions(cz)
-    assert G.shape[1] == 1
+    assert G.shape[1] == 2
+    cz2 = np.array([[0.0], [1.0], [1.0], [-1.0]])
+    G2, _ = candidate_partitions(cz2)
+    assert G2.shape[1] == 2
+
+
+def test_issue_8_antipodal_normals_keep_both_distinct_partitions():
+    """Issue #8: the antipodal key (dots <= 0) deduped two genuinely different
+    partitions — tied rows (the center at least) are group 1 under both
+    orientations, so ~mask never occurs among candidates and the second
+    partition (with its own, possibly much larger LLR) was silently lost."""
+    cz = np.array([[0.0], [1.0], [-1.0]])
+    G, keep = candidate_partitions(cz)
+    masks = {tuple(int(v) for v in G[:, j]) for j in range(G.shape[1])}
+    assert masks == {(1, 1, 0), (1, 0, 1)}
+    assert np.all(G[0, :])  # center stays group 1 in every kept partition
