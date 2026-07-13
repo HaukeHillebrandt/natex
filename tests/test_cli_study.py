@@ -123,6 +123,43 @@ def test_study_then_discover_plan_round_trip(tmp_path):
     assert payload["searched"]["budget"]["q"] == 9
 
 
+def test_issue_2_discover_plan_writes_results_bundle(tmp_path):
+    """Issue #2: plan mode wrote ONLY discover_report.json, so `natex paper`
+    rendered 'seed —' and 'No dataset metadata was recorded' despite the run
+    having seed, dataset and intake in scope. Plan mode now ALSO saves a full
+    ResultsBundle (results.json with the natex_bundle marker), which wins over
+    the discover_report.json compat path on load; discover_report.json stays
+    (documented output)."""
+    import natex
+    from natex.report.bundle import ResultsBundle
+
+    csv = _write_synthetic_csv(tmp_path)
+    out1, out2 = tmp_path / "out1", tmp_path / "out2"
+    res1 = runner.invoke(app, ["study", str(csv), "--seed", "0", "--out", str(out1)])
+    assert res1.exit_code == 0, res1.output
+    res2 = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"), str(csv),
+         "--q", "9", "--k", "25", "--seed", "0", "--out", str(out2)],
+    )
+    assert res2.exit_code == 0, res2.output
+    assert (out2 / "discover_report.json").exists()  # docs promise it
+    payload = json.loads((out2 / "results.json").read_text())
+    assert payload["natex_bundle"] == 1
+    assert payload["seed"] == 0
+    assert payload["natex_version"] == natex.__version__
+    assert payload["params"]["k"] == 25 and payload["params"]["q"] == 9
+    data = payload["data"]
+    assert data["n_rows"] is not None and data["treatment"] is not None
+    intake = payload["intake"]
+    assert intake["source"] == str(csv)
+    assert "understanding" in intake
+    # load() resolves the bundle (path 1), not the discover_report compat path
+    loaded = ResultsBundle.load(out2)
+    assert loaded.results["seed"] == 0
+    assert loaded.results["natex_version"] == natex.__version__
+
+
 def test_discover_plan_max_configs_lists_skipped(tmp_path):
     """spec 6b through the CLI: --max-configs 1 on a >= 2 candidate plan lists
     the remainder as skipped_budget instead of silently dropping it."""

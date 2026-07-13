@@ -261,6 +261,14 @@ def _discover_plan(
         rng=np.random.default_rng(seed), budget=budget, out=out,
     )
     path = rep.save(out)
+    # Issue #2: also save the full ResultsBundle — seed, natex version, the
+    # prepared dataset's data block and the intake provenance — so paper/brief
+    # stop rendering "seed —" / "No dataset metadata was recorded".
+    # discover_report.json above stays: it is a documented output and the
+    # compat load path for pre-bundle directories.
+    bundle_path = ResultsBundle.from_discover(
+        rep, out, dataset=ds, intake=report, seed=seed
+    ).save()
     s = rep.searched
     typer.echo(
         f"scanned {s['n_scanned']}/{s['n_total']} configs "
@@ -275,6 +283,7 @@ def _discover_plan(
         f"llr={best.llr:.2f}  p={best.p_value:.3f}"
     )
     typer.echo(f"report: {path}")
+    typer.echo(f"results: {bundle_path}")
 
 
 @app.command()
@@ -328,7 +337,7 @@ def discover(
 
     Requires CSV + --treatment, or --plan intake_report.json from `natex study`
     (plan candidates scan first, the exhaustive remainder runs within budget).
-    Writes OUT/results.json; plan mode writes OUT/discover_report.json.
+    Writes OUT/results.json; plan mode also writes OUT/discover_report.json.
     """
     if plan is not None:
         _discover_plan(

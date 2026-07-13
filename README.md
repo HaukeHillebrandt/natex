@@ -90,8 +90,9 @@ declarative prep plan (drops, filters, optional seeded subsample — user-editab
 `natex discover --plan` then scans the ranked candidates first and the exhaustive
 remainder after, within budget — the report always records what was and wasn't searched
 (`scanned` / `skipped_budget` / `failed` / `invalid` per configuration; budget cuts are
-listed, never silently dropped). Plan mode writes `out/discover_report.json` (only the
-plain, non-plan `natex discover` path writes `out/results.json`). The exhaustive
+listed, never silently dropped). Plan mode writes `out/discover_report.json` plus the
+full results bundle at `out/results.json` — seed, natex version, data and intake
+provenance, which is what `natex paper` and `natex brief` read. The exhaustive
 remainder is derived from the bound dataset spec, so `exhaustive_candidates` is 0
 whenever the plan already covers those configurations — that is dedup, not a budget cut.
 
