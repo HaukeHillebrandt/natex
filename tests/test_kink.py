@@ -65,6 +65,83 @@ def test_sharp_rkd_exact_slope_ratio_in_original_units():
     assert np.isfinite(extreme_confidence.ci).all()
 
 
+def _sandwich_oracle(x, y, weights, clusters=None):
+    """Textbook WLS sandwich for the side-specific local-linear kink contrast.
+
+    Written in original running-variable units against the plain
+    ``[1, x]``-per-side basis, independently of the implementation's
+    normalized internal parametrization.
+    """
+    right = x >= 0.0
+    design = np.column_stack(
+        [(~right).astype(float), (~right) * x, right.astype(float), right * x]
+    )
+    bread = np.linalg.inv(design.T @ (design * weights[:, None]))
+    beta = bread @ (design.T @ (weights * y))
+    scores = design * (weights * (y - design @ beta))[:, None]
+    n, p = design.shape
+    if clusters is None:
+        meat = scores.T @ scores
+        factor = n / (n - p)
+    else:
+        labels = np.unique(clusters)
+        sums = np.array([scores[clusters == g].sum(axis=0) for g in labels])
+        meat = sums.T @ sums
+        n_clusters = labels.size
+        factor = (n_clusters / (n_clusters - 1)) * ((n - 1) / (n - p))
+    cov = bread @ meat @ bread * factor
+    contrast = np.array([0.0, -1.0, 0.0, 1.0])
+    return float(contrast @ beta), float(np.sqrt(contrast @ cov @ contrast))
+
+
+def test_hc1_sandwich_matches_a_hand_computed_wls_oracle():
+    x = _grid(12)
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + 0.05 * np.sin(11.7 * x) * (1.0 + x)
+    bandwidth = 0.8
+    weights = np.where(np.abs(x) <= bandwidth, 1.0 - np.abs(x) / bandwidth, 0.0)
+    used = weights > 0.0
+    kink, se = _sandwich_oracle(x[used], y[used], weights[used])
+
+    est = regression_kink(
+        y, x, policy_kink=0.9, bandwidth=bandwidth, kernel="triangular"
+    )
+
+    assert est.n_used == int(used.sum())
+    assert est.reduced_form == pytest.approx(kink, rel=1e-10)
+    assert est.reduced_form_se == pytest.approx(se, rel=1e-10)
+    assert est.se == pytest.approx(se / 0.9, rel=1e-10)
+
+
+def test_cr1_sandwich_matches_a_hand_computed_clustered_oracle():
+    x = _grid(20)
+    clusters = np.arange(x.size) % 5
+    y = (
+        0.4 * x
+        + 0.9 * np.maximum(x, 0.0)
+        + 0.1 * np.cos(3.0 * x)
+        + 0.03 * clusters
+    )
+    weights = np.where(np.abs(x) <= 1.0, 1.0 - np.abs(x), 0.0)
+    used = weights > 0.0
+    kink, se = _sandwich_oracle(
+        x[used], y[used], weights[used], clusters=clusters[used]
+    )
+
+    est = regression_kink(
+        y,
+        x,
+        policy_kink=0.9,
+        bandwidth=1.0,
+        kernel="triangular",
+        clusters=clusters,
+    )
+
+    assert est.extras["inference"] == "CR1"
+    assert est.n_used == int(used.sum())
+    assert est.reduced_form == pytest.approx(kink, rel=1e-10)
+    assert est.reduced_form_se == pytest.approx(se, rel=1e-10)
+
+
 def test_kernel_weight_shapes_are_pinned_pointwise_and_normalized():
     u = np.array([-1.0, -0.5, 0.0, 0.25, 0.5, 1.0])
     assert _kernel_weights(u, "triangular") == pytest.approx(
