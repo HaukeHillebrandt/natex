@@ -34,7 +34,8 @@ from natex.intake.plans import DesignCandidate, SearchPlan
 from natex.jsonutil import jsonable
 from natex.llm import GuidanceBackend, GuidanceLog, GuidanceRequest, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
-from natex.scan.coarse import coarse_to_fine_scan
+from natex.scan.coarse import coarse_to_fine_scan, coarse_to_fine_search
+from natex.scan.geometry import build_geometry
 from natex.validate.density import density_test
 from natex.validate.panel import (
     anticipation_test,
@@ -253,17 +254,31 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
              hooks: _GuidanceHooks) -> tuple:
     """LoRD3 scan + randomization/placebo/density + local 2SLS effects."""
     k, q, degree = int(budget["k"]), int(budget["q"]), int(budget["degree"])
-    coarse_block = None
+    coarse_block, geometry, search = None, None, None
     if budget["coarse"]:
+        # Geometry depends only on Z_std (identical across null replicas):
+        # build once, share with both stages and the calibration below.
+        geometry = build_geometry(ds.Z_std, k)
         ctf = coarse_to_fine_scan(ds, k=k, n_coarse=int(budget["n_coarse"]),
-                                  degree=degree, rng=rng)
+                                  degree=degree, rng=rng, geometry=geometry)
         res = ctf.result  # fine-stage, full-resolution discoveries
         coarse_block = {"frac_centers_scanned": ctf.frac_centers_scanned, **ctf.params}
+        # Issue #21: the observed statistic is a coarse-to-fine max, so each
+        # null replica reruns the same coarse-to-fine search on its own T*
+        # (frozen treatment-independent coarse subsample, replica's own
+        # localization) — a full-scan replica max is stochastically larger
+        # and would inflate the p-value.
+        search = coarse_to_fine_search(
+            ds, ctf.coarse_result.centers, k=k, top_m=int(ctf.params["top_m"]),
+            radius_mult=float(ctf.params["radius_mult"]), model=res.model,
+            degree=degree, geometry=geometry,
+        )
     else:
         res = lord3_scan(ds, k=k, degree=degree, rng=rng)
     if not res.discoveries:
         raise ValueError("no scoreable neighborhood")
-    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree})
+    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree},
+                              geometry=geometry, search=search)
     top = res.discoveries[0]
     placebo = placebo_tests(ds, top)
     dens = density_test(ds, top)

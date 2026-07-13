@@ -48,6 +48,31 @@ def test_issue_9_nonfinite_observed_llr_rejected():
         randomization_test(ds, res, Q=3, rng=np.random.default_rng(5), scan_kwargs={"k": 20})
 
 
+def test_issue_21_search_callable_drives_replica_rescans():
+    """Issue #21: when the observed statistic came from a treatment-adaptive
+    search (coarse-to-fine), the null replicas must rerun the SAME procedure
+    on their own T*; randomization_test accepts a search callable that
+    replaces the default full-resolution rescan for every replica."""
+    from natex.rdd.lord3 import LoRD3Result
+
+    rng = np.random.default_rng(3)
+    ds, _ = make_synthetic(n=200, zeta=0.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=20, rng=np.random.default_rng(4))
+    seen = []
+
+    def fake_search(ds_star):
+        seen.append(ds_star.T.copy())
+        return LoRD3Result(discoveries=[], model=res.model, k=res.k)
+
+    rep = randomization_test(
+        ds, res, Q=5, rng=np.random.default_rng(5), scan_kwargs={"k": 20}, search=fake_search
+    )
+    assert len(seen) == 5  # called once per replica
+    assert all(not np.array_equal(t, ds.T) for t in seen)  # on redrawn T*, not observed T
+    np.testing.assert_array_equal(rep.null_max_llrs, np.zeros(5))  # empty-supremum scores used
+    assert rep.p_value == 1.0 / 6.0
+
+
 def test_issue_25_q_below_one_rejected():
     """Issue #25: Q=0 fabricated a vacuous p=1.0 from zero calibration draws and
     Q=-1 crashed with a raw numpy error; both must fail loudly, mirroring the

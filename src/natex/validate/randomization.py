@@ -8,6 +8,7 @@ Bernoulli replicas are direct Bernoulli(p_hat) draws (audit item 2).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,7 +41,21 @@ def randomization_test(
     scan_kwargs: dict | None = None,
     geometry: ScanGeometry | None = None,
     centers: np.ndarray | None = None,
+    search: Callable[[Dataset], LoRD3Result] | None = None,
 ) -> RandomizationReport:
+    """Calibrate ``scan_result``'s max LLR against Q fitted-null replicas.
+
+    ``search`` (issue #21): when the observed statistic came from a
+    treatment-adaptive search procedure (e.g. the coarse-to-fine scan, whose
+    fine-stage center subset is localized around the observed treatment's own
+    coarse discoveries), pass a callable mapping a replica dataset to its
+    :class:`LoRD3Result` under the SAME procedure — see
+    :func:`natex.scan.coarse.coarse_to_fine_search`. The default ``None``
+    rescans every replica at full resolution over ``centers``, which is
+    procedure-matched only for a full (or fixed-center) observed scan; using
+    it for a coarse-to-fine observed statistic gives stochastically larger
+    replica maxima and an inflated p-value.
+    """
     if rng is None:
         raise ValueError("pass an explicit numpy Generator")
     # Issue #25: mirror the panel contract (validate/panel.py) verbatim —
@@ -82,9 +97,12 @@ def randomization_test(
         df_star = dataset.df.copy()
         df_star[dataset.spec.treatment] = t_star
         ds_star = Dataset(df_star, dataset.spec)
-        res_star = lord3_scan(
-            ds_star, model=kind, rng=rng, geometry=geometry, centers=centers, **scan_kwargs
-        )
+        if search is None:
+            res_star = lord3_scan(
+                ds_star, model=kind, rng=rng, geometry=geometry, centers=centers, **scan_kwargs
+            )
+        else:
+            res_star = search(ds_star)
         null_max[q_i] = res_star.discoveries[0].llr if res_star.discoveries else 0.0
 
     if not (np.isfinite(observed) and np.isfinite(null_max).all()):

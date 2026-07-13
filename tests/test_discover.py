@@ -126,6 +126,32 @@ def test_rdd_auto_single_config(tmp_path):
     assert payload["guidance_log_path"] is None
 
 
+def test_issue_21_coarse_budget_uses_procedure_matched_replicas(monkeypatch):
+    """Issue #21: with budget['coarse'] on, the observed statistic is a
+    coarse-to-fine max (treatment-adaptively localized center subset), so
+    every null replica must rerun the same coarse-to-fine search on its own
+    T* — a full-resolution replica rescan has a stochastically larger max
+    and inflates the p-value."""
+    captured = {}
+    real = discover_mod.randomization_test
+
+    def spy(ds, res, **kw):
+        captured["search"] = kw.get("search")
+        return real(ds, res, **kw)
+
+    monkeypatch.setattr(discover_mod, "randomization_test", spy)
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(1),
+                   budget={**SMALL, "coarse": True, "n_coarse": 100})
+    assert callable(captured["search"])
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rec.p_value is not None and 0.0 < rec.p_value <= 1.0
+
+    # Without coarse, the default full-resolution rescan path is unchanged.
+    discover(_rdd_dataset(), rng=np.random.default_rng(1), budget=SMALL)
+    assert captured["search"] is None
+
+
 def test_no_phantom_guidance_log_path_without_backend(tmp_path):
     """Dogfood regression (Fitbit run): a guidance-free ``out=`` run recorded
     ``out/guidance_log.jsonl`` in the report although the file never exists."""

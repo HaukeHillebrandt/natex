@@ -33,7 +33,8 @@ from natex.rdd.lord3 import lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.report.paper import render_paper
 from natex.report.research_brief import research_brief
-from natex.scan.coarse import coarse_to_fine_scan
+from natex.scan.coarse import coarse_to_fine_scan, coarse_to_fine_search
+from natex.scan.geometry import build_geometry
 from natex.validate.density import density_test
 from natex.validate.panel import (
     anticipation_test,
@@ -358,16 +359,27 @@ def discover(
         forcing=forcing.split(",") if forcing else None,
     )
     rng = np.random.default_rng(seed)
-    coarse_block = None
+    coarse_block, geometry, search = None, None, None
     if coarse:
-        ctf = coarse_to_fine_scan(ds, k=k, n_coarse=n_coarse, degree=degree, rng=rng)
+        geometry = build_geometry(ds.Z_std, k)
+        ctf = coarse_to_fine_scan(ds, k=k, n_coarse=n_coarse, degree=degree, rng=rng,
+                                  geometry=geometry)
         # Validation/estimation below operate on the fine-stage (full-resolution)
         # result; the coverage block reports what was and wasn't searched (spec 6b).
         res = ctf.result
         coarse_block = {"frac_centers_scanned": ctf.frac_centers_scanned, **ctf.params}
+        # Issue #21: calibrate the coarse-to-fine observed statistic with
+        # coarse-to-fine replicas (frozen coarse subsample, per-replica
+        # localization); full-scan replica maxima would inflate the p-value.
+        search = coarse_to_fine_search(
+            ds, ctf.coarse_result.centers, k=k, top_m=int(ctf.params["top_m"]),
+            radius_mult=float(ctf.params["radius_mult"]), model=res.model,
+            degree=degree, geometry=geometry,
+        )
     else:
         res = lord3_scan(ds, k=k, degree=degree, rng=rng)
-    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree})
+    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree},
+                              geometry=geometry, search=search)
     top = res.discoveries[0]
     placebo = placebo_tests(ds, top)
     dens = density_test(ds, top)

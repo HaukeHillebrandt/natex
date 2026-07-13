@@ -131,6 +131,32 @@ def test_discover_coarse_smoke(tmp_path):
     assert payload["params"]["coarse"] is True
 
 
+def test_issue_21_cli_coarse_uses_procedure_matched_replicas(tmp_path, monkeypatch):
+    """Issue #21, CLI wiring: `discover --coarse` must calibrate the
+    coarse-to-fine observed statistic with coarse-to-fine replicas."""
+    import natex.cli as cli_mod
+
+    captured = {}
+    real = cli_mod.randomization_test
+
+    def spy(ds, res, **kw):
+        captured["search"] = kw.get("search")
+        return real(ds, res, **kw)
+
+    monkeypatch.setattr(cli_mod, "randomization_test", spy)
+    ds, _ = make_synthetic(n=400, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    csv = tmp_path / "d.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--k", "25", "--q", "9", "--seed", "0", "--coarse", "--n-coarse", "100",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert callable(captured["search"])
+
+
 def test_discover_did_smoke(tmp_path):
     """--design did: full scan + validation + three-control effects payload.
 
