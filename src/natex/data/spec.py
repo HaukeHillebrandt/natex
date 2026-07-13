@@ -20,7 +20,13 @@ class DatasetSpec(BaseModel):
 
 class Dataset:
     def __init__(self, df: pd.DataFrame, spec: DatasetSpec):
-        missing = [c for c in [spec.treatment, *spec.forcing, *spec.covariates] if c not in df.columns]
+        # Every declared role is validated eagerly — outcome included (issue
+        # #26: a missing outcome column must fail here, not as a raw KeyError
+        # from ``ds.y`` after an expensive discovery scan). Only the column's
+        # EXISTENCE is checked: NaN outcome values stay tolerated (LSO policy).
+        roles = [spec.treatment, *([spec.outcome] if spec.outcome is not None else []),
+                 *spec.forcing, *spec.covariates]
+        missing = [c for c in roles if c not in df.columns]
         if missing:
             raise ValueError(f"columns not in dataframe: {missing}")
         bad = [c for c in spec.forcing if not pd.api.types.is_numeric_dtype(df[c])]

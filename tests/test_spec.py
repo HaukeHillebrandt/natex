@@ -63,6 +63,46 @@ def test_standardize_zero_variance_column_passes_through():
     assert np.array_equal(ds.standardize(ds.Z), ds.Z_std)
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"treatment": "nope"},
+        {"outcome": "nope"},
+        {"forcing": ["age", "nope"], "covariates": ["age", "nope"]},
+        {"covariates": ["age", "score", "nope"]},
+        {"time": "nope"},
+        {"unit": "nope"},
+    ],
+    ids=["treatment", "outcome", "forcing", "covariate", "time", "unit"],
+)
+def test_issue_26_missing_role_column_raises_eagerly(kwargs):
+    """Issue #26: EVERY declared role — outcome included — must fail at
+    construction with a ValueError naming the column, not a raw KeyError from
+    ``ds.y`` after an expensive discovery scan."""
+    base = dict(treatment="T", outcome="y", forcing=["age"], covariates=["age", "score"])
+    base.update(kwargs)
+    spec = DatasetSpec(**base)
+    with pytest.raises(ValueError, match="nope"):
+        Dataset(toy_df(), spec)
+
+
+def test_issue_26_from_csv_missing_outcome_raises(tmp_path):
+    p = tmp_path / "d.csv"
+    toy_df().to_csv(p, index=False)
+    with pytest.raises(ValueError, match="yy"):
+        Dataset.from_csv(p, treatment="T", outcome="yy")
+
+
+def test_issue_26_nan_outcome_values_still_tolerated():
+    """Guard: only the outcome COLUMN's existence is validated — NaN outcome
+    VALUES must never listwise-delete scan rows (load-bearing LSO policy)."""
+    df = toy_df()
+    df.loc[0, "y"] = np.nan
+    spec = DatasetSpec(treatment="T", outcome="y", forcing=["age"], covariates=["age", "score"])
+    ds = Dataset(df, spec)
+    assert ds.n == 4
+
+
 def test_standardize_shape_errors():
     spec = DatasetSpec(
         treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score"]
