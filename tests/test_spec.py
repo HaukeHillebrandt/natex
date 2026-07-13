@@ -146,6 +146,28 @@ def test_issue_20_nonfinite_outcome_rows_preserved(val):
     assert ds.n == 5
 
 
+def test_issue_1_row_loss_bookkeeping_recorded():
+    """Issue #1: listwise deletion was silent — no input row count, no
+    per-column attribution. Every row with a bad scan value IS dropped, so the
+    per-column non-finite counts among input rows are exactly the losses
+    attributable to each column."""
+    df = _scan_df()
+    df.loc[0, "x"] = np.nan
+    df.loc[[0, 1], "w"] = np.nan
+    df.loc[3, "w"] = np.inf  # non-finite counts as missing too (issue #20)
+    df.loc[4, "y"] = np.nan  # outcome: never dropped, never attributed
+    ds = Dataset(df, _scan_spec())
+    assert ds.n_rows_input == 5
+    assert ds.n == ds.n_rows_used == 2
+    assert ds.nan_dropped_by_column == {"x": 1, "w": 3}
+
+
+def test_issue_1_no_loss_bookkeeping_empty():
+    ds = Dataset(_scan_df(), _scan_spec())
+    assert ds.n_rows_input == ds.n_rows_used == 5
+    assert ds.nan_dropped_by_column == {}
+
+
 def test_standardize_shape_errors():
     spec = DatasetSpec(
         treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score"]

@@ -22,6 +22,28 @@ def test_single_class_treatment_raises_diagnostic_error():
         lord3_scan(ds, k=10, rng=np.random.default_rng(0))
 
 
+def test_issue_1_one_class_error_names_row_loss_offenders():
+    """Issue #1: one-sided covariate missingness listwise-deletes every treated
+    row; the one-class diagnostic must name the offending column with its
+    attributable loss, not leave the user to guess which covariate did it."""
+    rng = np.random.default_rng(0)
+    n = 60
+    T = np.r_[np.zeros(30), np.ones(30)]
+    df = pd.DataFrame(
+        {
+            "T": T,
+            "z": rng.normal(size=n),
+            "c": np.where(T == 1, np.nan, 1.0),
+            "y": rng.normal(size=n),
+        }
+    )
+    ds = Dataset(
+        df, DatasetSpec(treatment="T", outcome="y", forcing=["z"], covariates=["z", "c"])
+    )
+    with pytest.raises(ValueError, match=r"single class[\s\S]*c: 30/60 rows"):
+        lord3_scan(ds, k=10, rng=np.random.default_rng(0))
+
+
 def test_scan_finds_planted_boundary_real_T():
     rng = np.random.default_rng(0)
     ds, D = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)

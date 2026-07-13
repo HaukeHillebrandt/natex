@@ -129,6 +129,13 @@ class ConfigRecord:
     summary: dict = field(default_factory=dict)  # design-specific block; {} unless scanned
     advisory: dict = field(default_factory=dict)  # guidance hooks (spec 6c); ALWAYS advisory
     error: str | None = None
+    # Row bookkeeping (issue #1): what listwise deletion did to THIS config's
+    # dataset. None = the dataset was never built (invalid/skipped/rebuild
+    # failure); {} row_loss = built with zero loss. Stamped before the runner,
+    # so failed configs carry it too.
+    n_rows_input: int | None = None
+    n_rows_used: int | None = None
+    row_loss: dict | None = None  # top per-column attributable losses (<= 3, desc)
 
     def to_dict(self) -> dict:
         return {
@@ -138,6 +145,9 @@ class ConfigRecord:
             "llr": self.llr,
             "p_value": self.p_value,
             "n_discoveries": self.n_discoveries,
+            "n_rows_input": self.n_rows_input,
+            "n_rows_used": self.n_rows_used,
+            "row_loss": self.row_loss,
             "summary": self.summary,
             "advisory": self.advisory,
             "error": self.error,
@@ -496,6 +506,12 @@ def discover(
         hooks = _GuidanceHooks(guidance, rec.candidate, rec.advisory)
         try:
             ds = _dataset_for(data, rec.candidate, known_outcomes)
+            # Stamped BEFORE the runner (issue #1): a config that fails
+            # downstream still records what listwise deletion did to its rows
+            # — failed designs need the bookkeeping most.
+            rec.n_rows_input = ds.n_rows_input
+            rec.n_rows_used = ds.n_rows_used
+            rec.row_loss = ds.top_row_loss()
             runner = _run_rdd if rec.candidate.design == "rdd" else _run_did
             llr, p_value, n_disc, summary = runner(ds, eff_budget, rng, hooks)
         except _CONFIG_EXCEPTIONS as exc:

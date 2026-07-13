@@ -71,6 +71,16 @@ def test_data_block_from_dataset(rdd):
     assert d["time"] is None
 
 
+def test_issue_1_data_block_reports_input_rows_and_row_loss(rdd):
+    """Issue #1: results.json carried only the post-deletion row count; input
+    rows vs rows used (and the top per-column losses) must be surfaced."""
+    bundle, _, ds = rdd
+    d = bundle.results["data"]
+    assert d["n_rows_input"] == ds.n_rows_input
+    assert d["n_rows"] == ds.n_rows_used
+    assert d["row_loss"] == {}  # clean synthetic: nothing was dropped
+
+
 def test_did_metadata(did):
     bundle, report, ds = did
     r = bundle.results

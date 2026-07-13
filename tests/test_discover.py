@@ -565,3 +565,56 @@ def test_guidance_log_one_line_per_hook(rdd_hook_run):
     assert len(lines) == len(mock.requests) == 2
     assert [e["task"] for e in lines] == ["interpret_discovery", "audit_assumptions"]
     assert all(e["backend"] == "mock" for e in lines)
+
+
+# ---------------------------------------------------------------------------
+# issue #1: listwise deletion is recorded, never silent
+# ---------------------------------------------------------------------------
+
+
+def test_issue_1_failed_config_record_carries_row_counts():
+    """Issue #1: a rebuilt config poisoned by a one-sided-missing covariate
+    fails with no trace of the listwise deletion that caused it. The row
+    bookkeeping is stamped at Dataset construction — before the runner — so
+    FAILED records carry it too (they need it most)."""
+    df = _rdd_dataset().df.copy()
+    df["bad"] = np.where(df["T"].to_numpy() == 1.0, np.nan, 1.0)
+    n, n_lost = len(df), int((df["T"] == 1.0).sum())
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y",
+                                   forcing=["x0", "x1"], covariates=["x0", "x1"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0"], priority=0),  # unbound: rebuilt covs pull in "bad"
+    ])
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(0), budget=SMALL)
+    failed, scanned = rep.configs
+    assert failed.status == "failed"
+    assert failed.n_rows_input == n
+    assert failed.n_rows_used == n - n_lost
+    assert failed.row_loss == {"bad": n_lost}
+    assert "bad" in failed.error  # the one-class diagnostic names the offender
+    assert scanned.status == "scanned"
+    assert scanned.n_rows_input == scanned.n_rows_used == n
+    assert scanned.row_loss == {}
+    d = failed.to_dict()
+    assert d["n_rows_input"] == n and d["n_rows_used"] == n - n_lost
+    assert d["row_loss"] == {"bad": n_lost}
+
+
+def test_issue_1_row_loss_reports_top3_columns():
+    """Issue #1: the record keeps the TOP row-loss columns (3, descending) so
+    a wide dataset cannot flood the report."""
+    df = _rdd_dataset().df.copy()
+    n = len(df)
+    for name, lost in [("c1", 4), ("c2", 3), ("c3", 2), ("c4", 1)]:
+        col = np.ones(n)
+        col[:lost] = np.nan  # overlapping rows: 4 rows dropped in total
+        df[name] = col
+    data = Dataset(df, DatasetSpec(
+        treatment="T", outcome="y", forcing=["x0", "x1"],
+        covariates=["x0", "x1", "c1", "c2", "c3", "c4"]))
+    rep = discover(data, rng=np.random.default_rng(0), budget=SMALL, design="rdd")
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rec.n_rows_input == n and rec.n_rows_used == n - 4
+    assert rec.row_loss == {"c1": 4, "c2": 3, "c3": 2}

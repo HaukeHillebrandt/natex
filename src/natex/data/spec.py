@@ -49,6 +49,21 @@ class Dataset:
         # treatment_is_binary. Same silent-drop remedy as the NaN policy.
         extra = [c for c in (spec.time, spec.unit) if c is not None]
         scan_cols = list(dict.fromkeys([spec.treatment, *spec.forcing, *spec.covariates, *extra]))
+        # Row-loss bookkeeping (issue #1): the deletion policy is by design,
+        # but it must never be silent. Every row with a missing/non-finite scan
+        # value IS dropped, so each column's bad count among the INPUT rows is
+        # exactly the loss attributable to it. Lossless columns are absent —
+        # ints only, no fabricated zeros (NaN-never-0.0 lineage).
+        self.n_rows_input = len(df)
+        dropped: dict[str, int] = {}
+        for c in scan_cols:
+            if pd.api.types.is_numeric_dtype(df[c]):
+                bad = ~np.isfinite(df[c].to_numpy(dtype=float, na_value=np.nan))
+            else:
+                bad = df[c].isna().to_numpy()
+            if bad.any():
+                dropped[c] = int(bad.sum())
+        self.nan_dropped_by_column = dropped
         clean = df.dropna(subset=scan_cols)
         num_cols = [c for c in scan_cols if pd.api.types.is_numeric_dtype(clean[c])]
         if num_cols:
@@ -86,6 +101,16 @@ class Dataset:
     @property
     def n(self) -> int:
         return len(self.df)
+
+    @property
+    def n_rows_used(self) -> int:
+        """Rows the scan actually sees: ``n_rows_input`` minus listwise deletion."""
+        return len(self.df)
+
+    def top_row_loss(self, m: int = 3) -> dict[str, int]:
+        """The ``m`` largest per-column row losses, descending (ties by name)."""
+        items = sorted(self.nan_dropped_by_column.items(), key=lambda kv: (-kv[1], kv[0]))
+        return dict(items[:m])
 
     @property
     def T(self) -> np.ndarray:

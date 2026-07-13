@@ -89,12 +89,20 @@ def lord3_scan(
             # least 2 classes" error (dogfood finding): Dataset listwise-deletes
             # rows with NaN in any forcing/covariate column, which can silently
             # remove every row on one side of a cutoff.
+            top_loss = dataset.top_row_loss()  # issue #1: name the offenders
+            detail = ""
+            if top_loss:
+                detail = "; top row-loss columns: " + ", ".join(
+                    f"{c}: {lost}/{dataset.n_rows_input} rows"
+                    for c, lost in top_loss.items()
+                )
             raise ValueError(
                 f"treatment '{dataset.spec.treatment}' has a single class "
                 f"({classes.tolist()}) across the {dataset.n} scan rows -- "
-                "Dataset drops rows with NaN in any forcing/covariate column, "
-                "which can delete every row on one side of a cutoff; check "
-                "covariate missingness (or drop the offending covariates)"
+                "Dataset drops rows with NaN/inf in any forcing/covariate "
+                "column, which can delete every row on one side of a cutoff; "
+                "check covariate missingness (or drop the offending "
+                f"covariates){detail}"
             )
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
     predict, kind = fit_treatment_model(X, T, model, degree)
