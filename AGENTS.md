@@ -4,7 +4,9 @@ natex is a Python toolkit for automated discovery of natural experiments in
 tabular data: a LoRD3 scan finds regression-discontinuity candidates, SuDDDS finds
 difference-in-differences events, DEE debiases observational predictions with
 the discovered quasi-experiments, and a Belloni-style search selects
-instruments and synthetic-control donors. Every candidate passes a validation
+instruments and synthetic-control donors. It also evaluates user-specified sharp/fuzzy
+regression-kink and difference-in-kinks designs at known policy cutoffs. Every discovered
+candidate passes a validation
 battery (randomization, placebo, density tests) before it may be called a
 finding. The implementation follows the corrections in
 `docs/math_audit_final.md`, and three guarantees hold everywhere: discovery
@@ -49,6 +51,7 @@ Run any command as `uv run natex <command> --help` for the full option list.
 | `fetch-data` | Download a dataset with a public direct URL into the data root (atomic rename + verify). Login-gated datasets print instructions and exit 1. | `NAME`, `--root`, `--force` | dataset file under the data root |
 | `study` | Stage-0 analyst pass: profile -> understand -> prep plan -> search plan. Fully offline with the default `--backend null`. | `CSV`, `--context`, `--backend null\|agent\|anthropic\|gemini`, `--workdir` (default `OUT/guidance`), `--seed`, `--out` | `out/intake_report.json`, `out/prep_plan.json`, `out/guidance_log.jsonl` |
 | `discover` | LoRD3 RDD scan / SuDDDS DiD discovery with the validation battery and honest effect estimates; `--plan` consumes an intake report. | `CSV` + `--treatment` (or `--plan intake_report.json`, optionally `--prep-plan prep_plan.json`), `--design`, `--k`, `--q`, `--seed`, `--out` | `out/results.json` (plan mode also: `out/discover_report.json`) |
+| `kink` | Known-cutoff sharp/fuzzy RKD or difference-in-kinks local-polynomial estimation with HC1/CR1 and Fieller inference. | `CSV`, `--design rkd\|dik`, `--outcome`, `--running`, `--bandwidth`, plus `--treatment` or a known policy kink | `out/kink.json` |
 | `debias` | DEE debiasing: scan -> VKNN repair -> local 2SLS -> GP debiasing of the observational T-learner. | `CSV`, `--treatment`, `--outcome`, `--forcing`, `--m-prime` | `out/dee_result.json` |
 | `instruments` | Belloni-style instrument selection plus honest 2SLS/J/AR estimation block. | `CSV`, `--treatment`, `--pool`, `--controls`, `--outcome` | `out/instruments.json` |
 | `donors` | Synthetic-control donor selection, ATT and in-space placebo inference. | `CSV`, `--outcome`, `--unit`, `--time`, `--treated-unit`, `--t0` | `out/donors.json` |
@@ -162,6 +165,7 @@ uv run natex discover --plan out/intake_report.json --seed 0 --out out/
 - `docs/method_cards/suddds.md` — SuDDDS DiD discovery: GESS control-group expansion, event effects.
 - `docs/method_cards/dee.md` — DEE: VKNN repair, local 2SLS, GP debiasing, BMA mixture.
 - `docs/method_cards/iv_sc.md` — instrument selection (Belloni/AR) and synthetic-control donors.
+- `docs/method_cards/kink.md` — known-cutoff sharp/fuzzy RKD and DiK estimands, assumptions, inference, and fuzzy-composition caveat.
 - `docs/method_cards/llm_analyst.md` — the analyst pass and guidance backends (null/agent/API).
 - `docs/math_audit_final.md` — the governing math audit; **it wins any conflict** with other docs or comments.
 - `skills/` — Claude Code agent skills (`discover-natural-experiments`, `natex-write-paper`, `natex-lit-review`), symlink-installable into `.claude/skills/`.
