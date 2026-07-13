@@ -184,6 +184,47 @@ def test_did_scan_payload_one_config_view(tmp_path):
     assert s["effects"]["dd"]["tau"] == -0.2
 
 
+def test_issue_29_scan_payload_candidate_roles_from_params(tmp_path):
+    """Issue #29: params-recorded treatment/outcome/forcing flow into the
+    one-config candidate; a PRE-FIX payload (roles absent from params) keeps
+    the forcing_influence-keys fallback instead of an empty forcing list."""
+    bundle, payload = make_scan_payload_bundle(tmp_path)
+    (cfg,) = bundle.results["configs"]
+    assert cfg["candidate"]["treatment"] == "T"
+    assert cfg["candidate"]["outcome"] == "y"
+    assert cfg["candidate"]["forcing"] == ["x0", "x1"]
+
+    did_dir = tmp_path / "did"
+    did_dir.mkdir()
+    did_bundle, _ = make_scan_payload_bundle(did_dir, design="did")
+    (did_cfg,) = did_bundle.results["configs"]
+    assert did_cfg["candidate"]["treatment"] == "theta"
+    assert did_cfg["candidate"]["outcome"] == "y"
+    assert did_cfg["candidate"]["forcing"] == []
+
+    # params must WIN over the forcing_influence-keys fallback: with zero
+    # discoveries the fallback has nothing, but the recorded roles survive.
+    empty = dict(payload)
+    empty["discoveries"] = []
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    (empty_dir / "results.json").write_text(json.dumps(empty), encoding="utf-8")
+    (empty_cfg,) = ResultsBundle.load(empty_dir).results["configs"]
+    assert empty_cfg["candidate"]["forcing"] == ["x0", "x1"]
+
+    old = dict(payload)
+    old["params"] = {
+        k: v for k, v in payload["params"].items()
+        if k not in ("treatment", "outcome", "forcing")
+    }
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    (old_dir / "results.json").write_text(json.dumps(old), encoding="utf-8")
+    (old_cfg,) = ResultsBundle.load(old_dir).results["configs"]
+    assert old_cfg["candidate"]["treatment"] is None
+    assert old_cfg["candidate"]["forcing"] == ["x0", "x1"]  # fallback survives
+
+
 def test_unrecognized_payload_keeps_null_configs(tmp_path):
     """A marker-less results.json that is not a scan payload stays configs=None."""
     (tmp_path / "results.json").write_text(json.dumps({"foo": 1}), encoding="utf-8")

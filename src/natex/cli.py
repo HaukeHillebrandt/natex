@@ -401,7 +401,11 @@ def discover(
             }
     payload = _clean(
         {
-            "params": {"k": k, "q": q, "seed": seed, "degree": degree,
+            # Issue #29: record the run's roles (the RESOLVED spec forcing, so
+            # the default all-numeric list is persisted) — paper/brief read them.
+            "params": {"treatment": treatment, "outcome": outcome,
+                       "forcing": list(ds.spec.forcing),
+                       "k": k, "q": q, "seed": seed, "degree": degree,
                        "coarse": coarse, "n_coarse": n_coarse, "csv": str(csv)},
             "scan": {"model": res.model, "p_value": rand.p_value,
                      "observed_max_llr": rand.observed_max_llr},
@@ -875,7 +879,10 @@ def _discover_did(
             }
     payload = _clean(
         {
-            "params": {"design": "did", "q": q, "seed": seed, "degree": degree,
+            # Issue #29: roles recorded alongside time/unit — paper/brief read them.
+            "params": {"design": "did", "treatment": treatment, "outcome": outcome,
+                       "forcing": list(ds.spec.forcing),
+                       "q": q, "seed": seed, "degree": degree,
                        "time": time, "unit": unit, "bins": bins, "windows": windows,
                        "restarts": restarts, "method": method, "model": model,
                        "csv": str(csv)},

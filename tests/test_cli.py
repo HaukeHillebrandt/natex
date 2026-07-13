@@ -199,6 +199,47 @@ def test_discover_did_smoke(tmp_path):
     assert "validation" in did
 
 
+def test_issue_29_rdd_params_record_roles(tmp_path):
+    """Issue #29: the plain rdd results.json params must record the run's
+    treatment/outcome/forcing (the RESOLVED spec forcing, so the default
+    all-numeric list is persisted) — otherwise `natex paper`/`brief` render
+    'rdd: — ~ …' with the treatment name lost."""
+    ds, _ = make_synthetic(n=300, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    csv = tmp_path / "d.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--k", "25", "--q", "9", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    params = json.loads((tmp_path / "out" / "results.json").read_text())["params"]
+    assert params["treatment"] == "T"
+    assert params["outcome"] == "y"
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert params["forcing"] == list(payload["discoveries"][0]["forcing_influence"])
+
+
+def test_issue_29_did_params_record_roles(tmp_path):
+    """Issue #29, did shape: params must carry treatment/outcome/forcing
+    alongside the already-persisted time/unit."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    params = json.loads((tmp_path / "out" / "results.json").read_text())["params"]
+    assert params["treatment"] == "theta"
+    assert params["outcome"] == "y"
+    assert params["forcing"] == []
+    assert params["time"] == "t"
+
+
 def test_issue_28_discover_rdd_homogeneous_neighborhoods_exit_1(tmp_path):
     """Issue #28: two well-separated treatment-homogeneous clusters make the
     audit-item-21 fast path skip every center (discoveries=[]); the CLI must

@@ -131,7 +131,7 @@ def _scan_payload_config(payload: dict) -> dict | None:
             "design": "did",
             "treatment": params.get("treatment"),
             "outcome": params.get("outcome"),
-            "forcing": [],
+            "forcing": params.get("forcing") or [],
             "unit": params.get("unit"),
             "time": params.get("time"),
         }
@@ -155,7 +155,10 @@ def _scan_payload_config(payload: dict) -> dict | None:
             "design": "rdd",
             "treatment": params.get("treatment"),
             "outcome": params.get("outcome"),
-            "forcing": list(influence),
+            # Issue #29: prefer the params-recorded forcing; the top
+            # discovery's forcing_influence keys remain the fallback for
+            # pre-fix payloads (and vanish when there are no discoveries).
+            "forcing": params.get("forcing") or list(influence),
         }
         summary = {
             "design": "rdd",
