@@ -4,6 +4,7 @@ from natex.data.registry import load_dataset
 from natex.data.spec import Dataset, DatasetSpec
 from natex.data.synthetic_dee import make_dee_synthetic
 from natex.data.synthetic_did import make_did_synthetic
+from natex.data.synthetic_kink import make_dik_synthetic, make_rkd_synthetic
 from natex.dee.debias import DEEResult, dee_debias
 from natex.dee.vknn import voronoi_knn_repair
 from natex.did.effects import did_effect
@@ -44,7 +45,9 @@ __all__ = [
     "load_dataset",
     "lord3_scan",
     "make_dee_synthetic",
+    "make_dik_synthetic",
     "make_did_synthetic",
+    "make_rkd_synthetic",
     "regression_kink",
     "study",
     "suddds_scan",
