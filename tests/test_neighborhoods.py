@@ -56,6 +56,32 @@ def test_issue_19_k_bounds_validated():
     assert (idx < 10).all()  # no sentinel index n
 
 
+def _assert_self_first_once(idx):
+    for i in range(idx.shape[0]):
+        assert idx[i, 0] == i, f"row {i} does not start with self: {idx[i]}"
+        assert int(np.sum(idx[i] == i)) == 1, f"self not exactly once in row {i}: {idx[i]}"
+
+
+def test_issue_24_self_membership_with_exact_duplicates():
+    """Issue #24: with > k exact duplicates cKDTree's k-nearest tied subset can
+    EXCLUDE self entirely; the old repair loop only fixed reordering, never
+    omission, violating the documented center-in-group-1 contract (audit item
+    20 / geometry 'self stays in column 0'). When self is absent all returned
+    neighbors are provably distance-0 duplicates, so inserting self at column 0
+    is geometrically neutral. Do NOT expect permutation-equivariant neighbor
+    sets -- with > k ties the kNN subset is inherently arbitrary; only the
+    self-first contract must hold."""
+    # all-duplicate layout
+    _assert_self_first_once(knn_indices(np.zeros((8, 1)), 3))
+    # mixed layout: 5 duplicates + 3 distinct points
+    z = np.vstack([np.zeros((5, 1)), np.array([[1.0], [2.0], [3.0]])])
+    _assert_self_first_once(knn_indices(z, 3))
+    # contract holds under row permutations too
+    for seed in (0, 1):
+        perm = np.random.default_rng(seed).permutation(z.shape[0])
+        _assert_self_first_once(knn_indices(z[perm], 3))
+
+
 def test_issue_8_antipodal_normals_keep_both_distinct_partitions():
     """Issue #8: the antipodal key (dots <= 0) deduped two genuinely different
     partitions — tied rows (the center at least) are group 1 under both

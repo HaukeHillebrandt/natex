@@ -24,12 +24,26 @@ def knn_indices(z_std: np.ndarray, k: int) -> np.ndarray:
     tree = cKDTree(z_std)
     _, idx = tree.query(z_std, k=k)
     idx = np.atleast_2d(idx)
-    # cKDTree returns self as the first neighbor for exact matches, but ties can
-    # reorder; enforce self-first deterministically.
+    # cKDTree returns self as the first neighbor for exact matches, but ties
+    # can reorder self later in the row -- or, with > k exact duplicates, drop
+    # self from the k-nearest tied subset entirely (issue #24). Enforce the
+    # documented self-first contract deterministically in both cases.
     for i in range(n):
-        if idx[i, 0] != i and i in idx[i]:
-            j = int(np.where(idx[i] == i)[0][0])
-            idx[i, 0], idx[i, j] = idx[i, j], idx[i, 0]
+        if idx[i, 0] == i:
+            continue
+        row = idx[i]
+        pos = np.where(row == i)[0]
+        if pos.size:
+            j = int(pos[0])
+            row[0], row[j] = row[j], row[0]
+        else:
+            # Self absent => every returned neighbor is a distance-0 exact
+            # duplicate of point i (any d > 0 neighbor would have lost to
+            # self). Shifting right and inserting self at column 0 is
+            # geometrically neutral, keeps distance-sorted order, and
+            # preserves the shrink() prefix property.
+            row[1:] = row[:-1]
+            row[0] = i
     return idx
 
 
