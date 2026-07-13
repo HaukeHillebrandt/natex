@@ -92,6 +92,10 @@ class IntakeReport:
             panel_candidates=[tuple(pair) for pair in p.get("panel_candidates", [])],
             forcing_candidates=list(p.get("forcing_candidates", [])),
             treatment_candidates=list(p.get("treatment_candidates", [])),
+            # JSON stringifies the int row-boundary keys; restore them
+            boundary_values={
+                int(b): dict(v) for b, v in (p.get("boundary_values") or {}).items()
+            },
         )
         return cls(
             profile=prof,
