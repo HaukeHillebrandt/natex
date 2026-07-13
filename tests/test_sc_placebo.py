@@ -225,6 +225,55 @@ def test_deterministic_rng_free():
     assert a.n_skipped == b.n_skipped
 
 
+def test_issue_15_perfect_pre_fit_inf_ratios_are_kept():
+    # Identical constant pre paths (bit-exact simplex fit, pre_rmspe == 0.0)
+    # with divergent posts: every placebo ratio is +inf — a DEFINED, maximally
+    # extreme value, not an undefined one. They must be kept (all tie with the
+    # +inf treated ratio), giving the honest rank p = (1 + 6)/7 = 1.0 — not
+    # discarded as zero-pre leaving n_used = 0 and p = NaN.
+    posts = {"treated": 10.0, "d1": 1.0, "d2": 2.3, "d3": 3.7,
+             "d4": 5.1, "d5": 6.9, "d6": 8.2}
+    rows = [
+        {"unit": name, "time": t, "y": 1.0 if t < 4 else 1.0 + post}
+        for name, post in posts.items()
+        for t in range(6)
+    ]
+    Y, units, times = _matrix(pd.DataFrame(rows))
+    rep = sc_placebo_test(Y, units, times, "treated", 4.0)
+    assert rep.ratio_treated == float("inf")
+    assert rep.ratios.size == 6
+    assert np.all(np.isinf(rep.ratios))
+    assert rep.n_skipped == 0
+    assert rep.extras["n_zero_pre_rmspe"] == 0
+    assert rep.extras["n_inf_ratio"] == 6
+    assert rep.p_value == 1.0  # all six placebo infs tie the treated inf
+
+
+def test_issue_15_inf_placebo_counts_against_finite_treated_ratio():
+    # Treated has a real (nonzero) pre-RMSPE and a finite ratio; the placebos
+    # fit their constant pre paths exactly and diverge post, so their ratios
+    # are +inf — MORE extreme than the treated's. Dropping them shrank the
+    # +1-rank numerator (anti-conservative); kept, they force p = 1.0. The
+    # poor-fit exclusion can never drop them (pre-RMSPE 0.0 never exceeds a
+    # nonnegative bound).
+    posts = {"treated": 50.0, "d1": 1.0, "d2": 2.3, "d3": 3.7,
+             "d4": 5.1, "d5": 6.9, "d6": 8.2}
+    rows = []
+    for name, post in posts.items():
+        pre = [1.0, 1.1, 0.9, 1.0] if name == "treated" else [1.0, 1.0, 1.0, 1.0]
+        for t in range(6):
+            rows.append({"unit": name, "time": t, "y": pre[t] if t < 4 else 1.0 + post})
+    Y, units, times = _matrix(pd.DataFrame(rows))
+    rep = sc_placebo_test(Y, units, times, "treated", 4.0)
+    assert np.isfinite(rep.ratio_treated) and rep.ratio_treated > 0
+    assert rep.ratios.size == 6
+    assert np.all(np.isinf(rep.ratios))
+    assert rep.p_value == 1.0  # every +inf placebo outranks the finite treated
+    excl = sc_placebo_test(Y, units, times, "treated", 4.0, exclude_poor_fit=2.0)
+    assert excl.extras["n_poor_fit"] == 0
+    assert excl.p_value == rep.p_value
+
+
 def test_rmspe_ratio_never_fake_zero_on_failure():
     inf = float("inf")
     assert np.isnan(_rmspe_ratio(inf, inf))  # failed fit (select_donors failure path)

@@ -286,9 +286,9 @@ class SCPlaceboReport:
 
     p_value: float  # (1 + #{placebo ratio >= treated}) / (n_used + 1); NaN if n_used < 5
     ratio_treated: float  # post_rmspe / pre_rmspe of the treated run
-    ratios: np.ndarray  # (n_used,) usable placebo ratios, sorted descending
+    ratios: np.ndarray  # (n_used,) usable placebo ratios (may include +inf), sorted descending
     placebo_units: list[object]  # aligned with `ratios`
-    n_skipped: int  # zero-pre-rmspe, failed fits, or poor-fit exclusions
+    n_skipped: int  # undefined (NaN) ratios — failed fits or 0/0 — plus poor-fit exclusions
     extras: dict = field(default_factory=dict)
 
 
@@ -315,9 +315,13 @@ def sc_placebo_test(
 
         p = (1 + #{placebo ratio >= treated ratio}) / (n_used + 1)
 
-    Placebos with a failed fit or an exactly-zero pre-RMSPE (undefined
-    ratio) are skipped and counted in ``n_skipped`` (never a fake 0.0
-    ratio). With ``exclude_poor_fit = m``, placebos whose pre-RMSPE exceeds
+    Placebos with an UNDEFINED (NaN) ratio — a failed fit, or 0/0 from an
+    exactly-zero pre-RMSPE with no post gap — are skipped and counted in
+    ``n_skipped`` (never a fake 0.0 ratio). A zero pre-RMSPE with real post
+    divergence gives ratio = +inf: a defined, maximally extreme value that
+    is KEPT (counted in ``extras["n_inf_ratio"]``) — it sorts first, ties
+    with an infinite treated ratio, and keeps the +1-rank p conservative.
+    With ``exclude_poor_fit = m``, placebos whose pre-RMSPE exceeds
     ``m x`` the treated unit's are also dropped (Abadie's poor-pre-fit
     exclusion) and listed in ``extras["poor_fit_units"]``. Fewer than
     ``_MIN_USABLE_PLACEBOS`` (5) usable placebos — or an undefined treated
@@ -343,6 +347,7 @@ def sc_placebo_test(
     poor_fit_units: list[object] = []
     n_failed = 0
     n_zero_pre = 0
+    n_inf_ratio = 0
     for u in candidates:
         res = select_donors(
             Y_placebo, units_placebo, times, u, t0, n_donors=n_donors, scoring=scoring
@@ -350,7 +355,12 @@ def sc_placebo_test(
         pools[u] = list(res.donors)
         pre_rmspes[u] = res.pre_rmspe
         ratio = _rmspe_ratio(res.pre_rmspe, res.post_rmspe)
-        if not np.isfinite(ratio):
+        if np.isnan(ratio):
+            # NaN is the only UNDEFINED case: pre_rmspe == 0.0 marks 0/0 (or
+            # an undefined post period), anything else a failed fit. +inf — a
+            # perfect pre fit with real post divergence — is a defined,
+            # maximally extreme ratio and is kept (issue #15): dropping it
+            # shrank the +1-rank numerator, anti-conservative.
             if res.pre_rmspe == 0.0:
                 n_zero_pre += 1
             else:
@@ -359,6 +369,8 @@ def sc_placebo_test(
         if exclude_poor_fit is not None and res.pre_rmspe > exclude_poor_fit * treated_res.pre_rmspe:
             poor_fit_units.append(u)
             continue
+        if np.isinf(ratio):
+            n_inf_ratio += 1
         kept.append((u, ratio))
 
     raw = np.asarray([r for _, r in kept], dtype=float)
@@ -377,7 +389,8 @@ def sc_placebo_test(
         "n_placebo_candidates": len(candidates),
         "n_used": n_used,
         "n_failed": n_failed,
-        "n_zero_pre_rmspe": n_zero_pre,
+        "n_zero_pre_rmspe": n_zero_pre,  # NaN ratios with pre_rmspe == 0 (0/0 or undefined post)
+        "n_inf_ratio": n_inf_ratio,  # kept +inf ratios (perfect pre fit, divergent post)
         "n_poor_fit": len(poor_fit_units),
         "poor_fit_units": poor_fit_units,
         "placebo_pools": pools,
