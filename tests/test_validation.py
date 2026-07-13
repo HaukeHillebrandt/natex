@@ -106,6 +106,49 @@ def test_placebo_all_nan_fails_loud():
     assert rep.passed is False
 
 
+def test_issue_3_row_unique_and_degenerate_dummies_stay_out_of_holm_family():
+    """Issue #3: ``covariates="auto"`` sweeps in string date/ID columns whose
+    one-hot levels have within-neighborhood support 1; each entered the Holm
+    family as a powerless test, silently diluting genuine placebo failures.
+    Row-unique non-numeric columns must be excluded before one-hot encoding,
+    degenerate 0/1 levels skipped, and both recorded alongside the family
+    size m so the battery is auditable."""
+    rng = np.random.default_rng(11)
+    n = 80
+    z = rng.normal(size=n)
+    center = int(np.argsort(z)[n // 2])
+    members = np.argsort(np.abs(z - z[center]))[:20]
+    grp = np.array(["a"] * n, dtype=object)
+    grp[int(members[1])] = "b"  # support 1 inside the neighborhood ...
+    grp[int(np.setdiff1d(np.arange(n), members)[0])] = "b"  # ... not row-unique
+    df = pd.DataFrame({
+        "z": z,
+        "T": rng.binomial(1, 0.5, size=n).astype(float),
+        "c": rng.normal(size=n),
+        "grp": grp,
+        "date": pd.date_range("2001-01-01", periods=n).strftime("%Y-%m-%d"),
+    })
+    spec = DatasetSpec(
+        treatment="T", outcome=None, forcing=["z"], covariates=["z", "c", "grp", "date"]
+    )
+    ds = Dataset(df, spec)
+    normal = np.array([1.0])
+    group1 = ((ds.Z_std[members] - ds.Z_std[center]) @ normal) >= 0
+    d = Discovery(
+        center_index=center, k=20, llr=1.0, normal=normal, members=members, group1=group1
+    )
+    rep = placebo_tests(ds, d)
+    # the row-unique date column never reaches the family, level by level
+    assert not any(name.startswith("date") for name in rep.p_values)
+    assert "date" in rep.skipped
+    # both grp levels are degenerate inside the neighborhood (minority count 1)
+    assert not any(name.startswith("grp") for name in rep.p_values)
+    assert any(name.startswith("grp") for name in rep.skipped)
+    # only the genuine covariate enters the Holm family, and m says so
+    assert set(rep.p_values) == {"c"}
+    assert rep.m == 1
+
+
 def test_density_smoke():
     rng = np.random.default_rng(4)
     ds, _ = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)
