@@ -13,8 +13,9 @@ Three checks, all replacing or repairing the thesis validation stage:
   window. This is the audit-18 replacement for McCrary on calendar time,
   which is information-free when record times are design-determined.
 * :func:`anticipation_test` — placebo jump estimates at pre-period cutoffs
-  ``T0 - shift * step`` restricted to ``t < T0`` (never contaminated by the
-  real jump), Holm-corrected across shifts.
+  ``T0 - shift * step``, Holm-corrected across shifts. Both the records AND
+  the nuisance background fit are restricted to ``t < T0`` (issue #12: a
+  full-panel fit lets the real jump leak into the trend coefficients).
 
 Null replica kinds (audit item 18 — preserve unit/time dependence):
 
@@ -350,50 +351,90 @@ def _holm(p: np.ndarray) -> np.ndarray:
 
 def anticipation_test(
     panel: CategoricalPanel,
-    background: DiDBackground,
     discovery: DiDDiscovery,
     shifts: tuple[int, ...] = (1, 2, 3),
     alpha: float = 0.05,
+    model: str = "auto",
+    degree: int = 1,
+    unit_effects: bool = True,
+    shrink: float | None = None,
 ) -> AnticipationReport:
     """Pre-period placebo jumps at ``T0 - shift * step``, Holm across shifts.
 
-    ``step`` is the median diff of unique panel times. Each placebo estimate
-    uses the discovery's own window width and subset mask but is RESTRICTED
-    to records with ``t < T0`` — never contaminated by the real jump. The
-    estimator matches the discovery: ``single_delta`` uses the profiled
-    ``Delta_hat = C/B`` with ``Var = 1/B_tilde``; otherwise the double-beta
-    contrast ``q1 - q2`` with ``Var = 1/B1 + 1/B0`` (for a Bernoulli-model
-    discovery the contrast runs on working residuals — a documented normal
-    approximation for this diagnostic only). Two-sided normal p-values; a
-    shift with insufficient two-sided support gets NaN (excluded from Holm,
-    visible in the report). ``passed`` requires at least one usable shift AND
-    every usable Holm p above ``alpha`` — all-degenerate is a fail, never a
-    silent pass.
+    The nuisance background is REFIT on the pre-period sub-panel (records
+    with ``t < T0``) via :func:`natex.did.fit_did_background` with the given
+    ``model``/``degree``/``unit_effects``/``shrink`` — issue #12: a
+    background fitted on the full panel absorbs the real post jump into its
+    trend coefficients, leaving a systematic pre-period residual trend that
+    reads as spurious placebo jumps; restricting the RECORDS alone does not
+    protect the fitted coefficients, so this test no longer accepts a
+    caller-supplied (potentially contaminated) fit. ``step`` is the median
+    diff of unique pre-period times. Each placebo estimate uses the
+    discovery's own window width and subset mask on the pre-period records
+    only. The estimator matches the discovery: ``single_delta`` uses the
+    profiled ``Delta_hat = C/B`` with ``Var = 1/B_tilde``; otherwise the
+    double-beta contrast ``q1 - q2`` with ``Var = 1/B1 + 1/B0`` (for a
+    Bernoulli-model discovery the contrast runs on working residuals — a
+    documented normal approximation for this diagnostic only). Two-sided
+    normal p-values; a shift with insufficient two-sided support gets NaN
+    (excluded from Holm, visible in the report). ``passed`` requires at
+    least one usable shift AND every usable Holm p above ``alpha`` —
+    all-degenerate is a fail, never a silent pass. A pre period with fewer
+    than 2 distinct times, or a one-class Bernoulli pre period, admits no
+    refit at all: all-NaN report, ``passed = False``.
     """
     shifts = tuple(int(s) for s in shifts)
     if len(shifts) == 0 or any(s < 1 for s in shifts):
         raise ValueError(f"shifts must be a nonempty tuple of ints >= 1, got {shifts}")
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
-    u = np.unique(panel.t)
+    if model not in ("auto", "normal", "bernoulli"):
+        raise ValueError(f"model must be 'auto', 'normal' or 'bernoulli', got {model!r}")
+
+    nan = np.full(len(shifts), np.nan)
+    degenerate = AnticipationReport(
+        shifts=shifts, estimates=nan, p_values=nan.copy(), p_holm=nan.copy(), passed=False
+    )
+
+    # Pre-period sub-panel: both the records AND the nuisance fit see t < T0.
+    keep = panel.t < float(discovery.t0)
+    sub = replace(
+        panel,
+        codes=panel.codes[keep],
+        t=panel.t[keep],
+        theta=panel.theta[keep],
+        y=None if panel.y is None else np.asarray(panel.y)[keep],
+        unit=panel.unit[keep],
+    )
+    sel = np.asarray(discovery.mask, dtype=bool)[keep]
+
+    u = np.unique(sub.t)
     if u.size < 2:
-        raise ValueError("anticipation_test requires >= 2 distinct time points")
+        return degenerate  # no pre-period refit, no placebo cutoff
     step = float(np.median(np.diff(u)))
+
+    theta_vals = np.unique(sub.theta[~np.isnan(sub.theta)])
+    theta_binary = theta_vals.size <= 2 and set(theta_vals.tolist()) <= {0.0, 1.0}
+    resolved = ("bernoulli" if theta_binary else "normal") if model == "auto" else model
+    if resolved == "bernoulli" and theta_vals.size < 2:
+        return degenerate  # one-class pre period: no Bernoulli refit
+    background = fit_did_background(
+        sub, model=resolved, degree=degree, unit_effects=unit_effects, shrink=shrink
+    )
 
     if background.kind == "normal":
         assert background.r is not None and background.sigma2 is not None
         r, sigma2 = background.r, background.sigma2
     else:
         # Documented normal approximation for this diagnostic only.
-        r, sigma2 = working_residuals(panel.theta, background.fitted)
+        r, sigma2 = working_residuals(sub.theta, background.fitted)
 
-    sel = np.asarray(discovery.mask, dtype=bool) & (panel.t < discovery.t0)
-    n_profiles = int(np.prod(panel.dim_sizes)) if panel.m else 1
+    n_profiles = int(np.prod(sub.dim_sizes)) if sub.m else 1
     estimates = np.full(len(shifts), np.nan)
     p_values = np.full(len(shifts), np.nan)
     for i, shift in enumerate(shifts):
         t0p = float(discovery.t0 - shift * step)
-        ws = window_stats(panel.t, r, sigma2, t0p, float(discovery.window))
+        ws = window_stats(sub.t, r, sigma2, t0p, float(discovery.window))
         g1 = ws.g1 & sel
         g0 = ws.g0 & sel
         in_w = g1 | g0
@@ -406,13 +447,13 @@ def anticipation_test(
             b=np.where(in_w, ws.b, 0.0),
         )
         if discovery.method == "single_delta":
-            c_prof, b_prof = single_delta_stats(wsel, panel.profile_id, n_profiles=n_profiles)
+            c_prof, b_prof = single_delta_stats(wsel, sub.profile_id, n_profiles=n_profiles)
             b_sum = float(b_prof.sum())
             if b_sum <= 0.0:
                 continue  # no identifying within-profile variation
             est, var = float(c_prof.sum()) / b_sum, 1.0 / b_sum
         else:
-            q1, q2 = double_beta_q(wsel, np.ones((panel.n, 1), dtype=bool))
+            q1, q2 = double_beta_q(wsel, np.ones((sub.n, 1), dtype=bool))
             b1 = float((wsel.b * g1).sum())
             b0 = float((wsel.b * g0).sum())
             if not (np.isfinite(q1[0]) and np.isfinite(q2[0])) or b1 <= 0.0 or b0 <= 0.0:

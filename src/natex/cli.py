@@ -17,7 +17,6 @@ from natex.data.registry import REGISTRY, data_root, verify
 from natex.data.spec import Dataset
 from natex.dee.debias import dee_debias
 from natex.dee.vknn import select_m_prime
-from natex.did.background import fit_did_background
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
 from natex.did.suddds import suddds_scan
@@ -846,8 +845,10 @@ def _discover_did(
     )
     top = res.discoveries[0]
     comp = composition_test(panel, top)
-    background = fit_did_background(panel, model=res.model, degree=degree)
-    antic = anticipation_test(panel, background, top)
+    # anticipation_test refits its own nuisance on the pre-period sub-panel
+    # (issue #12): a full-panel background would leak the real jump into the
+    # trend coefficients and fail clean discoveries.
+    antic = anticipation_test(panel, top, model=res.model, degree=degree)
     effects = {}
     if ds.y is not None:
         for control in ("dd", "synthetic", "gess"):

@@ -43,7 +43,6 @@ deterministic run of record, calibrated 2026-07-11):
 import numpy as np
 import pytest
 
-from natex.did.background import fit_did_background
 from natex.did.effects import (
     did_effect,
     placebo_dimension_tests,
@@ -235,10 +234,12 @@ def test_validation_battery(ds, panel, discovery):
     assert comp.passed and comp.p_value > 0.9
 
     # Anticipation: California's pre-1989 background residuals are constant
-    # (degree-0 unit-effect fit on a policy dummy), so every placebo jump at
-    # shifts 1-3 is exactly 0 -> Holm p = 1 everywhere.
-    background = fit_did_background(panel, model="normal", degree=DEGREE)
-    ant = anticipation_test(panel, background, discovery, shifts=(1, 2, 3))
+    # (degree-0 unit-effect fit on a policy dummy, refit on the pre-period
+    # sub-panel — issue #12), so every placebo jump at shifts 1-3 is exactly
+    # 0 -> Holm p = 1 everywhere.
+    ant = anticipation_test(
+        panel, discovery, shifts=(1, 2, 3), model="normal", degree=DEGREE
+    )
     assert ant.passed
     assert np.all(np.abs(ant.estimates) < 1e-9)
 
