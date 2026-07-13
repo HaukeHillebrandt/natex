@@ -126,6 +126,8 @@ class MockBackend:
 _AGG_MAX_ROWS = 5000  # "aggregated-cells" only plausible below this row count
 _QUIRK_MISSING = 0.2  # missing_frac above which a column is flagged as a quirk
 _DROP_MISSING = 0.5  # missing_frac above which prepare() drops the column
+_PREFIX_EXPLAINED = 0.95  # missingness this prefix-concentrated is structural (issue #6)
+_BOUNDARY_TOL = 0.01  # boundary rows within this fraction of n_rows share one filter
 _SUB_N = 20000  # subsample size when the profile is large
 _SUB_MAX = 50000  # rows above which prepare() proposes a subsample
 _COARSE_MIN = 10000  # rows above which the search-plan budget suggests coarse scan
@@ -161,7 +163,15 @@ class NullBackend:
       * ``notes`` = "NullBackend heuristics (no LLM)".
 
     ``prepare`` (payload adds ``"understanding"`` and ``"seed"``): PrepPlan dict with
-    ``drop_cols`` = constant columns + columns with ``missing_frac > _DROP_MISSING``;
+    ``drop_cols`` = constant columns + columns with ``missing_frac > _DROP_MISSING``,
+    EXCEPT clusters of >= 2 such columns whose missingness is structural (issue #6):
+    >= ``_PREFIX_EXPLAINED`` of it lies in the all-missing row prefix before
+    ``first_valid_index``, the boundary rows agree within ``_BOUNDARY_TOL * n_rows``,
+    a fully observed monotone column can express the shared boundary (profile
+    ``boundary_values``), and every member's post-boundary missing_frac falls
+    below ``_QUIRK_MISSING`` — those columns are kept and ONE shared row filter
+    ``monotone_col >= boundary value`` is emitted instead (still profile-only:
+    all evidence is precomputed by the profiler).
     ``subsample = {"n": _SUB_N, "seed": payload["seed"]}`` iff ``n_rows > _SUB_MAX``;
     everything else empty (profile-only degradation, spec 6a).
 
@@ -255,13 +265,78 @@ class NullBackend:
         }
 
     @staticmethod
+    def _prefix_filters(prof: dict, high: list[dict]) -> tuple[list[dict], set[str]]:
+        """Shared structural-missingness filters (issue #6), profile-only.
+
+        Among the high-missingness columns ``high``, cluster those whose
+        missingness is >= ``_PREFIX_EXPLAINED`` prefix-explained and whose
+        boundary rows agree within ``_BOUNDARY_TOL * n_rows``. A cluster of
+        >= 2 columns is rescued when a monotone column has a recorded value at
+        the cluster boundary and every member's post-boundary missing_frac
+        falls below ``_QUIRK_MISSING``: one ``>=`` filter per cluster.
+        Returns ``(filters, rescued column names)``.
+        """
+        n_rows = int(prof.get("n_rows", 0))
+        # profile dicts arrive JSON-round-tripped: boundary keys are strings
+        boundary_values = {int(b): v for b, v in (prof.get("boundary_values") or {}).items()}
+        if not n_rows or not boundary_values:
+            return [], set()
+        structural = sorted(
+            (
+                (int(c["first_valid_index"]), c)
+                for c in high
+                if c.get("first_valid_index")
+                and c.get("prefix_missing_frac") is not None
+                and c["prefix_missing_frac"] >= _PREFIX_EXPLAINED
+            ),
+            key=lambda item: (item[0], item[1]["name"]),
+        )
+        # monotone columns that can express a boundary; time-like ones first
+        # (stable sort keeps profile order within each tier — deterministic)
+        monotone = [
+            c["name"]
+            for c in sorted(
+                (c for c in prof.get("columns", []) if c.get("is_monotone") and c["n_unique"] > 1),
+                key=lambda c: not c.get("is_time_like"),
+            )
+        ]
+        clusters: list[list[tuple[int, dict]]] = []
+        for row, col in structural:
+            if clusters and row - clusters[-1][0][0] <= _BOUNDARY_TOL * n_rows:
+                clusters[-1].append((row, col))
+            else:
+                clusters.append([(row, col)])
+        filters: list[dict] = []
+        rescued: set[str] = set()
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue  # a shared structural boundary needs >= 2 witnesses
+            boundary = max(row for row, _ in cluster)
+            values = boundary_values.get(boundary) or {}
+            expressed_by = next((m for m in monotone if m in values), None)
+            tail = n_rows - boundary
+            if expressed_by is None or tail <= 0:
+                continue
+            residual = [
+                c["missing_frac"] * n_rows * (1.0 - c["prefix_missing_frac"]) / tail
+                for _, c in cluster
+            ]
+            if max(residual) >= _QUIRK_MISSING:
+                continue
+            filters.append({"col": expressed_by, "op": ">=", "value": values[expressed_by]})
+            rescued |= {c["name"] for _, c in cluster}
+        return filters, rescued
+
+    @staticmethod
     def _prepare(payload: dict) -> dict:
         prof = payload["profile"]
         cols = prof.get("columns", [])
         drop = [c["name"] for c in cols if c["n_unique"] <= 1]
-        drop += [
-            c["name"] for c in cols if c["missing_frac"] > _DROP_MISSING and c["name"] not in drop
-        ]
+        high = [c for c in cols if c["missing_frac"] > _DROP_MISSING and c["name"] not in drop]
+        # Issue #6: structurally prefix-missing column clusters are kept behind
+        # one shared boundary filter instead of being dropped wholesale.
+        filters, rescued = NullBackend._prefix_filters(prof, high)
+        drop += [c["name"] for c in high if c["name"] not in rescued]
         subsample = None
         if int(prof.get("n_rows", 0)) > _SUB_MAX:
             subsample = {"n": _SUB_N, "seed": int(payload.get("seed", 0))}
@@ -272,7 +347,7 @@ class NullBackend:
             "discretize": {},
             "drop_cols": drop,
             "subsample": subsample,
-            "filters": [],
+            "filters": filters,
         }
 
     @staticmethod

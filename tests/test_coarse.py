@@ -7,7 +7,8 @@ import pytest
 from natex.data.synthetic import make_synthetic
 from natex.rdd.lord3 import lord3_scan
 from natex.rdd.metrics import normalized_information_gain
-from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
+from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan, coarse_to_fine_search
+from natex.scan.geometry import build_geometry
 
 
 def _dataset(n, seed=0, zeta=3.0, kind="real"):
@@ -52,6 +53,26 @@ def test_rng_required():
     ds, _ = _dataset(n=300)
     with pytest.raises(ValueError):
         coarse_to_fine_scan(ds, k=20, rng=None)
+
+
+def test_issue_21_frozen_center_search_reproduces_observed_procedure():
+    """Issue #21: the replica search factory reruns the whole coarse-to-fine
+    pipeline (coarse scan -> top-m localization -> fine rescan) with the
+    coarse center subsample frozen. On the observed data itself it must
+    reproduce the fine-stage result of coarse_to_fine_scan exactly."""
+    ds, _ = _dataset(n=800)
+    geometry = build_geometry(ds.Z_std, 25)
+    ctf = coarse_to_fine_scan(
+        ds, k=25, n_coarse=200, top_m=5, rng=np.random.default_rng(1), geometry=geometry
+    )
+    search = coarse_to_fine_search(
+        ds, ctf.coarse_result.centers, k=25, top_m=5,
+        model=ctf.result.model, geometry=geometry,
+    )
+    res = search(ds)
+    a, b = res.discoveries[0], ctf.result.discoveries[0]
+    assert (a.center_index, a.llr) == (b.center_index, b.llr)
+    np.testing.assert_array_equal(np.asarray(res.centers), ctf.fine_centers)
 
 
 def test_small_n_degenerates_to_full():

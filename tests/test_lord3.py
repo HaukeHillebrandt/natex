@@ -22,6 +22,28 @@ def test_single_class_treatment_raises_diagnostic_error():
         lord3_scan(ds, k=10, rng=np.random.default_rng(0))
 
 
+def test_issue_1_one_class_error_names_row_loss_offenders():
+    """Issue #1: one-sided covariate missingness listwise-deletes every treated
+    row; the one-class diagnostic must name the offending column with its
+    attributable loss, not leave the user to guess which covariate did it."""
+    rng = np.random.default_rng(0)
+    n = 60
+    T = np.r_[np.zeros(30), np.ones(30)]
+    df = pd.DataFrame(
+        {
+            "T": T,
+            "z": rng.normal(size=n),
+            "c": np.where(T == 1, np.nan, 1.0),
+            "y": rng.normal(size=n),
+        }
+    )
+    ds = Dataset(
+        df, DatasetSpec(treatment="T", outcome="y", forcing=["z"], covariates=["z", "c"])
+    )
+    with pytest.raises(ValueError, match=r"single class[\s\S]*c: 30/60 rows"):
+        lord3_scan(ds, k=10, rng=np.random.default_rng(0))
+
+
 def test_scan_finds_planted_boundary_real_T():
     rng = np.random.default_rng(0)
     ds, D = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)
@@ -61,3 +83,51 @@ def test_determinism():
     b = lord3_scan(ds, k=20, rng=np.random.default_rng(7))
     assert a.discoveries[0].llr == b.discoveries[0].llr
     assert a.discoveries[0].center_index == b.discoveries[0].center_index
+
+
+def test_issue_5_no_iprint_optimize_warning_from_logistic_fit():
+    """Issue #5: sklearn <= 1.6 passes the removed 'iprint' option to
+    scipy >= 1.18's L-BFGS-B, emitting one OptimizeWarning per logistic fit
+    (one per replica in the randomization test -> hundreds of stderr lines).
+    Exactly that upstream, data-independent warning must be suppressed at the
+    fit site; everything else (convergence, separation) stays visible."""
+    import warnings
+
+    from natex.rdd.lord3 import fit_treatment_model
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2))
+    T = (rng.uniform(size=60) < 0.5).astype(float)
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        fit_treatment_model(X, T, "bernoulli", 1)
+    assert not [w for w in rec if "iprint" in str(w.message)]
+
+
+def test_issue_9_zero_residual_variance_raises_diagnostic_error():
+    """Issue #9: a constant continuous treatment makes the Normal background
+    fit exact -- residuals are identically 0, the data-scaled variance floor
+    is 0, weights are inf, every LLR is NaN, and NaN won argmax and poisoned
+    the randomization p-value (NaN >= NaN is False -> p = 1/(Q+1)). The scan
+    must instead fail loudly with a diagnostic ValueError, which discover()
+    isolates as status="failed"."""
+    n = 20
+    df = pd.DataFrame({"x": np.linspace(-1.0, 1.0, n), "T": np.full(n, 2.0)})
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome=None, forcing=["x"], covariates=["x"]))
+    with pytest.raises(ValueError, match="zero residual variance"):
+        lord3_scan(ds, k=8, rng=np.random.default_rng(0))
+    # NOTE: an exactly-linear treatment is the same degeneracy in exact
+    # arithmetic, but lstsq leaves ~1e-16 float residuals (gv > 0, weights
+    # finite, no NaN), so the gv <= 0 guard deliberately does not fire there.
+
+
+def test_issue_9_local_residual_variance_rejects_zero_residuals():
+    """Issue #9 unit level: identically-zero residuals make the variance floor
+    0 and every precision weight inf; local_residual_variance must raise a
+    diagnostic error rather than return zeros."""
+    from natex.scan.neighborhoods import knn_indices, local_residual_variance
+
+    z = np.linspace(-1.0, 1.0, 12).reshape(-1, 1)
+    idx = knn_indices(z, 4)
+    with pytest.raises(ValueError, match="zero residual variance"):
+        local_residual_variance(np.zeros(12), idx)

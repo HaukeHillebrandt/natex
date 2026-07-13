@@ -20,7 +20,13 @@ class DatasetSpec(BaseModel):
 
 class Dataset:
     def __init__(self, df: pd.DataFrame, spec: DatasetSpec):
-        missing = [c for c in [spec.treatment, *spec.forcing, *spec.covariates] if c not in df.columns]
+        # Every declared role is validated eagerly — outcome included (issue
+        # #26: a missing outcome column must fail here, not as a raw KeyError
+        # from ``ds.y`` after an expensive discovery scan). Only the column's
+        # EXISTENCE is checked: NaN outcome values stay tolerated (LSO policy).
+        roles = [spec.treatment, *([spec.outcome] if spec.outcome is not None else []),
+                 *spec.forcing, *spec.covariates]
+        missing = [c for c in roles if c not in df.columns]
         if missing:
             raise ValueError(f"columns not in dataframe: {missing}")
         bad = [c for c in spec.forcing if not pd.api.types.is_numeric_dtype(df[c])]
@@ -37,9 +43,32 @@ class Dataset:
             raise ValueError(f"unit column not in dataframe: {spec.unit}")
         # Drop rows with missing values in scan-relevant columns only (never the
         # outcome: discovery uses only (x, z, T) and must tolerate NaN in y).
+        # +/-inf counts as missing too (issue #20): dropna leaves inf through,
+        # after which Z_std is all-NaN (mean/std over inf), build_geometry
+        # crashes far from the cause, and inf in the treatment silently flips
+        # treatment_is_binary. Same silent-drop remedy as the NaN policy.
         extra = [c for c in (spec.time, spec.unit) if c is not None]
         scan_cols = list(dict.fromkeys([spec.treatment, *spec.forcing, *spec.covariates, *extra]))
-        self.df = df.dropna(subset=scan_cols).reset_index(drop=True)
+        # Row-loss bookkeeping (issue #1): the deletion policy is by design,
+        # but it must never be silent. Every row with a missing/non-finite scan
+        # value IS dropped, so each column's bad count among the INPUT rows is
+        # exactly the loss attributable to it. Lossless columns are absent —
+        # ints only, no fabricated zeros (NaN-never-0.0 lineage).
+        self.n_rows_input = len(df)
+        dropped: dict[str, int] = {}
+        for c in scan_cols:
+            if pd.api.types.is_numeric_dtype(df[c]):
+                bad = ~np.isfinite(df[c].to_numpy(dtype=float, na_value=np.nan))
+            else:
+                bad = df[c].isna().to_numpy()
+            if bad.any():
+                dropped[c] = int(bad.sum())
+        self.nan_dropped_by_column = dropped
+        clean = df.dropna(subset=scan_cols)
+        num_cols = [c for c in scan_cols if pd.api.types.is_numeric_dtype(clean[c])]
+        if num_cols:
+            clean = clean.loc[np.isfinite(clean[num_cols].to_numpy(dtype=float)).all(axis=1)]
+        self.df = clean.reset_index(drop=True)
         self.spec = spec
 
     @classmethod
@@ -72,6 +101,16 @@ class Dataset:
     @property
     def n(self) -> int:
         return len(self.df)
+
+    @property
+    def n_rows_used(self) -> int:
+        """Rows the scan actually sees: ``n_rows_input`` minus listwise deletion."""
+        return len(self.df)
+
+    def top_row_loss(self, m: int = 3) -> dict[str, int]:
+        """The ``m`` largest per-column row losses, descending (ties by name)."""
+        items = sorted(self.nan_dropped_by_column.items(), key=lambda kv: (-kv[1], kv[0]))
+        return dict(items[:m])
 
     @property
     def T(self) -> np.ndarray:

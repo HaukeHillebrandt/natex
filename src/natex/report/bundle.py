@@ -67,6 +67,10 @@ def _data_block(dataset: Dataset | None, report: DiscoverReport) -> dict | None:
         spec = dataset.spec
         return {
             "n_rows": len(dataset.df),
+            # Issue #1: rows used alone hides listwise deletion — surface the
+            # input size and the top per-column attributable losses.
+            "n_rows_input": dataset.n_rows_input,
+            "row_loss": dataset.top_row_loss(),
             "treatment": spec.treatment,
             "outcome": spec.outcome,
             "forcing": list(spec.forcing),
@@ -83,6 +87,8 @@ def _data_block(dataset: Dataset | None, report: DiscoverReport) -> dict | None:
     c = rec.candidate
     return {
         "n_rows": None,
+        "n_rows_input": None,
+        "row_loss": None,
         "treatment": c.treatment,
         "outcome": c.outcome,
         "forcing": list(c.forcing),
@@ -125,7 +131,7 @@ def _scan_payload_config(payload: dict) -> dict | None:
             "design": "did",
             "treatment": params.get("treatment"),
             "outcome": params.get("outcome"),
-            "forcing": [],
+            "forcing": params.get("forcing") or [],
             "unit": params.get("unit"),
             "time": params.get("time"),
         }
@@ -149,7 +155,10 @@ def _scan_payload_config(payload: dict) -> dict | None:
             "design": "rdd",
             "treatment": params.get("treatment"),
             "outcome": params.get("outcome"),
-            "forcing": list(influence),
+            # Issue #29: prefer the params-recorded forcing; the top
+            # discovery's forcing_influence keys remain the fallback for
+            # pre-fix payloads (and vanish when there are no discoveries).
+            "forcing": params.get("forcing") or list(influence),
         }
         summary = {
             "design": "rdd",

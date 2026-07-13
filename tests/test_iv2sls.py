@@ -148,6 +148,43 @@ def test_first_stage_f_strong_design():
     assert 0.2 < est.partial_r2 < 0.5
 
 
+def test_issue_11_duplicated_instrument_collapses_to_just_identified():
+    # [z, z] (and [z, 2z]) carry ONE instrument's information: the rank-1
+    # moment space makes the just-identified moment hold exactly, so Hansen J
+    # was a structurally guaranteed pass (J ~ 0, df = 1) and the first-stage
+    # F was halved by the nominal k. The effective rank must drive J, F and
+    # the AR set instead; tau itself is unchanged (same projection space).
+    rng = np.random.default_rng(0)
+    y, T, Z = _endog_dgp(300, rng)
+    base = iv_2sls(y, T, Z)
+    for dup_z in (np.c_[Z, Z], np.c_[Z, 2.0 * Z]):
+        dup = iv_2sls(y, T, dup_z)
+        assert dup.tau == pytest.approx(base.tau, rel=1e-8)
+        assert dup.j_stat is None and dup.j_p is None and dup.j_df == 0
+        assert dup.extras["rank_deficient"] is True
+        assert dup.extras["k_effective"] == 1
+        assert dup.first_stage_F == pytest.approx(base.first_stage_F, rel=1e-6)
+        assert dup.ar_kind == base.ar_kind == "interval"
+        assert dup.ar_ci == pytest.approx(base.ar_ci, rel=1e-8)
+
+
+def test_issue_11_instrument_collinear_with_controls_is_nan_with_reason():
+    # After partialling on [1, controls] the instrument block is identically
+    # zero: no identifying variation at all -> NaN (never 0.0), flagged.
+    rng = np.random.default_rng(1)
+    n = 300
+    w = rng.normal(size=n)
+    u = rng.normal(size=n)
+    T = 0.8 * w + u + 0.5 * rng.normal(size=n)
+    y = T + 0.6 * u + 0.5 * rng.normal(size=n)
+    est = iv_2sls(y, T, (2.0 * w)[:, None], controls=w[:, None])
+    assert np.isnan(est.tau) and np.isnan(est.se)
+    assert est.extras["reason"] == "instruments collinear with controls"
+    assert est.extras["rank_deficient"] is True
+    assert est.extras["k_effective"] == 0
+    assert est.weak_instrument is True
+
+
 def test_first_stage_f_pure_noise_instrument():
     # Instrument independent of T: F ~ chi2_1; calibrated across seeds
     # 9,19,29,39,49: F in [0.012, 1.99]. Pinned seed 9 with margin.

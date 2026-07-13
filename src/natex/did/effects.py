@@ -52,7 +52,7 @@ class DiDEffect:
     """Effect estimate for one discovery under one control construction."""
 
     tau: float  # NaN on failure, never 0.0
-    se: float  # sd of per-post-period mean gaps / sqrt(h) — documented simple choice
+    se: float  # CR1 cluster(=post-period)-robust SE of the record-weighted tau
     method: str  # control method name ("dd" | "synthetic" | "gess")
     pre_mse: float  # control fit quality (Eq 6.17, from the ControlResult)
     n_treated_post: int  # s_tau post records USED (finite y and counterfactual)
@@ -129,10 +129,14 @@ def _mean_gap(
     """Mean post-period gap of ``v - v0_hat`` over the ``s_tau`` records.
 
     Returns ``(gap_mean, se, n_used, n_skipped, h)``: the record-level mean
-    over usable post records, its time-clustered standard error (sd of the
-    per-post-period mean gaps / sqrt(h), NaN when fewer than two usable post
-    periods — a documented simple choice), the used and skipped (NaN cell)
-    post-record counts, and the number of usable post periods ``h``.
+    over usable post records, its time-cluster-robust standard error, the used
+    and skipped (NaN cell) post-record counts, and the number of usable post
+    periods ``h``. The SE is the CR1 cluster(=period) variance of the SAME
+    record-weighted estimator (issue #17): with per-period usable counts
+    ``n_g``, period means ``gbar_g`` and ``N = n_used``,
+    ``se = sqrt(h/(h-1) * sum_g ((n_g/N) * (gbar_g - tau))^2)`` — reducing
+    exactly to ``std(period_means, ddof=1)/sqrt(h)`` when cells are balanced —
+    and NaN when fewer than two usable post periods.
     """
     tau_idx = np.flatnonzero(np.asarray(discovery.mask, dtype=bool))
     t_tau = panel.t[tau_idx]
@@ -143,11 +147,16 @@ def _mean_gap(
     if n_used == 0:
         return float("nan"), float("nan"), 0, n_skipped, 0
     gaps = v[tau_idx][usable] - v0_hat[usable]
+    tau = float(gaps.mean())
     times, code = np.unique(t_tau[usable], return_inverse=True)
     h = int(times.size)
-    period_means = np.bincount(code, weights=gaps) / np.bincount(code)
-    se = float(np.std(period_means, ddof=1) / np.sqrt(h)) if h >= 2 else float("nan")
-    return float(gaps.mean()), se, n_used, n_skipped, h
+    if h >= 2:
+        n_g = np.bincount(code).astype(float)
+        gbar = np.bincount(code, weights=gaps) / n_g
+        se = float(np.sqrt(h / (h - 1) * np.sum(((n_g / n_used) * (gbar - tau)) ** 2)))
+    else:
+        se = float("nan")
+    return tau, se, n_used, n_skipped, h
 
 
 def _dose_contrast(
@@ -632,6 +641,7 @@ def placebo_dimension_tests(
             y=share,
             unit=panel.unit,
             unit_values=panel.unit_values,
+            t_origin=panel.t_origin,
         )
         rep = tau_randomization_test(panel_j, discovery, control=control, Q=Q, rng=rng)
         p_values[name] = rep.p_value

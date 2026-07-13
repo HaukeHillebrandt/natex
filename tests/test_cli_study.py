@@ -123,6 +123,43 @@ def test_study_then_discover_plan_round_trip(tmp_path):
     assert payload["searched"]["budget"]["q"] == 9
 
 
+def test_issue_2_discover_plan_writes_results_bundle(tmp_path):
+    """Issue #2: plan mode wrote ONLY discover_report.json, so `natex paper`
+    rendered 'seed —' and 'No dataset metadata was recorded' despite the run
+    having seed, dataset and intake in scope. Plan mode now ALSO saves a full
+    ResultsBundle (results.json with the natex_bundle marker), which wins over
+    the discover_report.json compat path on load; discover_report.json stays
+    (documented output)."""
+    import natex
+    from natex.report.bundle import ResultsBundle
+
+    csv = _write_synthetic_csv(tmp_path)
+    out1, out2 = tmp_path / "out1", tmp_path / "out2"
+    res1 = runner.invoke(app, ["study", str(csv), "--seed", "0", "--out", str(out1)])
+    assert res1.exit_code == 0, res1.output
+    res2 = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"), str(csv),
+         "--q", "9", "--k", "25", "--seed", "0", "--out", str(out2)],
+    )
+    assert res2.exit_code == 0, res2.output
+    assert (out2 / "discover_report.json").exists()  # docs promise it
+    payload = json.loads((out2 / "results.json").read_text())
+    assert payload["natex_bundle"] == 1
+    assert payload["seed"] == 0
+    assert payload["natex_version"] == natex.__version__
+    assert payload["params"]["k"] == 25 and payload["params"]["q"] == 9
+    data = payload["data"]
+    assert data["n_rows"] is not None and data["treatment"] is not None
+    intake = payload["intake"]
+    assert intake["source"] == str(csv)
+    assert "understanding" in intake
+    # load() resolves the bundle (path 1), not the discover_report compat path
+    loaded = ResultsBundle.load(out2)
+    assert loaded.results["seed"] == 0
+    assert loaded.results["natex_version"] == natex.__version__
+
+
 def test_discover_plan_max_configs_lists_skipped(tmp_path):
     """spec 6b through the CLI: --max-configs 1 on a >= 2 candidate plan lists
     the remainder as skipped_budget instead of silently dropping it."""
@@ -157,6 +194,74 @@ def test_discover_plan_max_configs_lists_skipped(tmp_path):
     payload3 = json.loads((tmp_path / "out3" / "discover_report.json").read_text())
     assert payload3["searched"]["n_scanned"] == 0
     assert payload3["searched"]["n_skipped_budget"] == payload3["searched"]["n_total"]
+
+
+def test_issue_18_prep_plan_override_is_applied_and_recorded(tmp_path):
+    """Issue #18: `out/prep_plan.json` is documented as user-editable but
+    nothing ever read it back — edits were silently ignored. `--prep-plan`
+    feeds an edited plan into plan-mode discover: the run uses it (the
+    subsample shrinks every config's input frame), echoes the override, and
+    records it in the bundle's intake provenance."""
+    csv = _write_synthetic_csv(tmp_path)
+    out1, out2 = tmp_path / "out1", tmp_path / "out2"
+    res1 = runner.invoke(app, ["study", str(csv), "--seed", "0", "--out", str(out1)])
+    assert res1.exit_code == 0, res1.output
+
+    edited = json.loads((out1 / "prep_plan.json").read_text())
+    edited["subsample"] = {"n": 150, "seed": 123}
+    edited_path = tmp_path / "edited_prep_plan.json"
+    edited_path.write_text(json.dumps(edited))
+
+    res2 = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"),
+         "--prep-plan", str(edited_path), str(csv),
+         "--q", "9", "--k", "25", "--seed", "0", "--out", str(out2)],
+    )
+    assert res2.exit_code == 0, res2.output
+    assert "prep plan overridden" in res2.output
+    report = json.loads((out2 / "discover_report.json").read_text())
+    scanned = [c for c in report["configs"] if c["status"] == "scanned"]
+    assert scanned and all(c["n_rows_input"] == 150 for c in scanned)
+    bundle = json.loads((out2 / "results.json").read_text())
+    assert any("prep plan overridden" in e for e in bundle["intake"]["guidance_errors"])
+
+
+def test_issue_18_prep_plan_override_error_paths(tmp_path):
+    """--prep-plan without --plan exits 2 naming --plan; a plan naming an
+    unknown column is rejected against the real frame with exit 2."""
+    csv = _write_synthetic_csv(tmp_path)
+    out1 = tmp_path / "out1"
+    res1 = runner.invoke(app, ["study", str(csv), "--seed", "0", "--out", str(out1)])
+    assert res1.exit_code == 0, res1.output
+
+    plan_path = tmp_path / "p.json"
+    plan_path.write_text(json.dumps({"drop_cols": ["no_such_column"]}))
+
+    res = runner.invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--prep-plan", str(plan_path),
+         "--out", str(tmp_path / "out2")],
+    )
+    assert res.exit_code == 2
+    assert "--plan" in res.output
+
+    res = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"),
+         "--prep-plan", str(plan_path), str(csv), "--out", str(tmp_path / "out3")],
+    )
+    assert res.exit_code == 2
+    assert "no_such_column" in res.output
+
+    res = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"),
+         "--prep-plan", str(tmp_path / "missing.json"), str(csv),
+         "--out", str(tmp_path / "out4")],
+    )
+    assert res.exit_code == 2
+    assert "missing.json" in res.output
 
 
 def test_discover_no_plan_no_treatment_exit_2(tmp_path):

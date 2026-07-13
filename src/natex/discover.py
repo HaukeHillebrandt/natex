@@ -24,17 +24,17 @@ import numpy as np
 import pandas as pd
 
 from natex.data.spec import Dataset, DatasetSpec
-from natex.did.background import fit_did_background
 from natex.did.controls import gess_control
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
-from natex.did.suddds import suddds_scan
+from natex.did.suddds import resolve_default_model, suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.plans import DesignCandidate, SearchPlan
 from natex.jsonutil import jsonable
 from natex.llm import GuidanceBackend, GuidanceLog, GuidanceRequest, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
-from natex.scan.coarse import coarse_to_fine_scan
+from natex.scan.coarse import coarse_to_fine_scan, coarse_to_fine_search
+from natex.scan.geometry import build_geometry
 from natex.validate.density import density_test
 from natex.validate.panel import (
     anticipation_test,
@@ -129,6 +129,13 @@ class ConfigRecord:
     summary: dict = field(default_factory=dict)  # design-specific block; {} unless scanned
     advisory: dict = field(default_factory=dict)  # guidance hooks (spec 6c); ALWAYS advisory
     error: str | None = None
+    # Row bookkeeping (issue #1): what listwise deletion did to THIS config's
+    # dataset. None = the dataset was never built (invalid/skipped/rebuild
+    # failure); {} row_loss = built with zero loss. Stamped before the runner,
+    # so failed configs carry it too.
+    n_rows_input: int | None = None
+    n_rows_used: int | None = None
+    row_loss: dict | None = None  # top per-column attributable losses (<= 3, desc)
 
     def to_dict(self) -> dict:
         return {
@@ -138,6 +145,9 @@ class ConfigRecord:
             "llr": self.llr,
             "p_value": self.p_value,
             "n_discoveries": self.n_discoveries,
+            "n_rows_input": self.n_rows_input,
+            "n_rows_used": self.n_rows_used,
+            "row_loss": self.row_loss,
             "summary": self.summary,
             "advisory": self.advisory,
             "error": self.error,
@@ -224,11 +234,16 @@ def _candidate_error(candidate: DesignCandidate, df: pd.DataFrame) -> str | None
     return None
 
 
-def _dataset_for(data: Dataset, c: DesignCandidate) -> Dataset:
+def _dataset_for(data: Dataset, c: DesignCandidate, known_outcomes: set[str]) -> Dataset:
     """The bound Dataset when the candidate equals its spec, else a rebuilt one.
 
     The rebuilt spec mirrors ``Dataset.from_csv`` defaults: covariates = all
-    columns minus {treatment, outcome}.
+    columns minus {treatment, outcome} — and minus every OTHER candidate's
+    outcome (issue #7): a foreign outcome in the covariates feeds the
+    background treatment model and its NaNs listwise-delete scan rows. A
+    column the candidate itself uses as forcing/time/unit keeps that role.
+    The bound dataset is repaired the same way when its ``spec.covariates``
+    smuggle a foreign outcome in; otherwise it passes through untouched.
     """
     spec = data.spec
     same_roles = c.treatment == spec.treatment and c.outcome == spec.outcome
@@ -236,9 +251,15 @@ def _dataset_for(data: Dataset, c: DesignCandidate) -> Dataset:
         bound = same_roles and sorted(c.forcing) == sorted(spec.forcing)
     else:
         bound = same_roles and c.time == spec.time and c.unit == spec.unit
+    own_roles = {col for col in (*c.forcing, c.time, c.unit) if col is not None}
+    foreign_outcomes = known_outcomes - own_roles - {c.outcome}
     if bound:
-        return data
-    reserved = {c.treatment} | ({c.outcome} if c.outcome else set())
+        leaked = foreign_outcomes & set(spec.covariates)
+        if not leaked:
+            return data
+        kept = [col for col in spec.covariates if col not in leaked]
+        return Dataset(data.df, spec.model_copy(update={"covariates": kept}))
+    reserved = {c.treatment} | ({c.outcome} if c.outcome else set()) | foreign_outcomes
     covariates = [col for col in data.df.columns if col not in reserved]
     if c.design == "rdd":
         new_spec = DatasetSpec(treatment=c.treatment, outcome=c.outcome,
@@ -253,17 +274,31 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
              hooks: _GuidanceHooks) -> tuple:
     """LoRD3 scan + randomization/placebo/density + local 2SLS effects."""
     k, q, degree = int(budget["k"]), int(budget["q"]), int(budget["degree"])
-    coarse_block = None
+    coarse_block, geometry, search = None, None, None
     if budget["coarse"]:
+        # Geometry depends only on Z_std (identical across null replicas):
+        # build once, share with both stages and the calibration below.
+        geometry = build_geometry(ds.Z_std, k)
         ctf = coarse_to_fine_scan(ds, k=k, n_coarse=int(budget["n_coarse"]),
-                                  degree=degree, rng=rng)
+                                  degree=degree, rng=rng, geometry=geometry)
         res = ctf.result  # fine-stage, full-resolution discoveries
         coarse_block = {"frac_centers_scanned": ctf.frac_centers_scanned, **ctf.params}
+        # Issue #21: the observed statistic is a coarse-to-fine max, so each
+        # null replica reruns the same coarse-to-fine search on its own T*
+        # (frozen treatment-independent coarse subsample, replica's own
+        # localization) — a full-scan replica max is stochastically larger
+        # and would inflate the p-value.
+        search = coarse_to_fine_search(
+            ds, ctf.coarse_result.centers, k=k, top_m=int(ctf.params["top_m"]),
+            radius_mult=float(ctf.params["radius_mult"]), model=res.model,
+            degree=degree, geometry=geometry,
+        )
     else:
         res = lord3_scan(ds, k=k, degree=degree, rng=rng)
     if not res.discoveries:
         raise ValueError("no scoreable neighborhood")
-    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree})
+    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree},
+                              geometry=geometry, search=search)
     top = res.discoveries[0]
     placebo = placebo_tests(ds, top)
     dens = density_test(ds, top)
@@ -306,14 +341,13 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
     windows = budget["windows"]
     if windows is not None:
         windows = tuple(float(w) for w in windows)
-    model, method = budget["model"], budget["method"]
-    if method == "single_delta" and model == "auto":
-        # audit 19's Bernoulli auto-matching conflicts with single_delta's
-        # Gaussian profile GLR on binary treatments: resolve the DEFAULT
-        # combination to the thesis-parity normal model instead of failing
-        # every binary-treatment did config (dogfood finding). An explicit
-        # model='bernoulli' still raises inside suddds_scan.
-        model = "normal"
+    # audit 19's Bernoulli auto-matching conflicts with single_delta's
+    # Gaussian profile GLR on binary treatments: resolve the DEFAULT
+    # combination to the thesis-parity normal model instead of failing
+    # every binary-treatment did config (dogfood finding). An explicit
+    # model='bernoulli' still raises inside suddds_scan.
+    method = budget["method"]
+    model = resolve_default_model(budget["model"], method)
     panel = build_panel(ds, bins=bins)
     res = suddds_scan(ds, windows=windows, restarts=int(budget["restarts"]),
                       model=model, method=method,
@@ -324,8 +358,10 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
                                     scan_kwargs={"bins": bins, "degree": degree})
     top = res.discoveries[0]
     comp = composition_test(panel, top)
-    background = fit_did_background(panel, model=res.model, degree=degree)
-    antic = anticipation_test(panel, background, top)
+    # anticipation_test refits its own nuisance on the pre-period sub-panel
+    # (issue #12): a full-panel background would leak the real jump into the
+    # trend coefficients and fail clean discoveries.
+    antic = anticipation_test(panel, top, model=res.model, degree=degree)
     summary = {
         "design": "did",
         "subset_values": top.subset_values,
@@ -449,6 +485,13 @@ def discover(
             status="invalid" if err else "pending", error=err,
         ))
 
+    # Issue #7: every candidate's outcome (plus the bound spec's) is reserved
+    # from every scan's covariates — an outcome named by ONE candidate must
+    # never feed another candidate's background model or listwise deletion.
+    known_outcomes = {r.candidate.outcome for r in records if r.candidate.outcome is not None}
+    if data.spec.outcome is not None:
+        known_outcomes.add(data.spec.outcome)
+
     # -- sequential execution within budget ------------------------------------
     max_configs = eff_budget["max_configs"]
     n_attempted = 0
@@ -461,7 +504,13 @@ def discover(
         n_attempted += 1
         hooks = _GuidanceHooks(guidance, rec.candidate, rec.advisory)
         try:
-            ds = _dataset_for(data, rec.candidate)
+            ds = _dataset_for(data, rec.candidate, known_outcomes)
+            # Stamped BEFORE the runner (issue #1): a config that fails
+            # downstream still records what listwise deletion did to its rows
+            # — failed designs need the bookkeeping most.
+            rec.n_rows_input = ds.n_rows_input
+            rec.n_rows_used = ds.n_rows_used
+            rec.row_loss = ds.top_row_loss()
             runner = _run_rdd if rec.candidate.design == "rdd" else _run_did
             llr, p_value, n_disc, summary = runner(ds, eff_budget, rng, hooks)
         except _CONFIG_EXCEPTIONS as exc:

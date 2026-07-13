@@ -26,10 +26,16 @@ Conventions that bind here (docs/math_audit_final.md + phase-4 plan):
   (crossfit folds + estimator seeds, noise/GP fit restarts, stacking folds);
   identical seed => identical output.
 - NaN policy: experiments with non-finite 2SLS tau/se are excluded from both
-  GPs and listed in ``diagnostics["dropped"]``; fewer than 3 usable
+  GPs and listed in ``diagnostics["dropped"]``; usable experiments whose
+  cross-fitted obs CATE is non-finite are additionally excluded from the BIAS
+  side only (issue #23; dropped reason "non-finite cross-fitted obs CATE",
+  count in ``diagnostics["n_experiments_used_bias"]``). Fewer than 3 usable
   experiments => every GP-derived field is None/NaN (never 0.0) with
-  ``diagnostics["reason"]``. Weak instruments are kept, not dropped
-  (audit 10): their large SE^2 downweights them in the heteroskedastic GP.
+  ``diagnostics["reason"]``; fewer than 3 bias-usable experiments => the bias
+  side (``gp_bias``, ``w_debias``, ``mixture``, ``cate_debiased``) degenerates
+  the same way while ``gp_direct``/``cate_direct`` are still produced. Weak
+  instruments are kept, not dropped (audit 10): their large SE^2 downweights
+  them in the heteroskedastic GP.
 - A NaN stacking weight falls back to ``loo_weights`` (documented contract in
   ``dee/bma.py``), with the stacking detail preserved under
   ``detail["stacking_fallback"]``.
@@ -83,8 +89,8 @@ class DEEResult:
     obs_at_centers: np.ndarray  # cross-fitted obs-CATE at projected centers (audit 9)
     bias_obs: np.ndarray  # obs_at_centers - tau_hat (pinned sign convention)
     noise_var: np.ndarray  # smoothed (stage-1) noise variances actually used
-    gp_bias: HeteroskedasticGP | None
-    gp_direct: HeteroskedasticGP | None
+    gp_bias: HeteroskedasticGP | None  # fit on used & finite(obs_at_centers) rows (issue #23)
+    gp_direct: HeteroskedasticGP | None  # fit on all used rows
     weights: ModelWeights
     query: np.ndarray  # raw-unit query points as given
     cate_raw: np.ndarray  # full-fit obs estimator at query
@@ -191,6 +197,18 @@ def dee_debias(
     # --- cross-fitted bias observations (audit 9) -----------------------------
     obs_at_centers = experiment_crossfit_cate(dataset, vknn, factory, rng, n_folds=n_folds)
     bias_obs = obs_at_centers - tau  # pinned sign: bias = obs - tau
+    # Issue #23: the bias surface also needs a finite cross-fitted obs CATE at
+    # the center; tau/se-usable experiments failing that are dropped from the
+    # BIAS side only (the healthy direct model keeps them).
+    used_bias = used & np.isfinite(obs_at_centers)
+    dropped.extend(
+        {
+            "experiment": int(i),
+            "center_index": int(vknn.experiments[i].center_index),
+            "reason": "non-finite cross-fitted obs CATE",
+        }
+        for i in np.flatnonzero(used & ~used_bias)
+    )
 
     # --- stage-1 noise ---------------------------------------------------------
     if u:
@@ -209,12 +227,14 @@ def dee_debias(
             noise_var[used] = se2[used]
 
     n_used = int(used.sum())
+    n_used_bias = int(used_bias.sum())
     diagnostics: dict[str, Any] = {
         "m_prime": int(m_prime),
         "dropped": dropped,
         "radii": np.array([experiment_radius(dataset, e) for e in vknn.experiments]),
         "n_experiments": u,
         "n_experiments_used": n_used,
+        "n_experiments_used_bias": n_used_bias,
         "buffer": None,
         "fold_sizes": None,
     }
@@ -248,17 +268,57 @@ def dee_debias(
             diagnostics=diagnostics,
         )
 
+    if n_used_bias < 3:
+        # Bias-side degenerate (issue #23): the debias model has no surface to
+        # fit -- gp_bias/weights/mixture/cate_debiased are None/NaN, never
+        # 0.0 -- but the direct model is healthy, so fit and keep it.
+        diagnostics["reason"] = (
+            f"only {n_used_bias} experiments with a finite cross-fitted obs CATE (< 3); "
+            "bias-side outputs are NaN, direct-side outputs are kept"
+        )
+        gp_direct = HeteroskedasticGP.fit(centers[used], tau[used], noise_var[used], rng=rng)
+        full_model = factory().fit(dataset.Z_std, dataset.T, dataset.y)
+        cate_raw = np.asarray(full_model.predict_cate(query_std), dtype=float)
+        return DEEResult(
+            vknn=vknn,
+            effects=effects,
+            used=used,
+            obs_at_centers=obs_at_centers,
+            bias_obs=bias_obs,
+            noise_var=noise_var,
+            gp_bias=None,
+            gp_direct=gp_direct,
+            weights=ModelWeights(
+                w_debias=float("nan"),
+                strategy=weighting,
+                detail={"reason": diagnostics["reason"]},
+            ),
+            query=query,
+            cate_raw=cate_raw,
+            cate_debiased=np.full(m, np.nan),
+            cate_direct=np.asarray(gp_direct.posterior(query_std).mean, dtype=float),
+            mixture=None,
+            diagnostics=diagnostics,
+        )
+
     # --- bias / direct surfaces ------------------------------------------------
-    gp_bias = HeteroskedasticGP.fit(centers[used], bias_obs[used], noise_var[used], rng=rng)
+    # gp_bias fits the bias-usable rows EXPLICITLY (issue #23) so its
+    # fit_report matches diagnostics; gp_direct keeps every usable experiment.
+    gp_bias = HeteroskedasticGP.fit(
+        centers[used_bias], bias_obs[used_bias], noise_var[used_bias], rng=rng
+    )
     gp_direct = HeteroskedasticGP.fit(centers[used], tau[used], noise_var[used], rng=rng)
 
     # --- model weights -----------------------------------------------------------
+    # Stacking scores model A's held-out predictive, which needs a finite obs
+    # CATE -- so the weighting sees the bias-usable rows (identical to the
+    # previous internal drop, but with consistent detail/fold indices).
     weights = _model_weights(
         weighting,
-        centers[used],
-        tau[used],
-        obs_at_centers[used],
-        noise_var[used],
+        centers[used_bias],
+        tau[used_bias],
+        obs_at_centers[used_bias],
+        noise_var[used_bias],
         gp_bias,
         gp_direct,
         n_folds,

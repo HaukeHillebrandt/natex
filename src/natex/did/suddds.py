@@ -59,6 +59,22 @@ factory appends the MDSS priority stats as a third element.
 
 _MODELS = ("auto", "normal", "bernoulli")
 _METHODS = ("greedy", "wcc", "single_delta")
+
+
+def resolve_default_model(model: str, method: str) -> str:
+    """Resolve the DEFAULT ``model='auto'`` under ``method='single_delta'``.
+
+    Audit 19's Bernoulli auto-matching conflicts with single_delta's Gaussian
+    profile GLR on binary treatments: left unresolved, the default
+    method/model combination fails every binary-treatment did config (dogfood
+    finding, 405a7ae). Both entry points — :func:`natex.discover` and the CLI
+    ``discover --design did`` branch — call this so they cannot drift. An
+    explicit ``model='bernoulli'`` is returned unchanged and still raises
+    inside :func:`suddds_scan`.
+    """
+    if method == "single_delta" and model == "auto":
+        return "normal"
+    return model
 _MAX_ALTERNATIONS = 20
 _TOL = 1e-12
 _MAX_INIT_REDRAWS = 100
@@ -81,13 +97,27 @@ class DiDDiscovery:
 
 @dataclass
 class SuDDDSResult:
-    """Deduped, LLR-ranked discoveries; ``discoveries[0]`` is the global incumbent."""
+    """Deduped, LLR-ranked discoveries; ``discoveries[0]`` is the global incumbent.
+
+    The trailing fields record the RESOLVED search configuration actually used
+    (issue #13) so validation replicas can search the same space the observed
+    max-LLR came from. When :func:`suddds_scan` received a caller-built
+    ``panel``, ``bins``/``dims`` record the call's arguments — they never
+    reached :func:`natex.did.panel.build_panel` and must describe how that
+    panel was coded (every in-repo caller passes consistent values).
+    """
 
     discoveries: list[DiDDiscovery]
     model: str
     method: str
     windows: tuple[float, ...]
     restarts: int
+    bins: int = 4
+    degree: int = 1
+    dims: list[str] | None = None
+    min_side: int = 3
+    n_rho: int = 10
+    exhaustive_max_values: int = 12
 
     def top(self, m: int) -> list[DiDDiscovery]:
         return self.discoveries[:m]
@@ -393,4 +423,10 @@ def suddds_scan(
         method=method,
         windows=windows,
         restarts=restarts,
+        bins=bins,
+        degree=degree,
+        dims=dims,
+        min_side=min_side,
+        n_rho=n_rho,
+        exhaustive_max_values=exhaustive_max_values,
     )

@@ -131,6 +131,32 @@ def test_discover_coarse_smoke(tmp_path):
     assert payload["params"]["coarse"] is True
 
 
+def test_issue_21_cli_coarse_uses_procedure_matched_replicas(tmp_path, monkeypatch):
+    """Issue #21, CLI wiring: `discover --coarse` must calibrate the
+    coarse-to-fine observed statistic with coarse-to-fine replicas."""
+    import natex.cli as cli_mod
+
+    captured = {}
+    real = cli_mod.randomization_test
+
+    def spy(ds, res, **kw):
+        captured["search"] = kw.get("search")
+        return real(ds, res, **kw)
+
+    monkeypatch.setattr(cli_mod, "randomization_test", spy)
+    ds, _ = make_synthetic(n=400, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    csv = tmp_path / "d.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--k", "25", "--q", "9", "--seed", "0", "--coarse", "--n-coarse", "100",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert callable(captured["search"])
+
+
 def test_discover_did_smoke(tmp_path):
     """--design did: full scan + validation + three-control effects payload.
 
@@ -171,6 +197,98 @@ def test_discover_did_smoke(tmp_path):
     assert searched["dims"] == ["x0", "x1"]
     assert searched["bin_counts"] == {"x0": 3, "x1": 3}
     assert "validation" in did
+
+
+def test_issue_29_rdd_params_record_roles(tmp_path):
+    """Issue #29: the plain rdd results.json params must record the run's
+    treatment/outcome/forcing (the RESOLVED spec forcing, so the default
+    all-numeric list is persisted) — otherwise `natex paper`/`brief` render
+    'rdd: — ~ …' with the treatment name lost."""
+    ds, _ = make_synthetic(n=300, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    csv = tmp_path / "d.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--k", "25", "--q", "9", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    params = json.loads((tmp_path / "out" / "results.json").read_text())["params"]
+    assert params["treatment"] == "T"
+    assert params["outcome"] == "y"
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert params["forcing"] == list(payload["discoveries"][0]["forcing_influence"])
+
+
+def test_issue_29_did_params_record_roles(tmp_path):
+    """Issue #29, did shape: params must carry treatment/outcome/forcing
+    alongside the already-persisted time/unit."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    params = json.loads((tmp_path / "out" / "results.json").read_text())["params"]
+    assert params["treatment"] == "theta"
+    assert params["outcome"] == "y"
+    assert params["forcing"] == []
+    assert params["time"] == "t"
+
+
+def test_issue_28_discover_rdd_homogeneous_neighborhoods_exit_1(tmp_path):
+    """Issue #28: two well-separated treatment-homogeneous clusters make the
+    audit-item-21 fast path skip every center (discoveries=[]); the CLI must
+    exit 1 with a diagnostic instead of an uncaught traceback out of
+    randomization_test."""
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(
+        {
+            "z": np.concatenate(
+                [rng.normal(0.0, 1.0, 50), rng.normal(100.0, 1.0, 50)]
+            ),
+            "t": np.repeat([0.0, 1.0], 50),
+            "y": rng.normal(0.0, 1.0, 100),
+        }
+    )
+    csv = tmp_path / "clusters.csv"
+    df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "t", "--outcome", "y",
+         "--forcing", "z", "--k", "20", "--q", "9", "--seed", "0",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 1
+    # clean typer.Exit, not an uncaught IndexError/ValueError traceback
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "no scoreable neighborhood" in result.output
+
+
+def test_issue_10_discover_did_binary_treatment_default_model(tmp_path):
+    """Issue #10: `discover --design did` on a binary treatment with the
+    default --method single_delta and --model auto must not crash — the CLI
+    resolves auto -> normal exactly like the plan-mode runner (405a7ae);
+    an explicit --model bernoulli still raises inside suddds_scan."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, theta_kind="binary",
+                               rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["did"]["searched"]["model"] == "normal"
+    assert payload["params"]["model"] == "normal"  # what actually ran
 
 
 def test_discover_did_requires_time(tmp_path):

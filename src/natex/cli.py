@@ -17,14 +17,14 @@ from natex.data.registry import REGISTRY, data_root, verify
 from natex.data.spec import Dataset
 from natex.dee.debias import dee_debias
 from natex.dee.vknn import select_m_prime
-from natex.did.background import fit_did_background
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
-from natex.did.suddds import suddds_scan
+from natex.did.suddds import resolve_default_model, suddds_scan
 from natex.discover import discover as run_discover
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.analyst import IntakeReport
 from natex.intake.analyst import study as run_study
+from natex.intake.prep import PrepPlan
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
@@ -33,7 +33,8 @@ from natex.rdd.lord3 import lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.report.paper import render_paper
 from natex.report.research_brief import research_brief
-from natex.scan.coarse import coarse_to_fine_scan
+from natex.scan.coarse import coarse_to_fine_scan, coarse_to_fine_search
+from natex.scan.geometry import build_geometry
 from natex.validate.density import density_test
 from natex.validate.panel import (
     anticipation_test,
@@ -164,7 +165,8 @@ def study(
     """Stage-0 analyst pass: profile -> understand -> prep plan -> search plan.
 
     Writes ``out/intake_report.json`` (feed it to ``natex discover --plan``),
-    ``out/prep_plan.json`` (the declarative prep plan alone, user-editable) and
+    ``out/prep_plan.json`` (the declarative prep plan alone, user-editable —
+    feed an edited copy back via ``natex discover --plan ... --prep-plan``) and
     ``out/guidance_log.jsonl`` (every guidance request+response). Works fully
     offline with the default ``--backend null`` — study always applies at
     least the deterministic NullBackend heuristics.
@@ -201,6 +203,7 @@ def _discover_plan(
     *,
     csv: Path | None,
     plan: Path,
+    prep_plan: Path | None,
     backend: str,
     model: str | None,
     workdir: Path | None,
@@ -239,6 +242,23 @@ def _discover_plan(
     except (OSError, ValueError, KeyError) as exc:
         typer.echo(f"could not load --plan {plan}: {exc}")
         raise typer.Exit(code=2) from None
+    if prep_plan is not None:
+        # Issue #18: out/prep_plan.json is documented as user-editable, so an
+        # edited copy must be loadable back — and never silently: the override
+        # is echoed and recorded in guidance_errors (carried into the results
+        # bundle's intake block). Replaced BEFORE prepare(), so the plan is
+        # still validated against the real frame by PrepPlan.apply.
+        try:
+            content = json.loads(Path(prep_plan).read_text(encoding="utf-8"))
+            report.prep_plan = PrepPlan.model_validate(content)
+        except (OSError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError and pydantic.ValidationError
+            typer.echo(f"could not load --prep-plan {prep_plan}: {exc}")
+            raise typer.Exit(code=2) from None
+        typer.echo(f"prep plan overridden: {prep_plan}")
+        report.guidance_errors.append(
+            f"prep plan overridden from {prep_plan} (CLI --prep-plan)"
+        )
     df = pd.read_csv(csv) if csv is not None else None
     try:
         ds = report.prepare(df=df)
@@ -261,6 +281,14 @@ def _discover_plan(
         rng=np.random.default_rng(seed), budget=budget, out=out,
     )
     path = rep.save(out)
+    # Issue #2: also save the full ResultsBundle — seed, natex version, the
+    # prepared dataset's data block and the intake provenance — so paper/brief
+    # stop rendering "seed —" / "No dataset metadata was recorded".
+    # discover_report.json above stays: it is a documented output and the
+    # compat load path for pre-bundle directories.
+    bundle_path = ResultsBundle.from_discover(
+        rep, out, dataset=ds, intake=report, seed=seed
+    ).save()
     s = rep.searched
     typer.echo(
         f"scanned {s['n_scanned']}/{s['n_total']} configs "
@@ -275,6 +303,7 @@ def _discover_plan(
         f"llr={best.llr:.2f}  p={best.p_value:.3f}"
     )
     typer.echo(f"report: {path}")
+    typer.echo(f"results: {bundle_path}")
 
 
 @app.command()
@@ -312,6 +341,12 @@ def discover(
         None, help="intake_report.json from `natex study`: plan candidates scan first, "
                    "the exhaustive remainder still runs within budget (spec 6b)"
     ),
+    prep_plan: Path = typer.Option(
+        None, "--prep-plan",
+        help="prep_plan.json overriding the plan's embedded prep plan, e.g. an "
+             "edited `natex study` out/prep_plan.json (--plan mode only); the "
+             "override is echoed and recorded in the bundle's intake provenance",
+    ),
     backend: str = typer.Option("null", help=f"{_BACKEND_HELP} (--plan mode)"),
     workdir: Path = typer.Option(
         None, help="agent-backend request/response dir (--plan mode); default OUT/guidance"
@@ -328,15 +363,21 @@ def discover(
 
     Requires CSV + --treatment, or --plan intake_report.json from `natex study`
     (plan candidates scan first, the exhaustive remainder runs within budget).
-    Writes OUT/results.json; plan mode writes OUT/discover_report.json.
+    Writes OUT/results.json; plan mode also writes OUT/discover_report.json.
     """
     if plan is not None:
         _discover_plan(
-            ctx, csv=csv, plan=plan, backend=backend, model=model, workdir=workdir,
-            max_configs=max_configs, design=design, k=k, q=q, coarse=coarse,
-            n_coarse=n_coarse, seed=seed, out=out,
+            ctx, csv=csv, plan=plan, prep_plan=prep_plan, backend=backend,
+            model=model, workdir=workdir, max_configs=max_configs, design=design,
+            k=k, q=q, coarse=coarse, n_coarse=n_coarse, seed=seed, out=out,
         )
         return
+    if prep_plan is not None:
+        typer.echo(
+            "--prep-plan requires --plan intake_report.json "
+            "(it overrides the plan's embedded prep plan)"
+        )
+        raise typer.Exit(code=2)
     if csv is None or treatment is None:
         typer.echo(
             "natex discover requires CSV and --treatment COLUMN "
@@ -358,16 +399,37 @@ def discover(
         forcing=forcing.split(",") if forcing else None,
     )
     rng = np.random.default_rng(seed)
-    coarse_block = None
+    coarse_block, geometry, search = None, None, None
     if coarse:
-        ctf = coarse_to_fine_scan(ds, k=k, n_coarse=n_coarse, degree=degree, rng=rng)
+        geometry = build_geometry(ds.Z_std, k)
+        ctf = coarse_to_fine_scan(ds, k=k, n_coarse=n_coarse, degree=degree, rng=rng,
+                                  geometry=geometry)
         # Validation/estimation below operate on the fine-stage (full-resolution)
         # result; the coverage block reports what was and wasn't searched (spec 6b).
         res = ctf.result
         coarse_block = {"frac_centers_scanned": ctf.frac_centers_scanned, **ctf.params}
+        # Issue #21: calibrate the coarse-to-fine observed statistic with
+        # coarse-to-fine replicas (frozen coarse subsample, per-replica
+        # localization); full-scan replica maxima would inflate the p-value.
+        search = coarse_to_fine_search(
+            ds, ctf.coarse_result.centers, k=k, top_m=int(ctf.params["top_m"]),
+            radius_mult=float(ctf.params["radius_mult"]), model=res.model,
+            degree=degree, geometry=geometry,
+        )
     else:
         res = lord3_scan(ds, k=k, degree=degree, rng=rng)
-    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree})
+    if not res.discoveries:
+        # Issue #28: the audit-item-21 fast path skips every treatment-
+        # homogeneous neighborhood, so a well-separated dataset can yield an
+        # empty scan — exit cleanly (mirrors the did branch) instead of
+        # tracebacking inside randomization_test.
+        typer.echo(
+            "no scoreable neighborhood: every size-k neighborhood is "
+            "treatment-homogeneous; try a larger --k or check the forcing columns"
+        )
+        raise typer.Exit(code=1)
+    rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree},
+                              geometry=geometry, search=search)
     top = res.discoveries[0]
     placebo = placebo_tests(ds, top)
     dens = density_test(ds, top)
@@ -380,7 +442,11 @@ def discover(
             }
     payload = _clean(
         {
-            "params": {"k": k, "q": q, "seed": seed, "degree": degree,
+            # Issue #29: record the run's roles (the RESOLVED spec forcing, so
+            # the default all-numeric list is persisted) — paper/brief read them.
+            "params": {"treatment": treatment, "outcome": outcome,
+                       "forcing": list(ds.spec.forcing),
+                       "k": k, "q": q, "seed": seed, "degree": degree,
                        "coarse": coarse, "n_coarse": n_coarse, "csv": str(csv)},
             "scan": {"model": res.model, "p_value": rand.p_value,
                      "observed_max_llr": rand.observed_max_llr},
@@ -822,6 +888,11 @@ def _discover_did(
     window_grid = tuple(float(w) for w in windows.split(",")) if windows else None
     rng = np.random.default_rng(seed)
     panel = build_panel(ds, bins=bins)
+    # Issue #10: audit-19 Bernoulli auto-matching conflicts with single_delta's
+    # Gaussian profile GLR on binary treatments — resolve the default
+    # combination exactly as natex.discover does (shared helper, 405a7ae);
+    # an explicit --model bernoulli still raises inside suddds_scan.
+    model = resolve_default_model(model, method)
     res = suddds_scan(
         ds, windows=window_grid, restarts=restarts, model=model, method=method,
         bins=bins, degree=degree, rng=rng, panel=panel,
@@ -834,8 +905,10 @@ def _discover_did(
     )
     top = res.discoveries[0]
     comp = composition_test(panel, top)
-    background = fit_did_background(panel, model=res.model, degree=degree)
-    antic = anticipation_test(panel, background, top)
+    # anticipation_test refits its own nuisance on the pre-period sub-panel
+    # (issue #12): a full-panel background would leak the real jump into the
+    # trend coefficients and fail clean discoveries.
+    antic = anticipation_test(panel, top, model=res.model, degree=degree)
     effects = {}
     if ds.y is not None:
         for control in ("dd", "synthetic", "gess"):
@@ -847,7 +920,10 @@ def _discover_did(
             }
     payload = _clean(
         {
-            "params": {"design": "did", "q": q, "seed": seed, "degree": degree,
+            # Issue #29: roles recorded alongside time/unit — paper/brief read them.
+            "params": {"design": "did", "treatment": treatment, "outcome": outcome,
+                       "forcing": list(ds.spec.forcing),
+                       "q": q, "seed": seed, "degree": degree,
                        "time": time, "unit": unit, "bins": bins, "windows": windows,
                        "restarts": restarts, "method": method, "model": model,
                        "csv": str(csv)},

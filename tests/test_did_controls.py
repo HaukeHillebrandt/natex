@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from natex.did.controls import dd_control, gess_control, synthetic_control
+from natex.did.effects import did_effect
 from natex.did.panel import CategoricalPanel
 from natex.did.suddds import DiDDiscovery
 
@@ -445,3 +446,75 @@ def test_gess_requires_outcome():
     panel.y = None
     with pytest.raises(ValueError, match="outcome"):
         gess_control(panel, disc)
+
+
+def _sparse_control_panel(with_complete_control=True):
+    """Treated 'tau' at t=0..6 (t0=5); complete control 'A' (small wiggle, so
+    pre-MSE 0.0864 > 0); sparse control 'B' with records at t=0,1 ONLY —
+    a perfect pre fit after alpha (pre-MSE 0) but ZERO post records."""
+    rows = [("tau", tt) for tt in range(7)]
+    if with_complete_control:
+        rows += [("A", tt) for tt in range(7)]
+    rows += [("B", 0), ("B", 1)]
+    values = sorted({g for g, _ in rows})  # ["A", "B", "tau"] / ["B", "tau"]
+    code_of = {g: j for j, g in enumerate(values)}
+
+    def y_of(g, tt):
+        if g == "tau":
+            return 10.0 + 5.0 * (tt >= 5)
+        if g == "A":
+            return 8.0 + (0.3 if tt % 2 == 0 else -0.3)
+        return 3.0  # B: constant, perfectly parallel to tau's flat pre period
+
+    codes = np.array([[code_of[g]] for g, _ in rows], dtype=np.int64)
+    panel = CategoricalPanel(
+        codes=codes,
+        dim_names=["g"],
+        dim_values=[np.array(values)],
+        t=np.array([float(tt) for _, tt in rows]),
+        theta=np.zeros(len(rows)),
+        y=np.array([y_of(g, tt) for g, tt in rows]),
+        unit=codes[:, 0].copy(),
+        unit_values=np.array(values),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": ["tau"]},
+        mask=codes[:, 0] == code_of["tau"],
+        t0=5.0,
+        window=2.0,
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    return panel, disc
+
+
+def test_issue_22_gess_rejects_candidates_without_post_support():
+    # Issue #22: the GESS argmin ranked candidates by pre-MSE alone, so the
+    # sparse control B (pre-MSE 0, zero post records) beat the complete
+    # control A (pre-MSE 0.0864) and the effect degenerated to tau = NaN with
+    # a usable control available. A candidate that cannot produce ANY usable
+    # post counterfactual is a failure = +inf by the existing MSE policy.
+    panel, disc = _sparse_control_panel()
+    res = gess_control(panel, disc)
+    assert res.extras["expansions"] == [{"dim": "g", "value": "A"}]
+    assert np.isfinite(res.pre_mse)
+    np.testing.assert_allclose(res.pre_mse, 0.0864, atol=1e-12)
+    post = panel.t[np.flatnonzero(disc.mask)] >= disc.t0
+    assert np.all(np.isfinite(res.y0_hat[post]))
+    eff = did_effect(panel, disc, control=res)
+    np.testing.assert_allclose(eff.tau, 5.06, atol=1e-12)
+    assert eff.n_treated_post == 2
+
+
+def test_issue_22_gess_no_post_support_anywhere_returns_empty_control():
+    # With ONLY the sparse candidate available no expansion is estimable:
+    # +inf never strictly beats the +inf incumbent, so GESS honestly returns
+    # the empty control (tau = NaN) instead of a control that cannot produce
+    # any post counterfactual.
+    panel, disc = _sparse_control_panel(with_complete_control=False)
+    res = gess_control(panel, disc)
+    assert res.pre_mse == np.inf
+    assert res.extras["expansions"] == []
+    assert not res.control_mask.any()
+    assert np.isnan(did_effect(panel, disc, control=res).tau)

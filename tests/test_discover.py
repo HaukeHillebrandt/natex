@@ -126,6 +126,32 @@ def test_rdd_auto_single_config(tmp_path):
     assert payload["guidance_log_path"] is None
 
 
+def test_issue_21_coarse_budget_uses_procedure_matched_replicas(monkeypatch):
+    """Issue #21: with budget['coarse'] on, the observed statistic is a
+    coarse-to-fine max (treatment-adaptively localized center subset), so
+    every null replica must rerun the same coarse-to-fine search on its own
+    T* — a full-resolution replica rescan has a stochastically larger max
+    and inflates the p-value."""
+    captured = {}
+    real = discover_mod.randomization_test
+
+    def spy(ds, res, **kw):
+        captured["search"] = kw.get("search")
+        return real(ds, res, **kw)
+
+    monkeypatch.setattr(discover_mod, "randomization_test", spy)
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(1),
+                   budget={**SMALL, "coarse": True, "n_coarse": 100})
+    assert callable(captured["search"])
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rec.p_value is not None and 0.0 < rec.p_value <= 1.0
+
+    # Without coarse, the default full-resolution rescan path is unchanged.
+    discover(_rdd_dataset(), rng=np.random.default_rng(1), budget=SMALL)
+    assert captured["search"] is None
+
+
 def test_no_phantom_guidance_log_path_without_backend(tmp_path):
     """Dogfood regression (Fitbit run): a guidance-free ``out=`` run recorded
     ``out/guidance_log.jsonl`` in the report although the file never exists."""
@@ -247,6 +273,96 @@ def test_failed_config_isolated_and_llr_p_null_in_json(monkeypatch):
     assert payload["configs"][0]["llr"] is None  # NaN policy: None, never 0.0
     assert payload["configs"][0]["p_value"] is None
     assert rep.best() is second
+
+
+def test_issue_19_default_k_exceeding_n_fails_config_not_sweep():
+    """Issue #19: on a tiny dataset the default budget k=50 exceeds n;
+    cKDTree.query pads with the sentinel index n and the sweep died with an
+    uncaught IndexError. The config must instead fail with a diagnostic
+    ValueError naming k and n, and the sweep must complete."""
+    rng = np.random.default_rng(0)
+    n = 10
+    df = pd.DataFrame({
+        "x": np.linspace(-1.0, 1.0, n),
+        "T": rng.normal(size=n),  # continuous treatment
+        "y": rng.normal(size=n),
+    })
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x"], covariates=["x"]))
+    rep = discover(ds, rng=np.random.default_rng(1))  # default budget: k=50
+    assert all(r.status != "scanned" for r in rep.configs)
+    failed = [r for r in rep.configs if r.status == "failed"]
+    assert failed and all("k=50" in r.error and "10" in r.error for r in failed)
+    assert rep.best_index is None
+
+
+def test_issue_7_rebuilt_dataset_reserves_every_candidate_outcome(monkeypatch):
+    """Issue #7: a per-candidate rebuilt Dataset put every OTHER candidate's
+    outcome into the covariates, where it fed the background treatment model
+    and its NaNs listwise-deleted scan rows."""
+    df = _rdd_dataset().df.copy()
+    rng = np.random.default_rng(5)
+    y2 = rng.normal(0.0, 1.0, len(df))
+    y2[df["x0"].to_numpy() > np.median(df["x0"])] = np.nan  # poison half the rows
+    df["y2"] = y2
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                   covariates=["x0", "x1"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0", "x1"], priority=0),
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0"], priority=1),
+    ])
+    captured = []
+    real = discover_mod.lord3_scan
+
+    def spy(ds, **kw):
+        captured.append(ds)
+        return real(ds, **kw)
+
+    monkeypatch.setattr(discover_mod, "lord3_scan", spy)
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
+    assert [r.status for r in rep.configs] == ["scanned", "scanned"]
+    ds0, ds1 = captured
+    assert "y" not in ds0.spec.covariates  # the other candidate's outcome
+    assert "y2" not in ds0.spec.covariates  # its own outcome, as before
+    assert "y2" not in ds1.spec.covariates
+    assert ds1.n == data.n  # y2's NaNs no longer listwise-delete scan rows
+
+
+def test_issue_7_bound_dataset_covariate_outcome_leak_repaired(monkeypatch):
+    """Issue #7: even the candidate that matches the bound spec must not scan
+    with another candidate's outcome sitting in ``spec.covariates``; without a
+    leak the bound dataset still passes through untouched."""
+    df = _rdd_dataset().df.copy()
+    df["y2"] = np.linspace(0.0, 1.0, len(df))
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                   covariates=["x0", "x1", "y2"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0", "x1"], priority=0),
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0"], priority=1),
+    ])
+    captured = []
+    real = discover_mod.lord3_scan
+
+    def spy(ds, **kw):
+        captured.append(ds)
+        return real(ds, **kw)
+
+    monkeypatch.setattr(discover_mod, "lord3_scan", spy)
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
+    assert [r.status for r in rep.configs] == ["scanned", "scanned"]
+    assert captured[0].spec.covariates == ["x0", "x1"]  # y2 repaired away
+    assert "y" not in captured[1].spec.covariates
+
+    # no cross-candidate outcome, no leak: the bound Dataset passes through
+    clean = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                    covariates=["x0", "x1"]))
+    captured.clear()
+    discover(clean, search_plan=SearchPlan(candidates=[plan.candidates[0]]),
+             rng=np.random.default_rng(2), budget=SMALL)
+    assert captured[0] is clean
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +565,56 @@ def test_guidance_log_one_line_per_hook(rdd_hook_run):
     assert len(lines) == len(mock.requests) == 2
     assert [e["task"] for e in lines] == ["interpret_discovery", "audit_assumptions"]
     assert all(e["backend"] == "mock" for e in lines)
+
+
+# ---------------------------------------------------------------------------
+# issue #1: listwise deletion is recorded, never silent
+# ---------------------------------------------------------------------------
+
+
+def test_issue_1_failed_config_record_carries_row_counts():
+    """Issue #1: a rebuilt config poisoned by a one-sided-missing covariate
+    fails with no trace of the listwise deletion that caused it. The row
+    bookkeeping is stamped at Dataset construction — before the runner — so
+    FAILED records carry it too (they need it most)."""
+    df = _rdd_dataset().df.copy()
+    df["bad"] = np.where(df["T"].to_numpy() == 1.0, np.nan, 1.0)
+    n, n_lost = len(df), int((df["T"] == 1.0).sum())
+    data = Dataset(df, DatasetSpec(treatment="T", outcome="y",
+                                   forcing=["x0", "x1"], covariates=["x0", "x1"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0"], priority=0),  # unbound: rebuilt covs pull in "bad"
+    ])
+    rep = discover(data, search_plan=plan, rng=np.random.default_rng(0), budget=SMALL)
+    failed, scanned = rep.configs
+    assert failed.status == "failed"
+    assert failed.n_rows_input == n
+    assert failed.n_rows_used == n - n_lost
+    assert failed.row_loss == {"bad": n_lost}
+    assert "bad" in failed.error  # the one-class diagnostic names the offender
+    assert scanned.status == "scanned"
+    assert scanned.n_rows_input == scanned.n_rows_used == n
+    assert scanned.row_loss == {}
+    d = failed.to_dict()
+    assert d["n_rows_input"] == n and d["n_rows_used"] == n - n_lost
+    assert d["row_loss"] == {"bad": n_lost}
+
+
+def test_issue_1_row_loss_reports_top3_columns():
+    """Issue #1: the record keeps the TOP row-loss columns (3, descending) so
+    a wide dataset cannot flood the report."""
+    df = _rdd_dataset().df.copy()
+    n = len(df)
+    for name, lost in [("c1", 4), ("c2", 3), ("c3", 2), ("c4", 1)]:
+        col = np.ones(n)
+        col[:lost] = np.nan  # overlapping rows: 4 rows dropped in total
+        df[name] = col
+    data = Dataset(df, DatasetSpec(
+        treatment="T", outcome="y", forcing=["x0", "x1"],
+        covariates=["x0", "x1", "c1", "c2", "c3", "c4"]))
+    rep = discover(data, rng=np.random.default_rng(0), budget=SMALL, design="rdd")
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rec.n_rows_input == n and rec.n_rows_used == n - 4
+    assert rec.row_loss == {"c1": 4, "c2": 3, "c3": 2}

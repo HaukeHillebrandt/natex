@@ -42,7 +42,8 @@ def make_rdd_bundle(
 # discover` CLI paths write them (no "natex_bundle" marker) — the F-D1 input
 # form README section "Reports and papers" promises paper/brief accept.
 RDD_SCAN_PAYLOAD = {
-    "params": {"k": 40, "q": 49, "seed": 0, "degree": 1, "coarse": False,
+    "params": {"treatment": "T", "outcome": "y", "forcing": ["x0", "x1"],
+               "k": 40, "q": 49, "seed": 0, "degree": 1, "coarse": False,
                "n_coarse": 2000, "csv": "synth.csv"},
     "scan": {"model": "bernoulli", "p_value": 0.02, "observed_max_llr": 21.16},
     "discoveries": [
@@ -62,7 +63,8 @@ RDD_SCAN_PAYLOAD = {
 }
 
 DID_SCAN_PAYLOAD = {
-    "params": {"design": "did", "q": 49, "seed": 0, "degree": 1, "time": "t",
+    "params": {"design": "did", "treatment": "theta", "outcome": "y",
+               "forcing": [], "q": 49, "seed": 0, "degree": 1, "time": "t",
                "unit": "state", "bins": 4, "windows": None, "restarts": 8,
                "method": "single_delta", "model": "auto", "csv": "panel.csv"},
     "did": {

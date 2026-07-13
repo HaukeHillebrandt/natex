@@ -52,9 +52,21 @@ def _oriented_side(Tm: np.ndarray, group1: np.ndarray) -> np.ndarray:
 def _first_stage(Tm: np.ndarray, controls: np.ndarray, g: np.ndarray):
     Xfs = np.c_[controls, g]
     beta, se = hc1_ols(Xfs, Tm)
-    jump, jump_se = beta[-1], se[-1]
+    jump, jump_se = float(beta[-1]), float(se[-1])
+    sst = float(np.sum((Tm - Tm.mean()) ** 2))
+    if sst <= 0.0:
+        return jump, float("nan")  # constant T: no first stage at all
+    resid = Tm - Xfs @ beta
+    if float(resid @ resid) <= 1e-12 * sst:
+        # Numerically deterministic first stage (machine-precision-exact fit,
+        # e.g. sharp T = 1{s >= 0}): the HC1 se is float noise (~1e-16), so
+        # jump/se would be a meaningless ~1e15. Report +/-inf for a real jump
+        # (infinitely strong instrument), NaN when there is no jump.
+        scale = float(np.sqrt(sst / Tm.size))
+        t = float(np.copysign(np.inf, jump)) if abs(jump) > 1e-8 * scale else float("nan")
+        return jump, t
     t = jump / jump_se if jump_se > 0 else float("nan")
-    return float(jump), float(t)
+    return jump, float(t)
 
 
 def _package(tau, se, method, fs_jump, fs_t, n_used, ar_ci=None, ar_kind=None):
@@ -66,7 +78,9 @@ def _package(tau, se, method, fs_jump, fs_t, n_used, ar_ci=None, ar_kind=None):
         method=method,
         first_stage_jump=fs_jump,
         first_stage_t=fs_t,
-        weak_instrument=bool(fs_t**2 < 10.0) if np.isfinite(fs_t) else True,
+        # NaN t -> weak (no evidence of relevance); +/-inf t (deterministic
+        # first stage) -> strong, so both estimators agree on sharp designs.
+        weak_instrument=not bool(fs_t**2 >= 10.0),
         n_used=n_used,
         ar_ci=ar_ci,
         ar_kind=ar_kind,
@@ -93,7 +107,14 @@ def _wald_first_stage(Tm: np.ndarray, g: np.ndarray):
     dt = Tm[g].mean() - Tm[~g].mean()
     vt = Tm[g].var(ddof=1) / n1 + Tm[~g].var(ddof=1) / n0
     fs_se = float(np.sqrt(vt))
-    fs_t = dt / fs_se if fs_se > 0 else float("nan")
+    if fs_se > 0:
+        fs_t = dt / fs_se
+    elif fs_se == 0.0 and dt != 0:
+        # Both side variances are exactly 0 (T deterministic given the side):
+        # a nonzero jump over a zero se is an infinitely strong first stage.
+        fs_t = float(np.copysign(np.inf, dt))
+    else:
+        fs_t = float("nan")  # constant T (or single-point side: NaN variance)
     return float(dt), float(fs_t), float(vt)
 
 

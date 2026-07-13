@@ -87,11 +87,17 @@ uv run natex discover --plan out/intake_report.json --seed 0 --out out/
 `natex study` profiles the data, infers column roles and dataset shape, applies a
 declarative prep plan (drops, filters, optional seeded subsample — user-editable at
 `out/prep_plan.json`), and ranks candidate designs into `out/intake_report.json`.
+To change the prep, edit `out/prep_plan.json` and pass it back explicitly with
+`natex discover --plan out/intake_report.json --prep-plan out/prep_plan.json` — the
+override replaces the plan embedded in the intake report, is validated against the
+real data, and is echoed and recorded in the bundle's intake provenance (never
+applied silently).
 `natex discover --plan` then scans the ranked candidates first and the exhaustive
 remainder after, within budget — the report always records what was and wasn't searched
 (`scanned` / `skipped_budget` / `failed` / `invalid` per configuration; budget cuts are
-listed, never silently dropped). Plan mode writes `out/discover_report.json` (only the
-plain, non-plan `natex discover` path writes `out/results.json`). The exhaustive
+listed, never silently dropped). Plan mode writes `out/discover_report.json` plus the
+full results bundle at `out/results.json` — seed, natex version, data and intake
+provenance, which is what `natex paper` and `natex brief` read. The exhaustive
 remainder is derived from the bound dataset spec, so `exhaustive_candidates` is 0
 whenever the plan already covers those configurations — that is dedup, not a budget cut.
 

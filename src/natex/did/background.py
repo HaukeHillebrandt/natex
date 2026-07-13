@@ -28,9 +28,11 @@ Design notes (docs/math_audit_final.md):
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import OptimizeWarning
 from scipy.special import logit
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -147,10 +149,32 @@ def fit_did_background(
         sigma2 = _profile_sigma2(r, panel.profile_id, shrink)
         return DiDBackground(kind="normal", fitted=fitted, r=r, sigma2=sigma2, eta=None)
 
+    classes = np.unique(theta[~np.isnan(theta)])
+    if classes.size < 2:
+        # Issue #14: fail loudly instead of surfacing sklearn's raw "needs
+        # samples of at least 2 classes" error. A constant observed treatment
+        # carries no discontinuity signal to scan (mirrors the lord3_scan
+        # diagnostic); degenerate NULL REPLICA draws never reach this fit —
+        # panel_randomization_test short-circuits them to the empty-supremum
+        # score 0.0 before rescanning.
+        raise ValueError(
+            f"panel treatment theta has a single class ({classes.tolist()}) "
+            f"across all {panel.n} records — cannot fit a Bernoulli "
+            "background; check the treatment column and any row-dropping "
+            "upstream (NaN scan rows are deleted listwise)"
+        )
     scaler = StandardScaler().fit(design)
-    est = LogisticRegression(C=1.0, max_iter=1000).fit(
-        scaler.transform(design), theta.astype(int)
-    )
+    with warnings.catch_warnings():
+        # sklearn <= 1.6 still passes the removed 'iprint' option to
+        # scipy >= 1.18's L-BFGS-B — a known, data-independent upstream bug
+        # that fires once PER FIT (once per null replica). Suppress exactly
+        # that message; convergence/separation warnings stay visible (issue #5).
+        warnings.filterwarnings(
+            "ignore", message="Unknown solver options: iprint", category=OptimizeWarning
+        )
+        est = LogisticRegression(C=1.0, max_iter=1000).fit(
+            scaler.transform(design), theta.astype(int)
+        )
     p_hat = est.predict_proba(scaler.transform(design))[:, 1]
     eta = logit(np.clip(p_hat, _P_CLIP, 1.0 - _P_CLIP))
     return DiDBackground(kind="bernoulli", fitted=p_hat, r=None, sigma2=None, eta=eta)

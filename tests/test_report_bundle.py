@@ -71,6 +71,16 @@ def test_data_block_from_dataset(rdd):
     assert d["time"] is None
 
 
+def test_issue_1_data_block_reports_input_rows_and_row_loss(rdd):
+    """Issue #1: results.json carried only the post-deletion row count; input
+    rows vs rows used (and the top per-column losses) must be surfaced."""
+    bundle, _, ds = rdd
+    d = bundle.results["data"]
+    assert d["n_rows_input"] == ds.n_rows_input
+    assert d["n_rows"] == ds.n_rows_used
+    assert d["row_loss"] == {}  # clean synthetic: nothing was dropped
+
+
 def test_did_metadata(did):
     bundle, report, ds = did
     r = bundle.results
@@ -172,6 +182,47 @@ def test_did_scan_payload_one_config_view(tmp_path):
     assert s["null_kind"] == "ar1_unit"
     assert s["composition_passed"] is True and s["anticipation_passed"] is True
     assert s["effects"]["dd"]["tau"] == -0.2
+
+
+def test_issue_29_scan_payload_candidate_roles_from_params(tmp_path):
+    """Issue #29: params-recorded treatment/outcome/forcing flow into the
+    one-config candidate; a PRE-FIX payload (roles absent from params) keeps
+    the forcing_influence-keys fallback instead of an empty forcing list."""
+    bundle, payload = make_scan_payload_bundle(tmp_path)
+    (cfg,) = bundle.results["configs"]
+    assert cfg["candidate"]["treatment"] == "T"
+    assert cfg["candidate"]["outcome"] == "y"
+    assert cfg["candidate"]["forcing"] == ["x0", "x1"]
+
+    did_dir = tmp_path / "did"
+    did_dir.mkdir()
+    did_bundle, _ = make_scan_payload_bundle(did_dir, design="did")
+    (did_cfg,) = did_bundle.results["configs"]
+    assert did_cfg["candidate"]["treatment"] == "theta"
+    assert did_cfg["candidate"]["outcome"] == "y"
+    assert did_cfg["candidate"]["forcing"] == []
+
+    # params must WIN over the forcing_influence-keys fallback: with zero
+    # discoveries the fallback has nothing, but the recorded roles survive.
+    empty = dict(payload)
+    empty["discoveries"] = []
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    (empty_dir / "results.json").write_text(json.dumps(empty), encoding="utf-8")
+    (empty_cfg,) = ResultsBundle.load(empty_dir).results["configs"]
+    assert empty_cfg["candidate"]["forcing"] == ["x0", "x1"]
+
+    old = dict(payload)
+    old["params"] = {
+        k: v for k, v in payload["params"].items()
+        if k not in ("treatment", "outcome", "forcing")
+    }
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    (old_dir / "results.json").write_text(json.dumps(old), encoding="utf-8")
+    (old_cfg,) = ResultsBundle.load(old_dir).results["configs"]
+    assert old_cfg["candidate"]["treatment"] is None
+    assert old_cfg["candidate"]["forcing"] == ["x0", "x1"]  # fallback survives
 
 
 def test_unrecognized_payload_keeps_null_configs(tmp_path):

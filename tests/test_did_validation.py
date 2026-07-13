@@ -13,7 +13,6 @@ import pytest
 
 from natex.data.spec import Dataset, DatasetSpec
 from natex.data.synthetic_did import make_did_synthetic
-from natex.did.background import fit_did_background
 from natex.did.panel import CategoricalPanel, build_panel
 from natex.did.suddds import DiDDiscovery, SuDDDSResult, suddds_scan
 from natex.validate.panel import (
@@ -102,9 +101,7 @@ def trend_panel(
         treatment="theta", outcome=None, forcing=[], covariates=["g"],
         time="time", unit="unit",
     )
-    panel = build_panel(Dataset(df, spec))
-    background = fit_did_background(panel, model="normal")
-    return panel, background
+    return build_panel(Dataset(df, spec))
 
 
 def counts_panel(unit: np.ndarray, t: np.ndarray, codes: np.ndarray | None = None):
@@ -251,6 +248,58 @@ def test_bernoulli_auto_null():
     assert np.all(np.isfinite(rep.null_max_llrs))
 
 
+def test_issue_14_degenerate_bernoulli_replica_scores_empty_supremum():
+    """Issue #14: with a rare binary treatment, a Bernoulli(p_hat) replica draw
+    can be all-zero; the per-replica background refit then crashed inside
+    sklearn ('needs samples of at least 2 classes'). A one-class draw admits
+    no scoreable split, so it scores 0.0 — the supremum over an empty
+    candidate set, the same documented convention as a no-discovery replica —
+    and the test completes."""
+    theta = np.zeros(12)
+    theta[5] = 1.0  # a single treated record: p_hat ~ 1/12 per record
+    df = pd.DataFrame(
+        {
+            "g": [0, 1] * 6,
+            "time": np.tile(np.arange(6, dtype=float), 2),
+            "theta": theta,
+        }
+    )
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"], time="time"
+    )
+    ds = Dataset(df, spec)
+    scan_kw = dict(windows=(3.0,), restarts=2, method="greedy")
+    res = suddds_scan(ds, rng=np.random.default_rng(0), **scan_kw)
+    assert res.model == "bernoulli" and len(res.discoveries) == 1
+    # Seed 2 draws an all-zero replica (seeds 2-4 crashed before the fix).
+    rep = panel_randomization_test(
+        ds, res, Q=1, rng=np.random.default_rng(2), scan_kwargs=scan_kw
+    )
+    assert rep.null_max_llrs.tolist() == [0.0]
+    assert rep.p_value == 0.5  # (1 + 0) / (1 + 1): 0.0 < observed llr
+
+
+def test_issue_13_replicas_search_the_observed_scan_config():
+    # Issue #13: with scan_kwargs omitted, the fitted-null background and
+    # every replica scan silently used hardcoded bins=4/dims=None/degree=1
+    # regardless of what produced the observed max-LLR — replicas searching a
+    # smaller space than the observed scan understate the null maximum and
+    # give anti-conservative p-values. Defaults must come from the RESOLVED
+    # config recorded on the SuDDDSResult; scan_kwargs stays as an override.
+    ds = planted_frame(seed=0)
+    scan_kw = dict(windows=(3.0,), restarts=2, method="greedy", bins=2, degree=0)
+    res = suddds_scan(ds, rng=np.random.default_rng(0), **scan_kw)
+    assert (res.bins, res.degree) == (2, 0)
+    assert res.dims is None
+    assert (res.min_side, res.n_rho, res.exhaustive_max_values) == (3, 10, 12)
+    implicit = panel_randomization_test(ds, res, Q=9, rng=np.random.default_rng(3))
+    explicit = panel_randomization_test(
+        ds, res, Q=9, rng=np.random.default_rng(3), scan_kwargs=scan_kw
+    )
+    np.testing.assert_array_equal(implicit.null_max_llrs, explicit.null_max_llrs)
+    assert implicit.p_value == explicit.p_value
+
+
 def test_randomization_invalid_arguments():
     ds = planted_frame(seed=5, n=200)
     scan_kw = dict(windows=(3.0,), restarts=2, method="greedy")
@@ -341,6 +390,57 @@ def test_composition_by_profile():
     assert rep.passed
 
 
+def test_issue_16_composition_counts_restricted_to_discovery_mask():
+    # Issue #16: counts must be taken INSIDE the discovery's subset mask.
+    # Masked units 0-1 are perfectly balanced pre/post; out-of-mask units 2-11
+    # exist pre-period only. The discovery is internally stable, so the test
+    # must pass, with exactly the p-value of the mask-only panel.
+    unit_m, t_m = _balanced(n_units=2)
+    unit_o, t_o = _balanced(n_units=10)
+    keep_o = t_o < 5.0  # out-of-mask units: pre-only (total post attrition)
+    unit = np.concatenate([unit_m, unit_o[keep_o] + 2])
+    t = np.concatenate([t_m, t_o[keep_o]])
+    panel = counts_panel(unit, t)
+    mask = unit < 2
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert rep.table.shape == (2, 2)
+    assert rep.passed
+    panel_only = counts_panel(unit_m, t_m)
+    rep_only = composition_test(panel_only, make_discovery(panel_only.n, t0=5.0, window=5.0))
+    assert rep.p_value == rep_only.p_value
+
+
+def test_issue_16_composition_masked_subgroup_attrition_detected():
+    # Issue #16 (dilution direction): one of two masked units vanishes post.
+    # Stable out-of-mask units must not dilute the signal via df inflation.
+    unit_m, t_m = _balanced(n_units=2)
+    keep_m = ~((unit_m == 1) & (t_m >= 5.0))  # masked unit 1: no post records
+    unit_o, t_o = _balanced(n_units=50)
+    unit = np.concatenate([unit_m[keep_m], unit_o + 2])
+    t = np.concatenate([t_m[keep_m], t_o])
+    panel = counts_panel(unit, t)
+    mask = unit < 2
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert rep.p_value <= 0.01
+    assert not rep.passed
+
+
+def test_issue_16_composition_single_masked_unit_total_attrition_is_degenerate():
+    # Issue #16: a single masked unit with total post attrition leaves one
+    # usable row (and an empty post column) inside the mask -> NaN, failed —
+    # never a silent pass borrowed from balanced out-of-mask units.
+    unit_m, t_m = _balanced(n_units=1)
+    keep_m = t_m < 5.0
+    unit_o, t_o = _balanced(n_units=50)
+    unit = np.concatenate([unit_m[keep_m], unit_o + 1])
+    t = np.concatenate([t_m[keep_m], t_o])
+    panel = counts_panel(unit, t)
+    mask = unit < 1
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert np.isnan(rep.p_value)
+    assert not rep.passed
+
+
 def test_composition_degenerate_is_nan_never_ok():
     # single usable row -> NaN p, failed (never silently ok)
     unit, t = _balanced(n_units=1)
@@ -365,13 +465,13 @@ def test_composition_degenerate_is_nan_never_ok():
 
 @pytest.mark.parametrize("method", ["greedy", "single_delta"])
 def test_anticipation_smooth_pre_period_passes(method):
-    # Calibration (trend_panel, t0=6, W=2, shifts (1,2,3)): min Holm p over
-    # seeds 0-4 is 0.12, 1.00, 0.96, 0.60, 0.98 (worst of the two
-    # estimators) — all pass 0.05; the planted-jump variant fails with Holm
-    # p < 1e-3 on every seed. Seed 0 pinned (min Holm p 0.12).
-    panel, background = trend_panel(seed=0)
+    # Calibration (trend_panel, t0=6, W=2, shifts (1,2,3), pre-period refit):
+    # min Holm p over seeds 0-4 is 0.19, 1.00, 1.00, 0.74, 0.61 (worst of the
+    # two estimators) — all pass 0.05; the planted-jump variant fails with
+    # Holm p < 1e-4 on every seed. Seed 0 pinned (min Holm p 0.19).
+    panel = trend_panel(seed=0)
     disc = make_discovery(panel.n, t0=6.0, window=2.0, method=method)
-    rep = anticipation_test(panel, background, disc)
+    rep = anticipation_test(panel, disc)
     assert rep.shifts == (1, 2, 3)
     usable = ~np.isnan(rep.p_holm)
     assert usable.any()
@@ -382,11 +482,120 @@ def test_anticipation_smooth_pre_period_passes(method):
 @pytest.mark.parametrize("method", ["greedy", "single_delta"])
 def test_anticipation_pre_jump_fails(method):
     # persistent +4 jump planted at t = 4 = T0 - 2*step, well inside pre-data
-    panel, background = trend_panel(seed=0, jump_at=4.0)
+    panel = trend_panel(seed=0, jump_at=4.0)
     disc = make_discovery(panel.n, t0=6.0, window=2.0, method=method)
-    rep = anticipation_test(panel, background, disc)
+    rep = anticipation_test(panel, disc)
     usable = ~np.isnan(rep.p_holm)
     assert np.min(rep.p_holm[usable]) <= 0.05
+    assert not rep.passed
+
+
+def post_jump_panel(seed: int, jump: float, T: int = 12, t0: float = 6.0):
+    """Smooth linear pre-trend; ``jump`` added to every record with t >= t0.
+
+    The SAME seed consumes the SAME rng draws regardless of ``jump``, so two
+    panels differing only in ``jump`` share their pre-period records exactly.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for u in range(6):
+        for t in range(T):
+            for _ in range(2):
+                g = int(rng.integers(0, 2))
+                th = 0.2 * t + 0.1 * rng.normal() + (jump if t >= t0 else 0.0)
+                rows.append((u, float(t), g, th))
+    df = pd.DataFrame(rows, columns=["unit", "time", "g", "theta"])
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"],
+        time="time", unit="unit",
+    )
+    return build_panel(Dataset(df, spec))
+
+
+@pytest.mark.parametrize("method", ["greedy", "single_delta"])
+def test_issue_12_post_jump_cannot_leak_into_anticipation(method):
+    # Issue #12: fitted on the FULL panel, a degree-1 background absorbed the
+    # post jump into an over-sloped trend, leaving a systematic pre-period
+    # residual trend the placebo estimator read as spurious jumps — the same
+    # pre-period draws gave passed=True at jump 0 and passed=False at jump 5
+    # (every seed 0-7, both methods; old Holm p ~ [0.03, 0.001, 0.001]).
+    # Restricting RECORDS to t < T0 does not protect the fitted coefficients:
+    # the nuisance must be REFIT on the pre-period sub-panel, making the
+    # report invariant to the post period. Calibration (seeds 0-7, both
+    # methods): reports identical between jump 0 and 5 on every seed, min
+    # Holm p 0.18-1.00, all pass. Seed 0 pinned.
+    panel_null = post_jump_panel(seed=0, jump=0.0)
+    panel_jump = post_jump_panel(seed=0, jump=5.0)
+    disc = make_discovery(panel_jump.n, t0=6.0, window=2.0, method=method)
+    rep_null = anticipation_test(panel_null, disc)
+    rep_jump = anticipation_test(panel_jump, disc)
+    np.testing.assert_array_equal(rep_null.estimates, rep_jump.estimates)
+    np.testing.assert_array_equal(rep_null.p_values, rep_jump.p_values)
+    np.testing.assert_array_equal(rep_null.p_holm, rep_jump.p_holm)
+    assert rep_jump.passed  # smooth pre-period: no anticipation to flag
+
+
+def test_issue_12_single_pre_period_time_is_all_nan_fail():
+    # Fewer than 2 distinct pre-period times admit no pre-period refit and no
+    # placebo cutoff: all-NaN report, passed=False (all-degenerate-fails rule).
+    panel = post_jump_panel(seed=0, jump=0.0)
+    disc = make_discovery(panel.n, t0=1.0, window=2.0)
+    rep = anticipation_test(panel, disc)
+    assert np.all(np.isnan(rep.estimates))
+    assert np.all(np.isnan(rep.p_values)) and np.all(np.isnan(rep.p_holm))
+    assert not rep.passed
+
+
+def test_issue_12_one_class_bernoulli_pre_period_is_all_nan_fail():
+    # A binary treatment that is identically 0 before T0 admits no Bernoulli
+    # background refit on the pre period: all-NaN report, passed=False.
+    rng = np.random.default_rng(4)
+    t = np.tile(np.arange(12, dtype=float), 6)
+    df = pd.DataFrame(
+        {
+            "unit": np.repeat(np.arange(6), 12),
+            "time": t,
+            "g": rng.integers(0, 2, size=t.size),
+            "theta": (t >= 6.0).astype(float),
+        }
+    )
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"],
+        time="time", unit="unit",
+    )
+    panel = build_panel(Dataset(df, spec))
+    disc = make_discovery(panel.n, t0=6.0, window=2.0, model="bernoulli")
+    rep = anticipation_test(panel, disc, model="bernoulli")
+    assert np.all(np.isnan(rep.p_holm))
+    assert not rep.passed
+
+
+def test_issue_12_exact_normal_pre_period_fit_is_all_nan_fail():
+    # The normal-model analog of the one-class Bernoulli guard (prop99 shape):
+    # a policy dummy identically 0 before T0 is fit EXACTLY by the pre-period
+    # normal background, so every residual is 0 and the audit-24 data-scaled
+    # variance floor (1e-12 * s2_global) is itself 0 — no noise scale exists
+    # for the placebo z. Degenerate all-NaN report, passed=False; never a
+    # ValueError out of window_stats, never a silent pass.
+    rng = np.random.default_rng(4)
+    t = np.tile(np.arange(12, dtype=float), 6)
+    df = pd.DataFrame(
+        {
+            "unit": np.repeat(np.arange(6), 12),
+            "time": t,
+            "g": rng.integers(0, 2, size=t.size),
+            "theta": (t >= 6.0).astype(float),
+        }
+    )
+    spec = DatasetSpec(
+        treatment="theta", outcome=None, forcing=[], covariates=["g"],
+        time="time", unit="unit",
+    )
+    panel = build_panel(Dataset(df, spec))
+    disc = make_discovery(panel.n, t0=6.0, window=2.0, model="normal")
+    rep = anticipation_test(panel, disc, model="normal")
+    assert np.all(np.isnan(rep.estimates))
+    assert np.all(np.isnan(rep.p_values)) and np.all(np.isnan(rep.p_holm))
     assert not rep.passed
 
 
@@ -394,20 +603,22 @@ def test_anticipation_insufficient_support_is_nan():
     # shift=6 puts the placebo cutoff at t=0: the pre side is empty -> NaN p,
     # excluded from Holm; with no usable shift the report fails (never
     # silently ok).
-    panel, background = trend_panel(seed=0)
+    panel = trend_panel(seed=0)
     disc = make_discovery(panel.n, t0=6.0, window=2.0)
-    rep = anticipation_test(panel, background, disc, shifts=(6,))
+    rep = anticipation_test(panel, disc, shifts=(6,))
     assert np.isnan(rep.p_values[0]) and np.isnan(rep.p_holm[0])
     assert np.isnan(rep.estimates[0])
     assert not rep.passed
 
 
 def test_anticipation_invalid_arguments():
-    panel, background = trend_panel(seed=0)
+    panel = trend_panel(seed=0)
     disc = make_discovery(panel.n, t0=6.0, window=2.0)
     with pytest.raises(ValueError):
-        anticipation_test(panel, background, disc, shifts=())
+        anticipation_test(panel, disc, shifts=())
     with pytest.raises(ValueError):
-        anticipation_test(panel, background, disc, shifts=(0,))
+        anticipation_test(panel, disc, shifts=(0,))
     with pytest.raises(ValueError):
-        anticipation_test(panel, background, disc, alpha=0.0)
+        anticipation_test(panel, disc, alpha=0.0)
+    with pytest.raises(ValueError):
+        anticipation_test(panel, disc, model="poisson")

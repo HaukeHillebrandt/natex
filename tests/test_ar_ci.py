@@ -236,6 +236,28 @@ def test_iv_2sls_nan_path_leaves_ar_defaults():
     assert est.ar_kind is None
 
 
+def test_issue_11_ar_set_duplicated_instrument_is_exact_fieller():
+    # k_eff = 1: f_crit and dof must use the effective rank measured after
+    # partialling, so the set from [z, z] is the k = 1 Fieller set — not an
+    # F(2, n-3)-parametrized (anti-conservative) deformation of it.
+    rng = np.random.default_rng(13)
+    y, T, z = _endog_dgp(300, rng)
+    one = ar_confidence_set(y, T, z[:, None])
+    dup = ar_confidence_set(y, T, np.c_[z, z])
+    assert one.f_crit == pytest.approx(float(stats.f.ppf(0.95, 1, 298)), abs=1e-12)
+    assert dup.f_crit == one.f_crit
+    assert dup.kind == one.kind == "interval"
+    assert dup.interval == pytest.approx(one.interval, rel=1e-10)
+
+
+def test_issue_11_ar_set_control_collinear_instruments_raise():
+    rng = np.random.default_rng(14)
+    y, T, _ = _endog_dgp(100, rng)
+    w = rng.normal(size=100)
+    with pytest.raises(ValueError, match="collinear"):
+        ar_confidence_set(y, T, (3.0 * w)[:, None], controls=w[:, None])
+
+
 def test_ar_confidence_set_input_validation():
     rng = np.random.default_rng(5)
     y, T, z = _endog_dgp(20, rng)

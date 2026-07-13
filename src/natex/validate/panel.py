@@ -13,8 +13,9 @@ Three checks, all replacing or repairing the thesis validation stage:
   window. This is the audit-18 replacement for McCrary on calendar time,
   which is information-free when record times are design-determined.
 * :func:`anticipation_test` — placebo jump estimates at pre-period cutoffs
-  ``T0 - shift * step`` restricted to ``t < T0`` (never contaminated by the
-  real jump), Holm-corrected across shifts.
+  ``T0 - shift * step``, Holm-corrected across shifts. Both the records AND
+  the nuisance background fit are restricted to ``t < T0`` (issue #12: a
+  full-panel fit lets the real jump leak into the trend coefficients).
 
 Null replica kinds (audit item 18 — preserve unit/time dependence):
 
@@ -158,9 +159,11 @@ def panel_randomization_test(
 
     Parametric bootstrap, NOT exact (audit item 1): replicas are drawn from a
     background model fitted to the observed data, each replica REFITS ITS OWN
-    background and reruns :func:`natex.did.suddds.suddds_scan` with the same
-    ``windows``/``method``/``restarts`` (overridable via ``scan_kwargs``) and
-    the shared ``rng``; the p-value is the +1-rank
+    background and reruns :func:`natex.did.suddds.suddds_scan` with the SAME
+    resolved configuration the observed scan recorded on ``scan_result`` —
+    windows/method/restarts plus bins/degree/dims/min_side/n_rho/
+    exhaustive_max_values (issue #13; ``scan_kwargs`` overrides explicitly) —
+    and the shared ``rng``; the p-value is the +1-rank
     ``(1 + #{null >= observed}) / (Q + 1)``.
 
     ``null="auto"`` selects ``"bernoulli"`` for a Bernoulli-model result
@@ -196,9 +199,17 @@ def panel_randomization_test(
     kwargs.setdefault("method", scan_result.method)
     kwargs.setdefault("restarts", scan_result.restarts)
     kwargs.setdefault("model", kind)
-    bins = kwargs.pop("bins", 4)
-    dims = kwargs.pop("dims", None)
-    degree = kwargs.get("degree", 1)
+    # Issue #13: every default comes from the RESOLVED config recorded on the
+    # scan result, never a hardcoded fallback — replicas searching a smaller
+    # space than the observed max-LLR understate the null maximum and give
+    # anti-conservative p-values. ``scan_kwargs`` stays an explicit override.
+    kwargs.setdefault("degree", scan_result.degree)
+    kwargs.setdefault("min_side", scan_result.min_side)
+    kwargs.setdefault("n_rho", scan_result.n_rho)
+    kwargs.setdefault("exhaustive_max_values", scan_result.exhaustive_max_values)
+    bins = kwargs.pop("bins", scan_result.bins)
+    dims = kwargs.pop("dims", scan_result.dims)
+    degree = kwargs["degree"]
 
     panel = build_panel(dataset, dims=dims, bins=bins)
     background = fit_did_background(panel, model=kind, degree=degree)
@@ -221,9 +232,19 @@ def panel_randomization_test(
     observed = float(scan_result.discoveries[0].llr)
     null_max = np.empty(Q)
     for q_i in range(Q):
+        theta_star = draw()
+        if null_kind == "bernoulli" and np.unique(theta_star).size < 2:
+            # Issue #14: a one-class Bernoulli(p_hat) draw (likely when p_hat
+            # is small) admits no background refit and no scoreable split —
+            # its max-LLR is the supremum over an empty candidate set, 0.0 by
+            # the documented convention above (the exact limit of the clipped
+            # LLR). Keeping the draw preserves i.i.d. sampling from the
+            # fitted null; redrawing would bias the null distribution.
+            null_max[q_i] = 0.0
+            continue
         # audit item 1: every replica refits its own background inside the
         # scan (background=None) — only the coded panel structure is reused.
-        panel_star = replace(panel, theta=draw())
+        panel_star = replace(panel, theta=theta_star)
         res_star = suddds_scan(dataset, rng=rng, panel=panel_star, **kwargs)
         null_max[q_i] = res_star.discoveries[0].llr if res_star.discoveries else 0.0
 
@@ -262,7 +283,9 @@ def composition_test(
     design-determined (audit item 18); what CAN break a panel discovery is a
     compositional shift — units or covariate profiles entering/leaving the
     panel at the cutoff. Counts records per ``by`` row on each side of
-    ``discovery.t0`` inside ``[t0 - W, t0 + W)`` and tests row/side
+    ``discovery.t0`` inside ``[t0 - W, t0 + W)``, INSIDE the discovery's own
+    subset mask (issue #16: out-of-mask records can neither fail an internally
+    stable discovery nor dilute a masked-subgroup shift), and tests row/side
     independence with :func:`scipy.stats.chi2_contingency`. Rows with
     all-zero counts are dropped; fewer than 2 usable rows or an empty side
     yield ``p_value = NaN, passed = False`` — never a silent pass.
@@ -273,8 +296,9 @@ def composition_test(
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
     t = panel.t
     t0, w = float(discovery.t0), float(discovery.window)
-    pre = (t >= t0 - w) & (t < t0)
-    post = (t >= t0) & (t < t0 + w)
+    dmask = np.asarray(discovery.mask, dtype=bool)
+    pre = (t >= t0 - w) & (t < t0) & dmask
+    post = (t >= t0) & (t < t0 + w) & dmask
     rows = panel.unit if by == "unit" else panel.profile_id
     k = int(rows.max()) + 1 if rows.size else 0
     table = np.column_stack(
@@ -327,50 +351,100 @@ def _holm(p: np.ndarray) -> np.ndarray:
 
 def anticipation_test(
     panel: CategoricalPanel,
-    background: DiDBackground,
     discovery: DiDDiscovery,
     shifts: tuple[int, ...] = (1, 2, 3),
     alpha: float = 0.05,
+    model: str = "auto",
+    degree: int = 1,
+    unit_effects: bool = True,
+    shrink: float | None = None,
 ) -> AnticipationReport:
     """Pre-period placebo jumps at ``T0 - shift * step``, Holm across shifts.
 
-    ``step`` is the median diff of unique panel times. Each placebo estimate
-    uses the discovery's own window width and subset mask but is RESTRICTED
-    to records with ``t < T0`` — never contaminated by the real jump. The
-    estimator matches the discovery: ``single_delta`` uses the profiled
-    ``Delta_hat = C/B`` with ``Var = 1/B_tilde``; otherwise the double-beta
-    contrast ``q1 - q2`` with ``Var = 1/B1 + 1/B0`` (for a Bernoulli-model
-    discovery the contrast runs on working residuals — a documented normal
-    approximation for this diagnostic only). Two-sided normal p-values; a
-    shift with insufficient two-sided support gets NaN (excluded from Holm,
-    visible in the report). ``passed`` requires at least one usable shift AND
-    every usable Holm p above ``alpha`` — all-degenerate is a fail, never a
-    silent pass.
+    The nuisance background is REFIT on the pre-period sub-panel (records
+    with ``t < T0``) via :func:`natex.did.fit_did_background` with the given
+    ``model``/``degree``/``unit_effects``/``shrink`` — issue #12: a
+    background fitted on the full panel absorbs the real post jump into its
+    trend coefficients, leaving a systematic pre-period residual trend that
+    reads as spurious placebo jumps; restricting the RECORDS alone does not
+    protect the fitted coefficients, so this test no longer accepts a
+    caller-supplied (potentially contaminated) fit. ``step`` is the median
+    diff of unique pre-period times. Each placebo estimate uses the
+    discovery's own window width and subset mask on the pre-period records
+    only. The estimator matches the discovery: ``single_delta`` uses the
+    profiled ``Delta_hat = C/B`` with ``Var = 1/B_tilde``; otherwise the
+    double-beta contrast ``q1 - q2`` with ``Var = 1/B1 + 1/B0`` (for a
+    Bernoulli-model discovery the contrast runs on working residuals — a
+    documented normal approximation for this diagnostic only). Two-sided
+    normal p-values; a shift with insufficient two-sided support gets NaN
+    (excluded from Holm, visible in the report). ``passed`` requires at
+    least one usable shift AND every usable Holm p above ``alpha`` —
+    all-degenerate is a fail, never a silent pass. A pre period with fewer
+    than 2 distinct times, a one-class Bernoulli pre period, or a pre period
+    the background fits EXACTLY (zero residual variance everywhere, so the
+    audit-24 data-scaled floor is 0 — e.g. a policy dummy identically 0
+    before ``T0``) admits no refit / no noise scale: all-NaN report,
+    ``passed = False``.
     """
     shifts = tuple(int(s) for s in shifts)
     if len(shifts) == 0 or any(s < 1 for s in shifts):
         raise ValueError(f"shifts must be a nonempty tuple of ints >= 1, got {shifts}")
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
-    u = np.unique(panel.t)
+    if model not in ("auto", "normal", "bernoulli"):
+        raise ValueError(f"model must be 'auto', 'normal' or 'bernoulli', got {model!r}")
+
+    nan = np.full(len(shifts), np.nan)
+    degenerate = AnticipationReport(
+        shifts=shifts, estimates=nan, p_values=nan.copy(), p_holm=nan.copy(), passed=False
+    )
+
+    # Pre-period sub-panel: both the records AND the nuisance fit see t < T0.
+    keep = panel.t < float(discovery.t0)
+    sub = replace(
+        panel,
+        codes=panel.codes[keep],
+        t=panel.t[keep],
+        theta=panel.theta[keep],
+        y=None if panel.y is None else np.asarray(panel.y)[keep],
+        unit=panel.unit[keep],
+    )
+    sel = np.asarray(discovery.mask, dtype=bool)[keep]
+
+    u = np.unique(sub.t)
     if u.size < 2:
-        raise ValueError("anticipation_test requires >= 2 distinct time points")
+        return degenerate  # no pre-period refit, no placebo cutoff
     step = float(np.median(np.diff(u)))
+
+    theta_vals = np.unique(sub.theta[~np.isnan(sub.theta)])
+    theta_binary = theta_vals.size <= 2 and set(theta_vals.tolist()) <= {0.0, 1.0}
+    resolved = ("bernoulli" if theta_binary else "normal") if model == "auto" else model
+    if resolved == "bernoulli" and theta_vals.size < 2:
+        return degenerate  # one-class pre period: no Bernoulli refit
+    background = fit_did_background(
+        sub, model=resolved, degree=degree, unit_effects=unit_effects, shrink=shrink
+    )
 
     if background.kind == "normal":
         assert background.r is not None and background.sigma2 is not None
         r, sigma2 = background.r, background.sigma2
     else:
         # Documented normal approximation for this diagnostic only.
-        r, sigma2 = working_residuals(panel.theta, background.fitted)
+        r, sigma2 = working_residuals(sub.theta, background.fitted)
+    if not np.all(np.isfinite(sigma2)) or np.any(sigma2 <= 0.0):
+        # Normal-model analog of the one-class Bernoulli guard: the pre-period
+        # fit is exact (e.g. a policy dummy identically 0 before T0), so every
+        # residual is 0 and the audit-24 data-scaled variance floor
+        # (1e-12 * s2_global) is itself 0 — there is no noise scale for the
+        # placebo z. All-NaN report, passed=False; never a silent pass.
+        return degenerate
 
-    sel = np.asarray(discovery.mask, dtype=bool) & (panel.t < discovery.t0)
-    n_profiles = int(np.prod(panel.dim_sizes)) if panel.m else 1
+    n_profiles = int(np.prod(sub.dim_sizes)) if sub.m else 1
     estimates = np.full(len(shifts), np.nan)
     p_values = np.full(len(shifts), np.nan)
     for i, shift in enumerate(shifts):
         t0p = float(discovery.t0 - shift * step)
-        ws = window_stats(panel.t, r, sigma2, t0p, float(discovery.window))
+        ws = window_stats(sub.t, r, sigma2, t0p, float(discovery.window))
         g1 = ws.g1 & sel
         g0 = ws.g0 & sel
         in_w = g1 | g0
@@ -383,13 +457,13 @@ def anticipation_test(
             b=np.where(in_w, ws.b, 0.0),
         )
         if discovery.method == "single_delta":
-            c_prof, b_prof = single_delta_stats(wsel, panel.profile_id, n_profiles=n_profiles)
+            c_prof, b_prof = single_delta_stats(wsel, sub.profile_id, n_profiles=n_profiles)
             b_sum = float(b_prof.sum())
             if b_sum <= 0.0:
                 continue  # no identifying within-profile variation
             est, var = float(c_prof.sum()) / b_sum, 1.0 / b_sum
         else:
-            q1, q2 = double_beta_q(wsel, np.ones((panel.n, 1), dtype=bool))
+            q1, q2 = double_beta_q(wsel, np.ones((sub.n, 1), dtype=bool))
             b1 = float((wsel.b * g1).sum())
             b0 = float((wsel.b * g0).sum())
             if not (np.isfinite(q1[0]) and np.isfinite(q2[0])) or b1 <= 0.0 or b0 <= 0.0:

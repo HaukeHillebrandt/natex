@@ -62,6 +62,10 @@ class CategoricalPanel:
     y: np.ndarray | None  # (n,) outcome or None; the SCAN NEVER READS IT
     unit: np.ndarray  # (n,) int64 unit codes, dense 0..n_units-1
     unit_values: np.ndarray  # decoded unit labels (index = code)
+    # raw time = t + t_origin (issue #27): nonzero only when an integer time
+    # column needed origin normalization to survive float64 conversion; every
+    # reported t0/window then lives in the shifted coordinates.
+    t_origin: float = 0.0
     _profile_id: np.ndarray | None = field(default=None, init=False, repr=False)
 
     @property
@@ -155,13 +159,35 @@ def build_panel(
         unit_values, unit = np.unique(pid, return_inverse=True)
         unit = unit.astype(np.int64)
 
+    # Issue #27: float64 ulp exceeds the time gaps at large integer
+    # magnitudes (e.g. ns-since-epoch: ulp at 1e18 is 128), silently merging
+    # distinct time points. Integer columns are shifted by their minimum in
+    # exact native arithmetic BEFORE conversion (offset kept in t_origin);
+    # anything still collapsing fails loudly, never silently.
+    t_col = dataset.df[spec.time]
+    n_raw_times = int(t_col.nunique())
+    t = t_col.to_numpy(dtype=float)
+    t_origin = 0.0
+    if np.unique(t).size < n_raw_times and pd.api.types.is_integer_dtype(t_col):
+        t_raw = t_col.to_numpy()
+        origin = t_raw.min()
+        t = (t_raw - origin).astype(float)
+        t_origin = float(origin)
+    if np.unique(t).size < n_raw_times:
+        raise ValueError(
+            f"time column {spec.time!r} loses distinct values under float64 "
+            f"conversion ({n_raw_times} raw vs {np.unique(t).size} converted); "
+            "rescale to coarser units (e.g. ns -> s or days)"
+        )
+
     return CategoricalPanel(
         codes=codes,
         dim_names=list(dims),
         dim_values=dim_values,
-        t=dataset.df[spec.time].to_numpy(dtype=float),
+        t=t,
         theta=dataset.T,
         y=dataset.y,
         unit=unit,
         unit_values=unit_values,
+        t_origin=t_origin,
     )

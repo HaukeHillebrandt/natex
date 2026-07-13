@@ -158,6 +158,77 @@ def test_prepare_small_profile_no_subsample_drops_bad_columns():
     assert plan.column_roles == {} and plan.filters == [] and plan.encodings == {}
 
 
+def _prefix_missing_df(n=1000, b=800, n_metrics=3, rng=None):
+    """Wearable-style frame: metrics 100% missing before row ``b`` (device
+    activation), ~3% missing after, plus a monotone day counter."""
+    rng = np.random.default_rng(6) if rng is None else rng
+    df = pd.DataFrame({"days_since_start": np.arange(n, dtype=float)})
+    for j in range(n_metrics):
+        v = rng.normal(0.0, 1.0, n)
+        v[:b] = np.nan
+        holes = rng.random(n - b) < 0.03
+        holes[0] = False  # boundary row itself is observed
+        v[b:][holes] = np.nan
+        df[f"metric{j}"] = v
+    return df
+
+
+def test_issue_6_prefix_missing_metrics_share_filter_not_dropped():
+    """Issue #6: columns whose high missingness is structural (all-missing
+    prefix before a shared boundary row) must be rescued by ONE shared
+    row filter on a monotone column, not dropped wholesale."""
+    n, b = 1000, 800
+    df = _prefix_missing_df(n=n, b=b)
+    be = NullBackend()
+    payload = {"profile": _profile_dict(df), "understanding": {}, "seed": 0, "context": None}
+    content = be.complete(GuidanceRequest(task="prepare", payload=payload)).content
+    plan = PrepPlan.model_validate(content)  # contract: always a valid PrepPlan
+    assert plan.drop_cols == []  # the metric columns survive
+    assert len(plan.filters) == 1  # ONE shared filter, not one per column
+    f = plan.filters[0]
+    assert f.col == "days_since_start" and f.op == ">=" and f.value == float(b)
+    out, _ = plan.apply(df)
+    assert len(out) == n - b
+    assert set(out.columns) == set(df.columns)
+    # residual missingness after the filter is below the quirk threshold
+    assert (out[[c for c in out.columns if c != "days_since_start"]]
+            .isna().mean() < 0.2).all()
+
+
+def test_issue_6_unclustered_or_random_missingness_still_dropped():
+    """A lone prefix-missing column (no >= 2 cluster) and a randomly holey
+    column keep the old behavior: dropped, no filters."""
+    rng = np.random.default_rng(7)
+    n = 1000
+    df = pd.DataFrame({"days_since_start": np.arange(n, dtype=float)})
+    lone = rng.normal(0.0, 1.0, n)
+    lone[:800] = np.nan  # prefix-missing but nothing shares its boundary
+    df["lone_metric"] = lone
+    holey = rng.normal(0.0, 1.0, n)
+    holey[rng.random(n) < 0.6] = np.nan  # 60% missing, scattered
+    df["holey"] = holey
+    be = NullBackend()
+    payload = {"profile": _profile_dict(df), "understanding": {}, "seed": 0, "context": None}
+    content = be.complete(GuidanceRequest(task="prepare", payload=payload)).content
+    plan = PrepPlan.model_validate(content)
+    assert set(plan.drop_cols) == {"lone_metric", "holey"}
+    assert plan.filters == []
+
+
+def test_issue_6_no_monotone_column_falls_back_to_drop():
+    """Without a monotone column to express the boundary, the cluster cannot
+    be filtered and stays dropped (never an invalid filter)."""
+    df = _prefix_missing_df(n=1000, b=800)
+    rng = np.random.default_rng(8)
+    df["days_since_start"] = rng.permutation(df["days_since_start"].to_numpy())
+    be = NullBackend()
+    payload = {"profile": _profile_dict(df), "understanding": {}, "seed": 0, "context": None}
+    content = be.complete(GuidanceRequest(task="prepare", payload=payload)).content
+    plan = PrepPlan.model_validate(content)
+    assert set(plan.drop_cols) == {"metric0", "metric1", "metric2"}
+    assert plan.filters == []
+
+
 def test_prepare_large_profile_subsamples_with_payload_seed():
     prof = _profile_dict(_fake_test_score_df())
     prof["n_rows"] = 60000  # fabricated large profile

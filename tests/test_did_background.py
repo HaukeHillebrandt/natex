@@ -174,6 +174,21 @@ def test_unknown_model_raises():
         fit_did_background(panel, model="poisson")
 
 
+def test_issue_14_one_class_binary_theta_raises_diagnostic():
+    """Issue #14: a constant binary theta auto-dispatches to the Bernoulli
+    path and crashed inside sklearn with 'needs samples of at least 2
+    classes'; fail loudly with a diagnostic naming the class and the record
+    count instead (a constant treatment has nothing to scan)."""
+    t = np.tile(np.arange(6, dtype=float), 2)
+    codes = np.zeros(12, dtype=np.int64)
+    for value in (0.0, 1.0):
+        panel = make_panel(codes, t, np.full(12, value))
+        with pytest.raises(ValueError, match="single class.*12"):
+            fit_did_background(panel, model="auto")
+        with pytest.raises(ValueError, match="single class.*12"):
+            fit_did_background(panel, model="bernoulli")
+
+
 # ---------------------------------------------------------------------------
 # determinism
 # ---------------------------------------------------------------------------
@@ -194,3 +209,16 @@ def test_bernoulli_path_deterministic():
     b = fit_did_background(panel, model="bernoulli")
     np.testing.assert_array_equal(a.fitted, b.fitted)
     np.testing.assert_array_equal(a.eta, b.eta)
+
+
+def test_issue_5_no_iprint_optimize_warning_from_bernoulli_background():
+    """Issue #5, DiD fit site: the sklearn/scipy 'iprint' OptimizeWarning must
+    be suppressed in fit_did_background's logistic fit as well (it fires per
+    replica in the panel randomization test)."""
+    import warnings
+
+    panel = binary_panel()
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        fit_did_background(panel, model="bernoulli")
+    assert not [w for w in rec if "iprint" in str(w.message)]
