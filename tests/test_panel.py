@@ -239,6 +239,67 @@ def test_nan_unit_and_time_rows_dropped_never_outcome():
     assert np.isnan(ds.y).sum() == 1
 
 
+# ---------------------------------------------------------------------------
+# issue #27: float64 precision loss on large integer time columns
+# ---------------------------------------------------------------------------
+
+
+def _time_dataset(times) -> Dataset:
+    n = len(times)
+    df = pd.DataFrame(
+        {
+            "g": (["a", "b"] * n)[:n],
+            "T": np.linspace(0.0, 1.0, n),
+            "t": times,
+        }
+    )
+    spec = DatasetSpec(
+        treatment="T", outcome=None, forcing=[], covariates=["g"], time="t"
+    )
+    return Dataset(df, spec)
+
+
+def test_issue_27_large_int_times_origin_normalized():
+    # float64 ulp at 1e18 is 128: naive conversion collapses ns-scale
+    # timestamps to a single value. Integer times are shifted by their min in
+    # exact int64 arithmetic; the offset is recorded on the panel.
+    times = np.int64(10**18) + np.arange(8, dtype=np.int64)
+    panel = build_panel(_time_dataset(times))
+    assert np.unique(panel.t).size == 8
+    np.testing.assert_array_equal(panel.t, np.arange(8, dtype=float))
+    assert panel.t_origin == float(10**18)
+
+
+def test_issue_27_partial_collapse_not_silent():
+    # 8 distinct raw times previously collapsed SILENTLY to 2 distinct floats;
+    # after origin normalization the full time structure survives.
+    times = np.int64(10**18) + np.array(
+        [0, 1, 2, 3, 1000, 1001, 1002, 1003], dtype=np.int64
+    )
+    panel = build_panel(_time_dataset(times))
+    assert np.unique(panel.t).size == 8
+    np.testing.assert_array_equal(
+        panel.t, np.array([0, 1, 2, 3, 1000, 1001, 1002, 1003], dtype=float)
+    )
+    assert panel.t_origin == float(10**18)
+
+
+def test_issue_27_still_collapsing_raises_diagnostic():
+    # Gaps below the post-shift ulp cannot be represented: 2**53 + 1 is not a
+    # float64. Never silently merge distinct time points — raise with advice.
+    times = np.array([0, 2**53, 2**53 + 1], dtype=np.int64)
+    with pytest.raises(ValueError, match="loses distinct values"):
+        build_panel(_time_dataset(times))
+
+
+def test_issue_27_ordinary_times_unshifted():
+    # Exactly representable times keep their original coordinates: t0 stays
+    # user-facing in raw units, t_origin stays 0.
+    panel = build_panel(panel_dataset(), bins=4)
+    assert panel.t_origin == 0.0
+    np.testing.assert_array_equal(panel.t, np.arange(1980.0, 1992.0))
+
+
 def test_empty_forcing_end_to_end():
     ds = panel_dataset()
     assert ds.spec.forcing == []

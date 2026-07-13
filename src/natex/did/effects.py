@@ -641,6 +641,7 @@ def placebo_dimension_tests(
             y=share,
             unit=panel.unit,
             unit_values=panel.unit_values,
+            t_origin=panel.t_origin,
         )
         rep = tau_randomization_test(panel_j, discovery, control=control, Q=Q, rng=rng)
         p_values[name] = rep.p_value
