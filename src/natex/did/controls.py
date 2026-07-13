@@ -300,6 +300,15 @@ def gess_control(
     candidate strictly lowers the MSE; termination is bounded by the total
     value count because accepted masks grow monotonically.
 
+    Estimability guard (issue #22): a candidate whose control set cannot
+    produce ANY usable post counterfactual (no post-period ``s_tau`` record
+    with finite ``y`` and finite ``y0_hat``) is a failure and scores +inf —
+    a perfect pre fit from a sparse control with zero post records must
+    never beat a complete control. When no candidate has post support GESS
+    honestly returns the empty control (``tau = NaN`` downstream). Partial
+    post coverage remains legitimate on unbalanced panels and is reported
+    via ``extras["n_undefined_times"]``.
+
     ``extras["mse_trace"]`` holds the incumbent MSE at initialization and
     after each accepted expansion (monotone nonincreasing);
     ``extras["expansions"]`` lists the accepted ``{"dim", "value"}`` steps
@@ -309,12 +318,18 @@ def gess_control(
     y = _require_outcome(panel)
     tau_mask = np.asarray(discovery.mask, dtype=bool)
     included = _profile_from_discovery(panel, discovery)
+    tau_idx = np.flatnonzero(tau_mask)
+    post_tau = panel.t[tau_idx] >= discovery.t0
+    finite_tau = np.isfinite(y[tau_idx])
 
     def evaluate(inc: list[np.ndarray]) -> tuple[float, tuple]:
         ctrl = panel.subset_mask(inc) & ~tau_mask
         y0_hat, alpha, pre_mse, n_undefined = _counterfactual(
             panel, y, tau_mask, ctrl, discovery.t0
         )
+        if post_tau.any() and not (post_tau & finite_tau & np.isfinite(y0_hat)).any():
+            # Issue #22: no usable post counterfactual -> failure = +inf.
+            pre_mse = float("inf")
         return pre_mse, (y0_hat, alpha, ctrl, n_undefined)
 
     best_mse, best_eval = evaluate(included)  # s_sup = s_tau -> empty control -> +inf
