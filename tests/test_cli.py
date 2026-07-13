@@ -199,6 +199,35 @@ def test_discover_did_smoke(tmp_path):
     assert "validation" in did
 
 
+def test_issue_28_discover_rdd_homogeneous_neighborhoods_exit_1(tmp_path):
+    """Issue #28: two well-separated treatment-homogeneous clusters make the
+    audit-item-21 fast path skip every center (discoveries=[]); the CLI must
+    exit 1 with a diagnostic instead of an uncaught traceback out of
+    randomization_test."""
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(
+        {
+            "z": np.concatenate(
+                [rng.normal(0.0, 1.0, 50), rng.normal(100.0, 1.0, 50)]
+            ),
+            "t": np.repeat([0.0, 1.0], 50),
+            "y": rng.normal(0.0, 1.0, 100),
+        }
+    )
+    csv = tmp_path / "clusters.csv"
+    df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "t", "--outcome", "y",
+         "--forcing", "z", "--k", "20", "--q", "9", "--seed", "0",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 1
+    # clean typer.Exit, not an uncaught IndexError/ValueError traceback
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "no scoreable neighborhood" in result.output
+
+
 def test_issue_10_discover_did_binary_treatment_default_model(tmp_path):
     """Issue #10: `discover --design did` on a binary treatment with the
     default --method single_delta and --model auto must not crash — the CLI

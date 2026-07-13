@@ -377,6 +377,16 @@ def discover(
         )
     else:
         res = lord3_scan(ds, k=k, degree=degree, rng=rng)
+    if not res.discoveries:
+        # Issue #28: the audit-item-21 fast path skips every treatment-
+        # homogeneous neighborhood, so a well-separated dataset can yield an
+        # empty scan — exit cleanly (mirrors the did branch) instead of
+        # tracebacking inside randomization_test.
+        typer.echo(
+            "no scoreable neighborhood: every size-k neighborhood is "
+            "treatment-homogeneous; try a larger --k or check the forcing columns"
+        )
+        raise typer.Exit(code=1)
     rand = randomization_test(ds, res, Q=q, rng=rng, scan_kwargs={"k": k, "degree": degree},
                               geometry=geometry, search=search)
     top = res.discoveries[0]
