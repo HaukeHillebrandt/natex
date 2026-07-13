@@ -43,6 +43,22 @@ def randomization_test(
 ) -> RandomizationReport:
     if rng is None:
         raise ValueError("pass an explicit numpy Generator")
+    # Issue #25: mirror the panel contract (validate/panel.py) verbatim —
+    # Q=0 fabricated a vacuous p=1.0 from zero draws, Q=-1 crashed in
+    # np.empty, and an empty scan result raised a raw IndexError.
+    if Q < 1:
+        raise ValueError(f"Q must be >= 1, got {Q}")
+    if not scan_result.discoveries:
+        raise ValueError("scan_result has no discoveries: nothing to calibrate")
+    observed = scan_result.discoveries[0].llr
+    if not np.isfinite(observed):
+        # NaN >= NaN is False, so a non-finite statistic would silently score
+        # the minimum attainable p = 1/(Q+1) (issue #9) — reject before doing
+        # Q replica scans' worth of work.
+        raise ValueError(
+            f"non-finite observed max LLR ({observed}): the scan statistic is "
+            "degenerate and cannot be ranked"
+        )
     scan_kwargs = dict(scan_kwargs or {})
     scan_kwargs.setdefault("k", scan_result.k)
     kind = scan_result.model
@@ -60,7 +76,6 @@ def randomization_test(
     else:
         fitted = np.clip(fitted, 1e-6, 1 - 1e-6)
 
-    observed = scan_result.discoveries[0].llr
     null_max = np.empty(Q)
     for q_i in range(Q):
         t_star = _draw_null_treatment(kind, fitted, sigma2, rng)
