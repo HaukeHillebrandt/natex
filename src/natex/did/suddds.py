@@ -59,6 +59,22 @@ factory appends the MDSS priority stats as a third element.
 
 _MODELS = ("auto", "normal", "bernoulli")
 _METHODS = ("greedy", "wcc", "single_delta")
+
+
+def resolve_default_model(model: str, method: str) -> str:
+    """Resolve the DEFAULT ``model='auto'`` under ``method='single_delta'``.
+
+    Audit 19's Bernoulli auto-matching conflicts with single_delta's Gaussian
+    profile GLR on binary treatments: left unresolved, the default
+    method/model combination fails every binary-treatment did config (dogfood
+    finding, 405a7ae). Both entry points — :func:`natex.discover` and the CLI
+    ``discover --design did`` branch — call this so they cannot drift. An
+    explicit ``model='bernoulli'`` is returned unchanged and still raises
+    inside :func:`suddds_scan`.
+    """
+    if method == "single_delta" and model == "auto":
+        return "normal"
+    return model
 _MAX_ALTERNATIONS = 20
 _TOL = 1e-12
 _MAX_INIT_REDRAWS = 100

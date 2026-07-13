@@ -27,7 +27,7 @@ from natex.data.spec import Dataset, DatasetSpec
 from natex.did.controls import gess_control
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
-from natex.did.suddds import suddds_scan
+from natex.did.suddds import resolve_default_model, suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.plans import DesignCandidate, SearchPlan
 from natex.jsonutil import jsonable
@@ -341,14 +341,13 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
     windows = budget["windows"]
     if windows is not None:
         windows = tuple(float(w) for w in windows)
-    model, method = budget["model"], budget["method"]
-    if method == "single_delta" and model == "auto":
-        # audit 19's Bernoulli auto-matching conflicts with single_delta's
-        # Gaussian profile GLR on binary treatments: resolve the DEFAULT
-        # combination to the thesis-parity normal model instead of failing
-        # every binary-treatment did config (dogfood finding). An explicit
-        # model='bernoulli' still raises inside suddds_scan.
-        model = "normal"
+    # audit 19's Bernoulli auto-matching conflicts with single_delta's
+    # Gaussian profile GLR on binary treatments: resolve the DEFAULT
+    # combination to the thesis-parity normal model instead of failing
+    # every binary-treatment did config (dogfood finding). An explicit
+    # model='bernoulli' still raises inside suddds_scan.
+    method = budget["method"]
+    model = resolve_default_model(budget["model"], method)
     panel = build_panel(ds, bins=bins)
     res = suddds_scan(ds, windows=windows, restarts=int(budget["restarts"]),
                       model=model, method=method,

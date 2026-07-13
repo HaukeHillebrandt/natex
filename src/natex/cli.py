@@ -19,7 +19,7 @@ from natex.dee.debias import dee_debias
 from natex.dee.vknn import select_m_prime
 from natex.did.effects import did_effect, tau_randomization_test
 from natex.did.panel import build_panel
-from natex.did.suddds import suddds_scan
+from natex.did.suddds import resolve_default_model, suddds_scan
 from natex.discover import discover as run_discover
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.analyst import IntakeReport
@@ -833,6 +833,11 @@ def _discover_did(
     window_grid = tuple(float(w) for w in windows.split(",")) if windows else None
     rng = np.random.default_rng(seed)
     panel = build_panel(ds, bins=bins)
+    # Issue #10: audit-19 Bernoulli auto-matching conflicts with single_delta's
+    # Gaussian profile GLR on binary treatments — resolve the default
+    # combination exactly as natex.discover does (shared helper, 405a7ae);
+    # an explicit --model bernoulli still raises inside suddds_scan.
+    model = resolve_default_model(model, method)
     res = suddds_scan(
         ds, windows=window_grid, restarts=restarts, model=model, method=method,
         bins=bins, degree=degree, rng=rng, panel=panel,

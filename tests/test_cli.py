@@ -199,6 +199,28 @@ def test_discover_did_smoke(tmp_path):
     assert "validation" in did
 
 
+def test_issue_10_discover_did_binary_treatment_default_model(tmp_path):
+    """Issue #10: `discover --design did` on a binary treatment with the
+    default --method single_delta and --model auto must not crash — the CLI
+    resolves auto -> normal exactly like the plan-mode runner (405a7ae);
+    an explicit --model bernoulli still raises inside suddds_scan."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, theta_kind="binary",
+                               rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["did"]["searched"]["model"] == "normal"
+    assert payload["params"]["model"] == "normal"  # what actually ran
+
+
 def test_discover_did_requires_time(tmp_path):
     """--design did without --time: nonzero exit, message names --time."""
     ds, _ = make_did_synthetic(n=50, d=2, V=3, zeta=8.0, rng=np.random.default_rng(0))
