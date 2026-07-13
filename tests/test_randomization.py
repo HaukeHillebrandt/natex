@@ -33,3 +33,17 @@ def test_bernoulli_replicas_are_bernoulli():
     t_star = _draw_null_treatment("bernoulli", p_hat, None, np.random.default_rng(6))
     assert set(np.unique(t_star)) <= {0.0, 1.0}
     assert abs(t_star.mean() - 0.1) < 0.01  # NOT ~0.176 like the legacy generator
+
+
+def test_issue_9_nonfinite_observed_llr_rejected():
+    """Issue #9 defense in depth: a non-finite max LLR must never be ranked
+    (NaN >= NaN is False, so a NaN observed statistic silently yielded the
+    minimum attainable p-value 1/(Q+1))."""
+    import pytest
+
+    rng = np.random.default_rng(3)
+    ds, _ = make_synthetic(n=200, zeta=0.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=20, rng=np.random.default_rng(4))
+    res.discoveries[0].llr = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        randomization_test(ds, res, Q=3, rng=np.random.default_rng(5), scan_kwargs={"k": 20})

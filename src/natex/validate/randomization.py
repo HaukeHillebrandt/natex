@@ -72,5 +72,13 @@ def randomization_test(
         )
         null_max[q_i] = res_star.discoveries[0].llr if res_star.discoveries else 0.0
 
+    if not (np.isfinite(observed) and np.isfinite(null_max).all()):
+        # Defense in depth (issue #9): NaN >= NaN is False, so a non-finite
+        # statistic would silently score the minimum attainable p = 1/(Q+1).
+        raise ValueError(
+            f"non-finite max LLR in randomization test (observed={observed}, "
+            f"non-finite replicas={int(np.sum(~np.isfinite(null_max)))} of {Q}); "
+            "the scan statistic is degenerate and cannot be ranked"
+        )
     p = (1.0 + float(np.sum(null_max >= observed))) / (Q + 1.0)
     return RandomizationReport(p_value=p, observed_max_llr=observed, null_max_llrs=null_max, q=Q)

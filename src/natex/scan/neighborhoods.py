@@ -57,7 +57,19 @@ def local_residual_variance(r: np.ndarray, idx: np.ndarray) -> np.ndarray:
     Audit item 20: the legacy implementation indexed reverse neighbors by
     mistake; this function is row-wise over idx (own neighborhoods) by
     construction. Floor is data-scaled (audit item 24), never absolute.
+
+    A zero (or non-finite) global residual variance means the Normal treatment
+    background fits the treatment exactly; the floor would be 0, the precision
+    weights inf, and every LLR NaN -- NaN then wins argmax and poisons the
+    randomization p-value (NaN >= NaN is False -> p = 1/(Q+1)). Fail loudly
+    instead (issue #9); discover() isolates this as status="failed".
     """
+    gv = float(np.var(r, ddof=1))
+    if not np.isfinite(gv) or gv <= 0.0:
+        raise ValueError(
+            "Normal treatment background fits the treatment exactly -- zero "
+            "residual variance (constant or exactly-linear treatment); the "
+            "Normal scan model is degenerate and the LLR is undefined"
+        )
     local = np.var(r[idx], axis=1, ddof=1)
-    floor = 1e-3 * float(np.var(r, ddof=1))
-    return np.maximum(local, floor)
+    return np.maximum(local, 1e-3 * gv)
