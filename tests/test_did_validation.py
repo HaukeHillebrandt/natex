@@ -372,6 +372,57 @@ def test_composition_by_profile():
     assert rep.passed
 
 
+def test_issue_16_composition_counts_restricted_to_discovery_mask():
+    # Issue #16: counts must be taken INSIDE the discovery's subset mask.
+    # Masked units 0-1 are perfectly balanced pre/post; out-of-mask units 2-11
+    # exist pre-period only. The discovery is internally stable, so the test
+    # must pass, with exactly the p-value of the mask-only panel.
+    unit_m, t_m = _balanced(n_units=2)
+    unit_o, t_o = _balanced(n_units=10)
+    keep_o = t_o < 5.0  # out-of-mask units: pre-only (total post attrition)
+    unit = np.concatenate([unit_m, unit_o[keep_o] + 2])
+    t = np.concatenate([t_m, t_o[keep_o]])
+    panel = counts_panel(unit, t)
+    mask = unit < 2
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert rep.table.shape == (2, 2)
+    assert rep.passed
+    panel_only = counts_panel(unit_m, t_m)
+    rep_only = composition_test(panel_only, make_discovery(panel_only.n, t0=5.0, window=5.0))
+    assert rep.p_value == rep_only.p_value
+
+
+def test_issue_16_composition_masked_subgroup_attrition_detected():
+    # Issue #16 (dilution direction): one of two masked units vanishes post.
+    # Stable out-of-mask units must not dilute the signal via df inflation.
+    unit_m, t_m = _balanced(n_units=2)
+    keep_m = ~((unit_m == 1) & (t_m >= 5.0))  # masked unit 1: no post records
+    unit_o, t_o = _balanced(n_units=50)
+    unit = np.concatenate([unit_m[keep_m], unit_o + 2])
+    t = np.concatenate([t_m[keep_m], t_o])
+    panel = counts_panel(unit, t)
+    mask = unit < 2
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert rep.p_value <= 0.01
+    assert not rep.passed
+
+
+def test_issue_16_composition_single_masked_unit_total_attrition_is_degenerate():
+    # Issue #16: a single masked unit with total post attrition leaves one
+    # usable row (and an empty post column) inside the mask -> NaN, failed —
+    # never a silent pass borrowed from balanced out-of-mask units.
+    unit_m, t_m = _balanced(n_units=1)
+    keep_m = t_m < 5.0
+    unit_o, t_o = _balanced(n_units=50)
+    unit = np.concatenate([unit_m[keep_m], unit_o + 1])
+    t = np.concatenate([t_m[keep_m], t_o])
+    panel = counts_panel(unit, t)
+    mask = unit < 1
+    rep = composition_test(panel, make_discovery(panel.n, t0=5.0, window=5.0, mask=mask))
+    assert np.isnan(rep.p_value)
+    assert not rep.passed
+
+
 def test_composition_degenerate_is_nan_never_ok():
     # single usable row -> NaN p, failed (never silently ok)
     unit, t = _balanced(n_units=1)

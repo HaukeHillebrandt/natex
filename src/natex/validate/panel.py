@@ -272,7 +272,9 @@ def composition_test(
     design-determined (audit item 18); what CAN break a panel discovery is a
     compositional shift — units or covariate profiles entering/leaving the
     panel at the cutoff. Counts records per ``by`` row on each side of
-    ``discovery.t0`` inside ``[t0 - W, t0 + W)`` and tests row/side
+    ``discovery.t0`` inside ``[t0 - W, t0 + W)``, INSIDE the discovery's own
+    subset mask (issue #16: out-of-mask records can neither fail an internally
+    stable discovery nor dilute a masked-subgroup shift), and tests row/side
     independence with :func:`scipy.stats.chi2_contingency`. Rows with
     all-zero counts are dropped; fewer than 2 usable rows or an empty side
     yield ``p_value = NaN, passed = False`` — never a silent pass.
@@ -283,8 +285,9 @@ def composition_test(
         raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
     t = panel.t
     t0, w = float(discovery.t0), float(discovery.window)
-    pre = (t >= t0 - w) & (t < t0)
-    post = (t >= t0) & (t < t0 + w)
+    dmask = np.asarray(discovery.mask, dtype=bool)
+    pre = (t >= t0 - w) & (t < t0) & dmask
+    post = (t >= t0) & (t < t0 + w) & dmask
     rows = panel.unit if by == "unit" else panel.profile_id
     k = int(rows.max()) + 1 if rows.size else 0
     table = np.column_stack(
