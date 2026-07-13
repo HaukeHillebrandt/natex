@@ -563,35 +563,50 @@ def kink(
     if missing:
         typer.echo(f"columns not in dataframe: {missing}")
         raise typer.Exit(code=2)
-    covariate_values = df[covariate_names].to_numpy(dtype=float) if covariate_names else None
-    treatment_values = None if treatment is None else df[treatment].to_numpy(dtype=float)
-    cluster_values = None if cluster is None else df[cluster].to_numpy()
-    common = {
-        "treatment": treatment_values,
-        "cutoff": cutoff,
-        "bandwidth": bandwidth,
-        "degree": degree,
-        "kernel": kernel,
-        "donut": donut,
-        "covariates": covariate_values,
-        "clusters": cluster_values,
-        "alpha": alpha,
-    }
+
+    def numeric_column(name: str) -> np.ndarray:
+        try:
+            return df[name].to_numpy(dtype=float)
+        except (TypeError, ValueError):
+            raise ValueError(f"column {name!r} must be numeric") from None
+
     try:
+        outcome_values = numeric_column(outcome)
+        running_values = numeric_column(running)
+        treatment_values = None if treatment is None else numeric_column(treatment)
+        covariate_values = (
+            np.column_stack([numeric_column(name) for name in covariate_names])
+            if covariate_names
+            else None
+        )
+        cluster_values = None if cluster is None else df[cluster].to_numpy()
+        common = {
+            "treatment": treatment_values,
+            "cutoff": cutoff,
+            "bandwidth": bandwidth,
+            "degree": degree,
+            "kernel": kernel,
+            "donut": donut,
+            "covariates": covariate_values,
+            "clusters": cluster_values,
+            "alpha": alpha,
+        }
         if design == "rkd":
             estimate = regression_kink(
-                df[outcome].to_numpy(dtype=float),
-                df[running].to_numpy(dtype=float),
+                outcome_values,
+                running_values,
                 policy_kink=policy_kink,
                 **common,
             )
             post = None
         else:
-            time_values = df[time].to_numpy(dtype=float)
-            post = time_values >= t0
+            time_values = numeric_column(time)
+            post = np.full(time_values.shape, np.nan, dtype=float)
+            finite_time = np.isfinite(time_values)
+            post[finite_time] = (time_values[finite_time] >= t0).astype(float)
             estimate = difference_in_kinks(
-                df[outcome].to_numpy(dtype=float),
-                df[running].to_numpy(dtype=float),
+                outcome_values,
+                running_values,
                 post,
                 policy_kink_change=policy_kink_change,
                 **common,
@@ -658,6 +673,12 @@ def kink(
         f"first-stage F={fs_text} weak={estimate.weak_first_stage}"
     )
     typer.echo(f"results: {path}")
+    if not np.isfinite(estimate.tau):
+        reason = estimate.extras.get(
+            "reason", "the estimand is undefined because its denominator is zero or non-finite"
+        )
+        typer.echo(f"estimation failed: {reason}")
+        raise typer.Exit(code=1)
 
 
 @app.command()

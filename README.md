@@ -203,7 +203,9 @@ uv run natex kink panel.csv --design dik --outcome y --running score \
 For sharp DiK, replace `--treatment policy` with
 `--policy-kink-change VALUE`. Both designs use an explicit right-minus-left slope
 convention; DiK then takes post-minus-pre. The output `out/kink.json` includes cell slopes,
-HC1 or clustered CR1 inference, first-stage strength, and a Fieller set for fuzzy ratios.
+HC1 or clustered CR1 inference (`t(G-1)` critical values), first-stage strength, and a
+Fieller set for fuzzy ratios. Undefined core estimates are written for diagnosis and return
+a nonzero command status.
 
 ```python
 from natex import difference_in_kinks, regression_kink
@@ -476,7 +478,7 @@ Legacy scan outputs are therefore **not** treated as ground truth in parity test
 
 All eight original build phases are complete; v0.1.0 is the first tagged release. The
 known-cutoff kink-design extension is implemented on top. Run of record:
-`uv run pytest -q` collects 955 non-backtest tests (optional-extra tests skip gracefully
+`uv run pytest -q` collects 1046 non-backtest tests (optional-extra tests skip gracefully
 when an extra is missing); `uv run pytest -m backtest` collects 32 real-data backtests
 over the six registered datasets; `uv run ruff check src tests` is clean.
 

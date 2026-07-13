@@ -41,7 +41,19 @@ class DiKTruth:
 def _require_rng(rng: np.random.Generator | None) -> np.random.Generator:
     if rng is None:
         raise ValueError("pass an explicit numpy Generator (reproducibility contract)")
+    if not isinstance(rng, np.random.Generator):
+        raise TypeError(f"rng must be a numpy Generator, got {type(rng).__name__}")
     return rng
+
+
+def _require_finite(**values: float) -> None:
+    for name, value in values.items():
+        try:
+            finite = np.isfinite(value)
+        except TypeError:
+            finite = False
+        if not isinstance(finite, (bool, np.bool_)) or not bool(finite):
+            raise ValueError(f"{name} must be finite")
 
 
 def _validate_common(
@@ -89,9 +101,21 @@ def make_rkd_synthetic(
     side-specific intercepts and does not alter the slope estimand.
     """
     rng = _require_rng(rng)
+    _require_finite(
+        tau=tau,
+        cutoff=cutoff,
+        policy_intercept=policy_intercept,
+        policy_left_slope=policy_left_slope,
+        policy_kink=policy_kink,
+        bias_kink=bias_kink,
+        outcome_left_slope=outcome_left_slope,
+        level_jump=level_jump,
+        treatment_noise=treatment_noise,
+        outcome_noise=outcome_noise,
+    )
     _validate_common(n, treatment_noise, outcome_noise)
-    if not np.isfinite(policy_kink) or policy_kink == 0.0:
-        raise ValueError("policy_kink must be finite and nonzero")
+    if policy_kink == 0.0:
+        raise ValueError("policy_kink must be nonzero")
     x = rng.uniform(-1.0, 1.0, size=n)
     policy = _schedule(x, policy_intercept, policy_left_slope, policy_kink)
     if fuzzy:
@@ -152,6 +176,22 @@ def make_dik_synthetic(
     the exact parallel-kink-trends violation oracle stored in ``expected_dik``.
     """
     rng = _require_rng(rng)
+    _require_finite(
+        tau=tau,
+        cutoff=cutoff,
+        policy_intercept=policy_intercept,
+        policy_left_slope_pre=policy_left_slope_pre,
+        policy_left_slope_post=policy_left_slope_post,
+        policy_kink_pre=policy_kink_pre,
+        policy_kink_post=policy_kink_post,
+        bias_kink_pre=bias_kink_pre,
+        bias_kink_post=bias_kink_post,
+        outcome_left_slope_pre=outcome_left_slope_pre,
+        outcome_left_slope_post=outcome_left_slope_post,
+        level_jump=level_jump,
+        treatment_noise=treatment_noise,
+        outcome_noise=outcome_noise,
+    )
     _validate_common(n, treatment_noise, outcome_noise)
     if n % 2:
         raise ValueError("n must be even so pre and post samples are balanced")
@@ -208,7 +248,11 @@ def make_dik_synthetic(
         bias_kink_pre=float(bias_kink_pre),
         bias_kink_post=float(bias_kink_post),
         expected_dik=float(tau + (bias_kink_post - bias_kink_pre) / kink_change),
-        expected_rkd_post=float(tau + bias_kink_post / policy_kink_post),
+        expected_rkd_post=(
+            float(tau + bias_kink_post / policy_kink_post)
+            if policy_kink_post != 0.0
+            else float("nan")
+        ),
         fuzzy=bool(fuzzy),
     )
     return Dataset(df, spec), truth

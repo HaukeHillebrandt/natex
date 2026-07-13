@@ -68,13 +68,18 @@ The paper gives point estimators but does not specify its covariance or weak-den
 procedure. The following are natex choices:
 
 - HC1 sandwich covariance by default.
-- CR1 cluster-robust covariance when `clusters=` / `--cluster` is supplied.
-- Joint outcome-policy sandwich covariance in the fuzzy delta-method standard error.
+- CR1 cluster-robust covariance when `clusters=` / `--cluster` is supplied, with
+  `t(G-1)` critical values. Every local side/period cell must contain at least two clusters.
+- Joint outcome-policy sandwich covariance in the fuzzy delta-method standard error,
+  evaluated through the combined outcome-minus-ratio-times-policy influence score to avoid
+  numerical cancellation.
 - First-stage slope contrast, standard error, Wald F, and `weak_first_stage` (`F < 10`, a
   heuristic rather than a design-specific critical value).
 - A Fieller confidence set for fuzzy ratios. Its honest shape can be `interval`, `disjoint`,
   `unbounded`, or `empty`; it is never coerced to a finite interval.
 - Zero or unidentified denominators produce `NaN`/JSON `null`, never a fabricated `0.0`.
+- Cells without residual degrees of freedom fail explicitly instead of returning a zero
+  standard error.
 
 The ordinary Wald interval is conventional local-polynomial inference and may retain
 **smoothing bias**. Robust bias correction is not implemented; polynomial and bandwidth
@@ -141,7 +146,8 @@ dik = difference_in_kinks(
 print(dik.tau, dik.ci, dik.fieller_kind, dik.first_stage_F)
 ```
 
-CLI equivalents write NaN-clean `out/kink.json`:
+CLI equivalents write NaN-clean `out/kink.json`; an undefined core estimate is still
+written for diagnosis and then returns a nonzero process status:
 
 ```bash
 natex kink data.csv --design rkd --outcome y --running score \
@@ -154,9 +160,10 @@ natex kink panel.csv --design dik --outcome y --running score \
 
 ## Diagnostics the estimator does and does not provide
 
-Every result reports the cell-specific outcome slopes, fuzzy policy slopes, pre/post kinks,
-effective cell counts, design rank, row loss, covariance choice, first-stage strength, and
-ratio confidence sets. These are computation diagnostics, not assumption certification.
+Every successful result reports the cell-specific outcome slopes, fuzzy policy slopes,
+pre/post kinks, effective cell counts, design rank, row loss, covariance choice, first-stage
+strength, and ratio confidence sets. These are computation diagnostics, not assumption
+certification.
 
 Before a causal claim, also inspect binned plots, multiple bandwidths and donuts, shifted
 placebo cutoffs, density/sorting behavior, predetermined covariates as placebo outcomes,

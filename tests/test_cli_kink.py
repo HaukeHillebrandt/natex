@@ -203,11 +203,13 @@ def test_weak_fuzzy_kink_serializes_nan_as_null(tmp_path):
             str(out),
         ],
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = _strict_loads((out / "kink.json").read_text())
     assert payload["estimate"]["tau"] is None
     assert payload["estimate"]["first_stage_F"] is None
     assert payload["estimate"]["weak_first_stage"] is True
+    assert "results:" in result.output
+    assert "estimation failed:" in result.output
 
 
 def test_kink_cli_requires_one_first_stage_source(tmp_path):
@@ -282,3 +284,68 @@ def test_kink_cli_rejects_unknown_columns_without_traceback(tmp_path):
     assert result.exit_code == 2
     assert "ghost" in result.output
     assert "Traceback" not in result.output
+
+
+def test_kink_cli_rejects_nonnumeric_estimation_columns_cleanly(tmp_path):
+    data, _ = make_rkd_synthetic(n=100, rng=np.random.default_rng(8))
+    df = data.df.copy()
+    df["policy"] = "not-a-number"
+    csv = tmp_path / "rkd.csv"
+    df.to_csv(csv, index=False)
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--outcome",
+            "y",
+            "--running",
+            "running",
+            "--treatment",
+            "policy",
+            "--bandwidth",
+            "1",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "policy" in result.output
+    assert "numeric" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_kink_cli_drops_rows_with_missing_time_instead_of_calling_them_pre(tmp_path):
+    data, truth = make_dik_synthetic(n=100, rng=np.random.default_rng(9))
+    df = data.df.copy()
+    df.loc[0, "post"] = np.nan
+    csv = tmp_path / "dik.csv"
+    df.to_csv(csv, index=False)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "dik",
+            "--outcome",
+            "y",
+            "--running",
+            "running",
+            "--policy-kink-change",
+            str(truth.policy_kink_change),
+            "--time",
+            "post",
+            "--t0",
+            "1",
+            "--bandwidth",
+            "1",
+            "--kernel",
+            "uniform",
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _strict_loads((out / "kink.json").read_text())
+    assert payload["estimate"]["n_used"] == 99
+    assert payload["estimate"]["extras"]["n_dropped_nonfinite"] == 1

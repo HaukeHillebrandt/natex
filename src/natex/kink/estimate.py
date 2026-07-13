@@ -20,7 +20,7 @@ from scipy import stats
 
 _KERNELS = {"triangular", "uniform", "epanechnikov"}
 _WEAK_F_THRESHOLD = 10.0
-_NUMERIC_ZERO_TOL = 1e-12
+_RELATIVE_ROUNDOFF_TOL = 1_000.0 * np.finfo(float).eps
 
 
 @dataclass
@@ -58,6 +58,8 @@ class _Prepared:
     n_input: int
     n_dropped_nonfinite: int
     n_outside_bandwidth: int
+    n_donut_excluded: int
+    n_zero_weight_excluded: int
     n_by_cell: dict[str, int]
     n_covariates: int
     n_covariates_dropped_constant: int
@@ -70,6 +72,7 @@ class _Fit:
     bread: np.ndarray
     cov: np.ndarray
     rank: int
+    response_scale: float
 
 
 def _as_vector(name: str, values, n: int | None = None) -> np.ndarray:
@@ -137,6 +140,8 @@ def _post_indicator(post, n: int) -> tuple[np.ndarray, np.ndarray]:
     if raw.ndim != 1 or raw.size != n:
         raise ValueError(f"post must be one-dimensional with {n} rows")
     present = ~pd.isna(raw)
+    if pd.api.types.is_numeric_dtype(raw.dtype):
+        present &= np.isfinite(raw.astype(float))
     values = set(pd.unique(raw[present]).tolist())
     if not values <= {0, 1, False, True}:
         raise ValueError("post must contain only boolean or 0/1 values")
@@ -153,7 +158,10 @@ def _cluster_present(clusters, n: int) -> tuple[np.ndarray | None, np.ndarray]:
     raw = np.asarray(clusters)
     if raw.ndim != 1 or raw.size != n:
         raise ValueError(f"clusters must be one-dimensional with {n} rows")
-    return raw, ~pd.isna(raw)
+    present = ~pd.isna(raw)
+    if pd.api.types.is_numeric_dtype(raw.dtype):
+        present &= np.isfinite(raw.astype(float))
+    return raw, present
 
 
 def _prepare(
@@ -194,13 +202,18 @@ def _prepare(
     n_dropped_nonfinite = int(n - finite.sum())
 
     distance = running_all - cutoff
-    in_window = (np.abs(distance) <= bandwidth) & (np.abs(distance) >= donut)
+    within_bandwidth = np.abs(distance) <= bandwidth
+    outside_bandwidth = int(np.sum(finite & ~within_bandwidth))
+    donut_excluded = int(
+        np.sum(finite & within_bandwidth & (np.abs(distance) < donut))
+    )
+    in_window = within_bandwidth & (np.abs(distance) >= donut)
     selected = finite & in_window
     u_all = distance / bandwidth
     positive_weight = np.zeros(n, dtype=bool)
     positive_weight[selected] = _kernel_weights(u_all[selected], kernel) > 0.0
+    zero_weight_excluded = int(np.sum(selected & ~positive_weight))
     selected &= positive_weight
-    n_outside = int(finite.sum() - selected.sum())
 
     y_fit = y_all[selected]
     treatment_fit = None if treatment_all is None else treatment_all[selected]
@@ -228,12 +241,23 @@ def _prepare(
     cov_fit = covariates_all[selected]
     dropped_constant = 0
     if cov_fit.shape[1] and cov_fit.shape[0]:
-        mean = cov_fit.mean(axis=0)
-        scale = cov_fit.std(axis=0, ddof=0)
-        threshold = np.finfo(float).eps * np.maximum(np.max(np.abs(cov_fit), axis=0), 1.0)
-        keep = scale > threshold
+        centered_covariates = cov_fit.copy()
+        for j in range(len(cell_labels)):
+            rows = cell == j
+            if np.any(rows):
+                centered_covariates[rows] -= cov_fit[rows][0]
+        column_scale = np.max(np.abs(centered_covariates), axis=0)
+        nonzero = column_scale > 0.0
+        normalized = np.zeros_like(centered_covariates)
+        normalized[:, nonzero] = (
+            centered_covariates[:, nonzero] / column_scale[nonzero]
+        )
+        mean = normalized.mean(axis=0)
+        scale = normalized.std(axis=0, ddof=0)
+        threshold = np.finfo(float).eps * max(cov_fit.shape[0], 1)
+        keep = nonzero & (scale > threshold)
         dropped_constant = int((~keep).sum())
-        cov_fit = (cov_fit[:, keep] - mean[keep]) / scale[keep]
+        cov_fit = (normalized[:, keep] - mean[keep]) / scale[keep]
     elif cov_fit.shape[1]:
         dropped_constant = cov_fit.shape[1]
         cov_fit = np.empty((0, 0), dtype=float)
@@ -266,7 +290,9 @@ def _prepare(
         clusters=cluster_fit,
         n_input=n,
         n_dropped_nonfinite=n_dropped_nonfinite,
-        n_outside_bandwidth=n_outside,
+        n_outside_bandwidth=outside_bandwidth,
+        n_donut_excluded=donut_excluded,
+        n_zero_weight_excluded=zero_weight_excluded,
         n_by_cell=n_by_cell,
         n_covariates=cov_fit.shape[1],
         n_covariates_dropped_constant=dropped_constant,
@@ -299,25 +325,50 @@ def _score_meat(
 
 def _fit(prepared: _Prepared, values: np.ndarray) -> _Fit:
     design, weights = prepared.design, prepared.weights
-    weighted_design = design * np.sqrt(weights)[:, None]
-    rank = int(np.linalg.matrix_rank(weighted_design))
+    centered_values = values.copy()
+    cell_locations = np.zeros(len(prepared.cell_labels), dtype=float)
+    for j in range(len(prepared.cell_labels)):
+        rows = prepared.cell == j
+        cell_locations[j] = values[rows][0]
+        centered_values[rows] -= cell_locations[j]
+    response_scale = float(np.max(np.abs(centered_values), initial=0.0))
+    normalized_values = (
+        centered_values / response_scale
+        if response_scale > 0.0
+        else centered_values
+    )
+    sqrt_weights = np.sqrt(weights)
+    weighted_design = design * sqrt_weights[:, None]
+    centered_beta, _, rank, _ = np.linalg.lstsq(
+        weighted_design, sqrt_weights * normalized_values, rcond=None
+    )
+    rank = int(rank)
     p = design.shape[1]
     if rank < p:
         raise ValueError(f"rank-deficient local-polynomial design ({rank} < {p})")
+    beta = centered_beta * response_scale
+    block_size = (p - prepared.n_covariates) // len(prepared.cell_labels)
+    for j, location in enumerate(cell_locations):
+        beta[j * block_size] += location
     xtwx = design.T @ (design * weights[:, None])
     bread = np.linalg.inv(xtwx)
-    beta = bread @ (design.T @ (weights * values))
-    residual = values - design @ beta
-    sse = float(np.sum(weights * residual**2))
-    centered = values - np.average(values, weights=weights)
-    scale = max(float(np.sum(weights * centered**2)), 1.0)
-    if sse <= 1e-24 * scale:
+    residual = normalized_values - design @ centered_beta
+    scaled_sse = float(np.sum(weights * residual**2))
+    scaled_value_ss = float(np.sum(weights * normalized_values**2))
+    if scaled_sse <= _RELATIVE_ROUNDOFF_TOL**2 * scaled_value_ss:
         residual = np.zeros_like(residual)
     meat, factor, _ = _score_meat(
         design, weights, residual, residual, prepared.clusters
     )
     cov = bread @ meat @ bread * factor
-    return _Fit(beta=beta, residual=residual, bread=bread, cov=cov, rank=rank)
+    return _Fit(
+        beta=beta,
+        residual=residual,
+        bread=bread,
+        cov=cov,
+        rank=rank,
+        response_scale=response_scale,
+    )
 
 
 def _cross_cov(prepared: _Prepared, fit_a: _Fit, fit_b: _Fit) -> np.ndarray:
@@ -333,14 +384,41 @@ def _cross_cov(prepared: _Prepared, fit_a: _Fit, fit_b: _Fit) -> np.ndarray:
 
 def _contrast(fit: _Fit, vector: np.ndarray) -> tuple[float, float, float]:
     value = float(vector @ fit.beta)
-    variance = float(vector @ fit.cov @ vector)
-    variance = max(variance, 0.0)
-    return value, float(np.sqrt(variance)), variance
+    vector_scale = float(np.max(np.abs(vector), initial=0.0))
+    if vector_scale == 0.0:
+        return value, 0.0, 0.0
+    normalized_vector = vector / vector_scale
+    normalized_variance = float(normalized_vector @ fit.cov @ normalized_vector)
+    normalized_variance = max(normalized_variance, 0.0)
+    normalized_se = float(np.sqrt(normalized_variance) * vector_scale)
+    se = float(normalized_se * fit.response_scale)
+    return value, se, normalized_se
+
+
+def _contrast_correlation(
+    fit_a: _Fit,
+    fit_b: _Fit,
+    cross_cov: np.ndarray,
+    vector: np.ndarray,
+) -> float:
+    vector_scale = float(np.max(np.abs(vector), initial=0.0))
+    if vector_scale == 0.0:
+        return 0.0
+    normalized_vector = vector / vector_scale
+    var_a = max(float(normalized_vector @ fit_a.cov @ normalized_vector), 0.0)
+    var_b = max(float(normalized_vector @ fit_b.cov @ normalized_vector), 0.0)
+    if var_a == 0.0 or var_b == 0.0:
+        return 0.0
+    covariance = float(normalized_vector @ cross_cov @ normalized_vector)
+    correlation = covariance / (np.sqrt(var_a) * np.sqrt(var_b))
+    return float(np.clip(correlation, -1.0, 1.0))
 
 
 def _canonical_zero(value: float, slopes: dict[str, float]) -> float:
-    scale = max(1.0, *(abs(v) for v in slopes.values()))
-    return 0.0 if abs(value) <= _NUMERIC_ZERO_TOL * scale else value
+    scale = max((abs(v) for v in slopes.values()), default=0.0)
+    if value == 0.0 or (scale > 0.0 and abs(value) <= _RELATIVE_ROUNDOFF_TOL * scale):
+        return 0.0
+    return value
 
 
 def _cell_slopes(
@@ -361,31 +439,85 @@ def _cell_slopes(
 def _fieller(
     numerator: float,
     denominator: float,
-    var_numerator: float,
-    var_denominator: float,
-    covariance: float,
-    alpha: float,
+    se_numerator: float,
+    se_denominator: float,
+    correlation: float,
+    critical_value: float,
 ) -> tuple[str, tuple[float, float] | None, dict]:
-    z2 = float(stats.norm.ppf(1.0 - alpha / 2.0) ** 2)
-    a = denominator**2 - z2 * var_denominator
-    b = -2.0 * numerator * denominator + 2.0 * z2 * covariance
-    c = numerator**2 - z2 * var_numerator
-    scale = max(abs(a), abs(b), abs(c), 1.0)
-    tol = 1e-12 * scale
-    if abs(a) <= tol:
-        if abs(b) <= tol:
-            return ("unbounded", None, {}) if c <= tol else ("empty", None, {})
-        endpoint = -c / b
+    critical_squared = critical_value**2
+    numerator_scale = max(abs(numerator), se_numerator)
+    denominator_scale = max(abs(denominator), se_denominator)
+    roundoff = _RELATIVE_ROUNDOFF_TOL
+
+    if numerator_scale == 0.0 and denominator_scale == 0.0:
+        return "unbounded", None, {}
+    if numerator_scale == 0.0:
+        normalized_denominator = denominator / denominator_scale
+        normalized_var_denominator = (se_denominator / denominator_scale) ** 2
+        a_left = normalized_denominator**2
+        a_right = critical_squared * normalized_var_denominator
+        a = a_left - a_right
+        a_tol = roundoff * (abs(a_left) + abs(a_right))
+        if a <= a_tol:
+            return "unbounded", None, {}
+        return "interval", (0.0, 0.0), {}
+    if denominator_scale == 0.0:
+        normalized_numerator = numerator / numerator_scale
+        normalized_var_numerator = (se_numerator / numerator_scale) ** 2
+        c_left = normalized_numerator**2
+        c_right = critical_squared * normalized_var_numerator
+        c = c_left - c_right
+        c_tol = roundoff * (abs(c_left) + abs(c_right))
+        return ("unbounded", None, {}) if c <= c_tol else ("empty", None, {})
+
+    normalized_numerator = numerator / numerator_scale
+    normalized_denominator = denominator / denominator_scale
+    normalized_se_numerator = se_numerator / numerator_scale
+    normalized_se_denominator = se_denominator / denominator_scale
+    normalized_var_numerator = normalized_se_numerator**2
+    normalized_var_denominator = normalized_se_denominator**2
+    normalized_covariance = (
+        correlation * normalized_se_numerator * normalized_se_denominator
+    )
+    ratio_scale = numerator_scale / denominator_scale
+
+    a_left = normalized_denominator**2
+    a_right = critical_squared * normalized_var_denominator
+    a = a_left - a_right
+    a_tol = roundoff * (abs(a_left) + abs(a_right))
+    b_left = -2.0 * normalized_numerator * normalized_denominator
+    b_right = 2.0 * critical_squared * normalized_covariance
+    b = b_left + b_right
+    b_tol = roundoff * (abs(b_left) + abs(b_right))
+    c_left = normalized_numerator**2
+    c_right = critical_squared * normalized_var_numerator
+    c = c_left - c_right
+    c_tol = roundoff * (abs(c_left) + abs(c_right))
+
+    if abs(a) <= a_tol:
+        if abs(b) <= b_tol:
+            return ("unbounded", None, {}) if c <= c_tol else ("empty", None, {})
+        endpoint = float((-c / b) * ratio_scale)
         ray = ((float("-inf"), endpoint),) if b > 0 else ((endpoint, float("inf")),)
         return "unbounded", None, {"fieller_rays": ray}
     discriminant = b * b - 4.0 * a * c
-    disc_scale = max(abs(b * b), abs(4.0 * a * c), 1.0)
-    if abs(discriminant) <= 1e-12 * disc_scale:
+    disc_scale = abs(b * b) + abs(4.0 * a * c)
+    if abs(discriminant) <= roundoff * disc_scale:
         discriminant = 0.0
     if discriminant < 0.0:
         return ("empty", None, {}) if a > 0.0 else ("unbounded", None, {})
+    if discriminant == 0.0:
+        root = float((-b / (2.0 * a)) * ratio_scale)
+        if a > 0.0:
+            return "interval", (root, root), {}
+        return "unbounded", None, {}
     root = float(np.sqrt(discriminant))
-    r1, r2 = sorted(((-b - root) / (2.0 * a), (-b + root) / (2.0 * a)))
+    q = -0.5 * (b + np.copysign(root, b))
+    roots = (q / a, c / q) if q != 0.0 else (
+        (-b - root) / (2.0 * a),
+        (-b + root) / (2.0 * a),
+    )
+    r1, r2 = sorted(float(value * ratio_scale) for value in roots)
     if a > 0.0:
         return "interval", (r1, r2), {}
     rays = ((float("-inf"), r1), (r2, float("inf")))
@@ -453,6 +585,16 @@ def _estimate(
     n_clusters = None
     if prepared.clusters is not None:
         n_clusters = int(prepared.clusters.max(initial=-1) + 1)
+    critical_df = (
+        n_clusters - 1
+        if prepared.clusters is not None and n_clusters is not None and n_clusters >= 2
+        else None
+    )
+    critical_value = float(
+        stats.t.isf(alpha / 2.0, critical_df)
+        if critical_df is not None
+        else stats.norm.isf(alpha / 2.0)
+    )
     extras = {
         "cutoff": cutoff,
         "bandwidth": bandwidth,
@@ -462,9 +604,13 @@ def _estimate(
         "contrast": "right_minus_left",
         "inference": "CR1" if prepared.clusters is not None else "HC1",
         "n_clusters": n_clusters,
+        "critical_df": critical_df,
+        "critical_value": critical_value,
         "n_input": prepared.n_input,
         "n_dropped_nonfinite": prepared.n_dropped_nonfinite,
         "n_outside_bandwidth": prepared.n_outside_bandwidth,
+        "n_donut_excluded": prepared.n_donut_excluded,
+        "n_zero_weight_excluded": prepared.n_zero_weight_excluded,
         "n_covariates": prepared.n_covariates,
         "n_covariates_dropped_constant": prepared.n_covariates_dropped_constant,
     }
@@ -474,6 +620,16 @@ def _estimate(
             method,
             prepared,
             f"underdetermined cells for degree {degree}: {under}",
+            extras,
+        )
+    saturated = [
+        label for label, count in prepared.n_by_cell.items() if count == degree + 1
+    ]
+    if saturated:
+        return _nan_estimate(
+            method,
+            prepared,
+            f"insufficient residual degrees of freedom in cells: {saturated}",
             extras,
         )
     if n <= p:
@@ -487,13 +643,29 @@ def _estimate(
         return _nan_estimate(
             method, prepared, "cluster-robust inference needs at least two clusters", extras
         )
+    if prepared.clusters is not None:
+        clusters_by_cell = {
+            label: int(np.unique(prepared.clusters[prepared.cell == j]).size)
+            for j, label in enumerate(prepared.cell_labels)
+        }
+        extras["n_clusters_by_cell"] = clusters_by_cell
+        unsupported = [
+            label for label, count in clusters_by_cell.items() if count < 2
+        ]
+        if unsupported:
+            return _nan_estimate(
+                method,
+                prepared,
+                f"cluster-robust inference needs at least two clusters in every cell: {unsupported}",
+                extras,
+            )
 
     try:
         outcome_fit = _fit(prepared, prepared.y)
         outcome_slopes, outcome_slope_se = _cell_slopes(
             outcome_fit, prepared, degree, bandwidth
         )
-        reduced_form, reduced_form_se, var_reduced = _contrast(
+        reduced_form, reduced_form_se, _ = _contrast(
             outcome_fit, prepared.contrast
         )
         extras["outcome_slopes"] = outcome_slopes
@@ -506,7 +678,7 @@ def _estimate(
             first_stage_f = float("inf")
             weak = False
             covariance = 0.0
-            var_first = 0.0
+            correlation = 0.0
             treatment_fit = None
         else:
             assert prepared.treatment is not None
@@ -514,16 +686,28 @@ def _estimate(
             first_stage_slopes, first_stage_slope_se = _cell_slopes(
                 treatment_fit, prepared, degree, bandwidth
             )
-            first_stage, first_stage_se, var_first = _contrast(
+            first_stage, first_stage_se, _ = _contrast(
                 treatment_fit, prepared.contrast
             )
             first_stage = _canonical_zero(first_stage, first_stage_slopes)
             cross = _cross_cov(prepared, outcome_fit, treatment_fit)
-            covariance = float(prepared.contrast @ cross @ prepared.contrast)
-            if var_first == 0.0:
+            correlation = _contrast_correlation(
+                outcome_fit, treatment_fit, cross, prepared.contrast
+            )
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                covariance = float(
+                    np.multiply(
+                        correlation,
+                        np.multiply(reduced_form_se, first_stage_se),
+                    )
+                )
+            if first_stage_se == 0.0:
                 first_stage_f = float("inf") if first_stage != 0.0 else float("nan")
             else:
-                first_stage_f = first_stage**2 / var_first
+                with np.errstate(over="ignore"):
+                    first_stage_f = float(
+                        np.square(np.divide(first_stage, first_stage_se))
+                    )
             weak = not bool(first_stage_f >= _WEAK_F_THRESHOLD)
             extras["first_stage_slopes"] = first_stage_slopes
             extras["first_stage_slope_se"] = first_stage_slope_se
@@ -542,32 +726,45 @@ def _estimate(
     except (np.linalg.LinAlgError, ValueError) as exc:
         return _nan_estimate(method, prepared, str(exc), extras)
 
-    zcrit = float(stats.norm.ppf(1.0 - alpha / 2.0))
     fieller_kind = None
     fieller_ci = None
     if first_stage == 0.0 or not np.isfinite(first_stage):
         tau = se = float("nan")
         ci = (float("nan"), float("nan"))
+        extras["reason"] = "the first-stage slope contrast is zero or non-finite"
     else:
-        tau = reduced_form / first_stage
-        var_tau = (
-            var_reduced / first_stage**2
-            + reduced_form**2 * var_first / first_stage**4
-            - 2.0 * reduced_form * covariance / first_stage**3
-        )
-        se = float(np.sqrt(max(var_tau, 0.0)))
-        ci = (tau - zcrit * se, tau + zcrit * se)
+        with np.errstate(over="ignore", invalid="ignore"):
+            tau = float(np.divide(reduced_form, first_stage))
+        combined_se = reduced_form_se
+        if not sharp and np.isfinite(tau):
+            assert prepared.treatment is not None
+            try:
+                combined_fit = _fit(
+                    prepared, prepared.y - tau * prepared.treatment
+                )
+                _, combined_se, _ = _contrast(combined_fit, prepared.contrast)
+            except (np.linalg.LinAlgError, ValueError) as exc:
+                return _nan_estimate(method, prepared, str(exc), extras)
+        if not np.isfinite(tau):
+            tau = se = float("nan")
+            ci = (float("nan"), float("nan"))
+            extras["reason"] = "the slope ratio is non-finite in floating-point units"
+        else:
+            with np.errstate(over="ignore"):
+                se = float(np.divide(combined_se, abs(first_stage)))
+            ci = (tau - critical_value * se, tau + critical_value * se)
     if not sharp:
         fieller_kind, fieller_ci, fieller_extras = _fieller(
             reduced_form,
             first_stage,
-            var_reduced,
-            var_first,
-            covariance,
-            alpha,
+            reduced_form_se,
+            first_stage_se,
+            correlation,
+            critical_value,
         )
         extras.update(fieller_extras)
     extras["outcome_first_stage_covariance"] = covariance
+    extras["outcome_first_stage_correlation"] = correlation
     extras["smoothing_bias_caveat"] = (
         "conventional local-polynomial interval; inspect bandwidth and polynomial sensitivity"
     )

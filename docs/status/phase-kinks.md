@@ -4,11 +4,12 @@
 
 - Known-cutoff sharp/fuzzy RKD and sharp/fuzzy DiK local-polynomial estimators.
 - Explicit right-minus-left sign convention and post-minus-pre DiK contrast.
-- HC1 and unit-clustered CR1 covariance, fuzzy cross-equation covariance, first-stage F,
-  weak-design flag, delta-method interval, and honest Fieller set shapes.
+- HC1 and unit-clustered CR1 covariance with `t(G-1)` critical values, stable fuzzy
+  delta-method variance, first-stage F, weak-design flag, and unit-equivariant Fieller sets.
 - Seeded RKD/DiK DGPs with analytic bias oracles, including the stable nuisance kink that
   biases a cross-sectional RKD but cancels in DiK.
-- `natex kink` with strict sharp/fuzzy arguments and NaN-clean `kink.json` output.
+- `natex kink` with strict sharp/fuzzy arguments, NaN-clean `kink.json` output, clean numeric
+  validation, and nonzero exit status for undefined core estimates.
 - Public Python exports and a method card tied to IZA DP 18313.
 
 ## Deliberate boundaries
@@ -39,5 +40,5 @@ uv run ruff check src tests
 uv run pytest -q
 ```
 
-Collection after this phase: 955 non-backtest tests plus 32 opt-in real-data backtests.
-The targeted command above runs 43 kink tests.
+Collection after this phase: 1046 non-backtest tests plus 32 opt-in real-data backtests.
+The targeted command above runs 134 kink tests.

@@ -7,6 +7,37 @@ from natex.data.synthetic_kink import make_dik_synthetic, make_rkd_synthetic
 from natex.kink import difference_in_kinks, regression_kink
 
 
+_RKD_FINITE_SCALARS = (
+    "tau",
+    "cutoff",
+    "policy_intercept",
+    "policy_left_slope",
+    "policy_kink",
+    "bias_kink",
+    "outcome_left_slope",
+    "level_jump",
+    "treatment_noise",
+    "outcome_noise",
+)
+
+_DIK_FINITE_SCALARS = (
+    "tau",
+    "cutoff",
+    "policy_intercept",
+    "policy_left_slope_pre",
+    "policy_left_slope_post",
+    "policy_kink_pre",
+    "policy_kink_post",
+    "bias_kink_pre",
+    "bias_kink_post",
+    "outcome_left_slope_pre",
+    "outcome_left_slope_post",
+    "level_jump",
+    "treatment_noise",
+    "outcome_noise",
+)
+
+
 def test_rkd_synthetic_is_deterministic_and_wired_as_a_dataset():
     a, truth_a = make_rkd_synthetic(n=200, rng=np.random.default_rng(7))
     b, truth_b = make_rkd_synthetic(n=200, rng=np.random.default_rng(7))
@@ -125,6 +156,52 @@ def test_fuzzy_data_adds_policy_noise_but_preserves_schedule_kink():
 def test_kink_synthetic_requires_an_explicit_rng(maker):
     with pytest.raises(ValueError, match="Generator"):
         maker(n=100)
+
+
+@pytest.mark.parametrize("maker", [make_rkd_synthetic, make_dik_synthetic])
+def test_kink_synthetic_rejects_the_wrong_rng_type(maker):
+    with pytest.raises(TypeError, match="rng must be a numpy Generator"):
+        maker(n=100, rng="seed")
+
+
+@pytest.mark.parametrize("name", _RKD_FINITE_SCALARS)
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf], ids=["nan", "inf", "neg_inf"])
+def test_rkd_synthetic_requires_every_structural_scalar_to_be_finite(name, bad):
+    with pytest.raises(ValueError, match=name):
+        make_rkd_synthetic(
+            n=100,
+            rng=np.random.default_rng(0),
+            **{name: bad},
+        )
+
+
+@pytest.mark.parametrize("name", _DIK_FINITE_SCALARS)
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf], ids=["nan", "inf", "neg_inf"])
+def test_dik_synthetic_requires_every_structural_scalar_to_be_finite(name, bad):
+    with pytest.raises(ValueError, match=name):
+        make_dik_synthetic(
+            n=100,
+            rng=np.random.default_rng(0),
+            **{name: bad},
+        )
+
+
+@pytest.mark.parametrize(
+    ("policy_kink_pre", "policy_kink_post", "post_rkd_defined"),
+    [(0.0, 1.0, True), (1.0, 0.0, False)],
+)
+def test_dik_synthetic_allows_a_zero_kink_in_either_period(
+    policy_kink_pre, policy_kink_post, post_rkd_defined
+):
+    _, truth = make_dik_synthetic(
+        n=100,
+        policy_kink_pre=policy_kink_pre,
+        policy_kink_post=policy_kink_post,
+        rng=np.random.default_rng(0),
+    )
+
+    assert truth.policy_kink_change == policy_kink_post - policy_kink_pre
+    assert bool(np.isfinite(truth.expected_rkd_post)) is post_rkd_defined
 
 
 @pytest.mark.parametrize(

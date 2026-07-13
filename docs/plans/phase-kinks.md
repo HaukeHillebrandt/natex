@@ -56,4 +56,3 @@ same ratio without the post-minus-pre contrast.
    phase status record. Keep the known-cutoff boundary and fuzzy-DiK caveat prominent.
 6. Run targeted tests after each green cycle, then ruff and the full non-backtest suite; review
    the final diff without folding unrelated review findings into the feature.
-
