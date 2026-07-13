@@ -11,6 +11,12 @@ Exclusion is untestable. The Hansen J statistic tests only the
 OVERIDENTIFYING restrictions given at least one valid instrument; it can
 never certify exclusion itself. When the model is just-identified (k == 1)
 ``j_stat``/``j_p`` are None — never a fabricated value — and ``j_df`` is 0.
+Identification is counted by the EFFECTIVE rank of the instruments after
+partialling on [1, controls] (issue #11): duplicated or control-collinear
+instruments are collapsed to an orthonormal basis (tau unchanged) with
+``extras["rank_deficient"]``/``extras["k_effective"]`` set, so a rank-1
+instrument block can never buy a structurally guaranteed J pass, an
+F deflated by k/k_eff, or a misparametrized AR set.
 
 Weak-IV-robust inference (audit section 3 adopted): ``ar_confidence_set``
 inverts the Anderson–Rubin test in closed form. With controls-plus-intercept
@@ -45,9 +51,9 @@ class IVEstimate:
     first_stage_F: float  # HC1 Wald F of the instrument block in the first stage
     partial_r2: float  # first-stage partial R^2 of instruments after controls
     weak_instrument: bool  # first_stage_F < 10.0 (NaN F -> True)
-    j_stat: float | None  # Hansen J; None when just-identified (k == 1)
+    j_stat: float | None  # Hansen J; None when just-identified (effective k == 1)
     j_p: float | None
-    j_df: int  # k - 1 (0 when k == 1)
+    j_df: int  # k_eff - 1 (0 when just-identified; k_eff < k flagged in extras)
     n_used: int  # rows with finite (y, T, instruments, controls)
     ar_ci: tuple[float, float] | None = None  # AR/Fieller interval when kind == "interval"
     ar_kind: str | None = None  # "interval" | "empty" | "disjoint" | "unbounded"
@@ -97,6 +103,31 @@ def _residualize(a: np.ndarray, basis: np.ndarray) -> np.ndarray:
     """Residual of each column of ``a`` after least-squares projection on ``basis``."""
     coef, *_ = np.linalg.lstsq(basis, a, rcond=None)
     return a - basis @ coef
+
+
+def _effective_instruments(z_mat: np.ndarray, z_res: np.ndarray) -> tuple[int, np.ndarray]:
+    """Effective rank of the control-residualized instruments plus an
+    orthonormal basis of their column space (issue #11).
+
+    Duplicated instruments — or instruments collinear with [1, controls] —
+    collapse the moment space: keeping the nominal k would deflate the
+    first-stage Wald F by k/k_eff, fabricate a structurally guaranteed
+    Hansen J pass (df >= 1 on a just-identified model), and misparametrize
+    the AR set's f_crit and dof. Rank is measured AFTER partialling so
+    control-collinear instruments also collapse, with the matrix_rank-style
+    tolerance anchored to the PRE-partialling spectral norm of ``z_mat``
+    (residualization is a contraction, so a residual that is pure float
+    noise relative to the original columns counts as rank 0). The basis
+    spans exactly col(z_res), leaving the 2SLS projection — and hence tau —
+    unchanged.
+    """
+    if z_res.shape[1] == 0:
+        return 0, z_res
+    u, s, _ = np.linalg.svd(z_res, full_matrices=False)
+    scale = max(float(np.linalg.norm(z_mat, ord=2)), float(s.max(initial=0.0)))
+    tol = scale * max(z_res.shape) * np.finfo(float).eps
+    r = int(np.count_nonzero(s > tol))
+    return r, u[:, :r]
 
 
 def _first_stage_diagnostics(
@@ -199,11 +230,14 @@ def ar_confidence_set(
     """Closed-form Anderson–Rubin/Fieller confidence set for the effect of T.
 
     Intercept and ``controls`` are partialled out of (y, T, instruments);
-    the level-alpha set inverts AR(tau) <= F_crit(k, n-q-k). The four possible
-    set kinds are reported honestly — a weak first stage yields "unbounded"
-    or "disjoint" (never a fabricated finite interval); "empty" (model
-    rejected at every tau) is reachable only when k >= 2. k = 1 is exactly
-    the Fieller construction.
+    the level-alpha set inverts AR(tau) <= F_crit(k, n-q-k) with k the
+    EFFECTIVE rank of the partialled instruments (issue #11): duplicated or
+    control-collinear instruments collapse to their orthonormal basis, and
+    instruments with no variation left after partialling raise. The four
+    possible set kinds are reported honestly — a weak first stage yields
+    "unbounded" or "disjoint" (never a fabricated finite interval); "empty"
+    (model rejected at every tau) is reachable only when k >= 2. k = 1 is
+    exactly the Fieller construction.
     """
     y = np.asarray(y, dtype=float).ravel()
     t_all = np.asarray(T, dtype=float).ravel()
@@ -220,14 +254,19 @@ def ar_confidence_set(
     )
     n = int(finite.sum())
     q = 1 + c_all.shape[1]
-    dof = n - q - k
-    if dof < 1:
-        raise ValueError("underdetermined: need n - q - k >= 1 finite rows")
+    if n <= q:
+        raise ValueError("underdetermined: need n - q - k_eff >= 1 finite rows")
     cfull = np.c_[np.ones(n), c_all[finite]]
     y_t = _residualize(y[finite], cfull)
     t_t = _residualize(t_all[finite], cfull)
     z_t = _residualize(z_all[finite], cfull)
-    return _ar_set_partialled(y_t, t_t, z_t, dof, alpha)
+    k_eff, z_basis = _effective_instruments(z_all[finite], z_t)
+    if k_eff == 0:
+        raise ValueError("instruments collinear with controls (no variation after partialling)")
+    dof = n - q - k_eff
+    if dof < 1:
+        raise ValueError("underdetermined: need n - q - k_eff >= 1 finite rows")
+    return _ar_set_partialled(y_t, t_t, z_t if k_eff == k else z_basis, dof, alpha)
 
 
 def iv_2sls(
@@ -269,6 +308,21 @@ def iv_2sls(
     ym, tm = y[finite], t_all[finite]
     cfull = np.c_[np.ones(n_used), c_all[finite]]
     z_mat = z_all[finite]
+    z_res = _residualize(z_mat, cfull)
+    k_eff, z_basis = _effective_instruments(z_mat, z_res)
+    if k_eff == 0:
+        extras["rank_deficient"] = True
+        extras["k_effective"] = 0
+        extras["reason"] = "instruments collinear with controls"
+        return _nan_estimate(k_eff, n_used, extras)
+    if k_eff < k:
+        # Honest flagged degradation: swap in an orthonormal basis of the
+        # partialled instrument space (identical 2SLS projection, so tau is
+        # unchanged) and use k_eff wherever the nominal k appeared.
+        extras["rank_deficient"] = True
+        extras["k_effective"] = k_eff
+        z_mat = z_basis
+        z_res = z_basis
     zfull = np.c_[cfull, z_mat]
     x_mat = np.c_[cfull, tm]
     if np.linalg.matrix_rank(zfull) < zfull.shape[1] or np.linalg.matrix_rank(x_mat) < p:
@@ -287,11 +341,10 @@ def iv_2sls(
     se = float(np.sqrt(max(cov[-1, -1], 0.0)))
     zcrit = float(stats.norm.ppf(1.0 - alpha / 2.0))
     f_stat, partial_r2 = _first_stage_diagnostics(tm, cfull, z_mat)
-    z_res = _residualize(z_mat, cfull)
-    j_stat, j_p, j_df = _hansen_j(e, z_res, k)
+    j_stat, j_p, j_df = _hansen_j(e, z_res, k_eff)
     ar_ci: tuple[float, float] | None = None
     ar_kind: str | None = None
-    dof = n_used - cfull.shape[1] - k
+    dof = n_used - cfull.shape[1] - k_eff
     if dof >= 1:
         ar = _ar_set_partialled(
             _residualize(ym, cfull), _residualize(tm, cfull), z_res, dof, alpha
