@@ -13,6 +13,7 @@ from natex.did.suddds import DiDDiscovery, SuDDDSResult, suddds_scan
 from natex.intake.analyst import IntakeReport, study
 from natex.intake.plans import DesignCandidate, SearchPlan
 from natex.intake.prep import PrepPlan
+from natex.kink import KinkEstimate, difference_in_kinks, regression_kink
 from natex.rdd.lord3 import LoRD3Result, lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
@@ -28,6 +29,7 @@ __all__ = [
     "DiDDiscovery",
     "DiscoverReport",
     "IntakeReport",
+    "KinkEstimate",
     "LoRD3Result",
     "PrepPlan",
     "ResultsBundle",
@@ -37,11 +39,13 @@ __all__ = [
     "coarse_to_fine_scan",
     "dee_debias",
     "did_effect",
+    "difference_in_kinks",
     "discover",
     "load_dataset",
     "lord3_scan",
     "make_dee_synthetic",
     "make_did_synthetic",
+    "regression_kink",
     "study",
     "suddds_scan",
     "voronoi_knn_repair",
