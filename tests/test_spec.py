@@ -103,6 +103,49 @@ def test_issue_26_nan_outcome_values_still_tolerated():
     assert ds.n == 4
 
 
+def _scan_df():
+    return pd.DataFrame(
+        {
+            "x": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "w": [5.0, 4.0, 3.0, 2.0, 1.0],
+            "g": ["a", "a", "b", "b", "a"],
+            "t": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "T": [0.0, 0.0, 1.0, 1.0, 1.0],  # float: int64 refuses an inf assignment
+            "y": [0.1, 0.2, 0.3, 0.4, 0.5],
+        }
+    )
+
+
+def _scan_spec():
+    return DatasetSpec(
+        treatment="T", outcome="y", forcing=["x"], covariates=["x", "w", "g"], time="t"
+    )
+
+
+@pytest.mark.parametrize("col", ["T", "x", "w", "t"], ids=["treatment", "forcing", "cov", "time"])
+@pytest.mark.parametrize("val", [np.inf, -np.inf], ids=["+inf", "-inf"])
+def test_issue_20_nonfinite_scan_values_drop_the_row(col, val):
+    """Issue #20: dropna misses +/-inf — one inf row poisons Z_std into all-NaN
+    (mean/std over inf), crashes build_geometry far from the cause, and inf in
+    the treatment silently flips treatment_is_binary."""
+    df = _scan_df()
+    df.loc[2, col] = val
+    ds = Dataset(df, _scan_spec())
+    assert ds.n == 4  # the poisoned row is dropped, like a NaN would be
+    assert np.isfinite(ds.Z_std).all()
+    assert ds.treatment_is_binary is True
+
+
+@pytest.mark.parametrize("val", [np.inf, -np.inf, np.nan], ids=["+inf", "-inf", "nan"])
+def test_issue_20_nonfinite_outcome_rows_preserved(val):
+    """Guard: the outcome is not a scan column — non-finite y values must
+    never listwise-delete rows (load-bearing LSO policy)."""
+    df = _scan_df()
+    df.loc[2, "y"] = val
+    ds = Dataset(df, _scan_spec())
+    assert ds.n == 5
+
+
 def test_standardize_shape_errors():
     spec = DatasetSpec(
         treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score"]

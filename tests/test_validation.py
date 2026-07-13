@@ -52,24 +52,27 @@ def test_placebo_holm_exact_values_with_nan():
 
 def test_placebo_holm_nan_aware_regression():
     """F-A1: a covariate with a non-finite value among the neighborhood
-    members yields a NaN placebo p (``Dataset`` drops NaN scan rows but not
-    inf; the HC1 regression then returns se = NaN, so t and p are NaN); that
-    NaN must stay NaN under Holm and must not inflate the multiplier for the
-    finite p-values."""
+    members yields a NaN placebo p (the HC1 regression returns se = NaN, so t
+    and p are NaN); that NaN must stay NaN under Holm and must not inflate the
+    multiplier for the finite p-values. Dataset now drops non-finite scan rows
+    at construction (issue #20), so the inf is planted post-construction —
+    standing in for any degenerate regression that yields a NaN p."""
     rng = np.random.default_rng(2)
     ds, _ = make_synthetic(n=1500, zeta=4.0, kind="real", px=3, pz=2, rng=rng)
     res = lord3_scan(ds, k=40, rng=np.random.default_rng(3))
     d = res.discoveries[0]
     df = ds.df.copy()
     df["withinf"] = rng.normal(size=len(df))
-    df.loc[int(d.members[0]), "withinf"] = np.inf  # one non-finite member value
     spec = DatasetSpec(
         treatment=ds.spec.treatment,
         outcome=ds.spec.outcome,
         forcing=list(ds.spec.forcing),
         covariates=[*ds.spec.covariates, "withinf"],
     )
-    rep = placebo_tests(Dataset(df, spec), d)
+    ds2 = Dataset(df, spec)
+    assert ds2.n == ds.n  # no drops: member indices from the scan stay valid
+    ds2.df.loc[int(d.members[0]), "withinf"] = np.inf  # one non-finite member value
+    rep = placebo_tests(ds2, d)
     assert np.isnan(rep.p_values["withinf"])
     assert np.isnan(rep.p_holm["withinf"])  # legacy code fabricated a finite value
     finite = {k: v for k, v in rep.p_values.items() if not np.isnan(v)}
@@ -84,16 +87,19 @@ def test_placebo_holm_nan_aware_regression():
 
 def test_placebo_all_nan_fails_loud():
     """F-A1 corner: when EVERY testable covariate yields a NaN p, the battery
-    fails loudly (passed = False) and reports NaN, never 0.0."""
+    fails loudly (passed = False) and reports NaN, never 0.0. Dataset now
+    drops non-finite scan rows at construction (issue #20), so the inf is
+    planted post-construction to force the NaN-p path."""
     rng = np.random.default_rng(7)
     n = 80
     z = rng.normal(size=n)
     center = int(np.argsort(z)[n // 2])
-    c = rng.normal(size=n)
-    c[0] = np.inf  # the ONLY non-forcing covariate has a non-finite member value
-    df = pd.DataFrame({"z": z, "T": rng.binomial(1, 0.5, size=n).astype(float), "c": c})
+    df = pd.DataFrame(
+        {"z": z, "T": rng.binomial(1, 0.5, size=n).astype(float), "c": rng.normal(size=n)}
+    )
     spec = DatasetSpec(treatment="T", outcome=None, forcing=["z"], covariates=["z", "c"])
     ds = Dataset(df, spec)
+    ds.df.loc[0, "c"] = np.inf  # the ONLY non-forcing covariate has a non-finite member value
     normal = np.array([1.0])
     group1 = ((ds.Z_std - ds.Z_std[center]) @ normal) >= 0
     d = Discovery(
