@@ -96,8 +96,10 @@ def test_issue_32_wald_se_is_zero_when_outcome_is_exactly_proportional():
     ds, d = _wald_fixture(2.0 * T, T, g)
     est = wald_estimate(ds, d)
     assert est.tau == pytest.approx(2.0, abs=1e-12)
-    assert est.se <= 1e-8  # exact proportionality: only roundoff dust remains
-    assert est.ci[1] - est.ci[0] <= 1e-7
+    # exact proportionality: only roundoff dust remains (tolerance is relative
+    # to tau; absolute 1e-8 flaked on CI's py3.12 BLAS at 1.24e-8)
+    assert est.se <= 1e-6 * abs(est.tau)
+    assert est.ci[1] - est.ci[0] <= 1e-5 * abs(est.tau)
 
 
 def test_issue_32_wald_se_matches_monte_carlo_sd_with_correlated_numerator():
