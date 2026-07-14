@@ -55,6 +55,13 @@ class Dataset:
         # exactly the loss attributable to it. Lossless columns are absent —
         # ints only, no fabricated zeros (NaN-never-0.0 lineage).
         self.n_rows_input = len(df)
+        # The raw pre-deletion frame (issue #30): per-candidate rebuilds in
+        # ``natex.discover`` must re-run listwise deletion from the ORIGINAL
+        # rows once a foreign outcome leaves the covariates — rebuilding from
+        # the already-truncated ``self.df`` makes those rows unrecoverable and
+        # silently defeats this very bookkeeping. A reference, not a copy:
+        # ``dropna`` below already returns a new frame.
+        self.df_input = df
         dropped: dict[str, int] = {}
         for c in scan_cols:
             if pd.api.types.is_numeric_dtype(df[c]):

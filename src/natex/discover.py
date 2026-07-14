@@ -244,6 +244,12 @@ def _dataset_for(data: Dataset, c: DesignCandidate, known_outcomes: set[str]) ->
     column the candidate itself uses as forcing/time/unit keeps that role.
     The bound dataset is repaired the same way when its ``spec.covariates``
     smuggle a foreign outcome in; otherwise it passes through untouched.
+
+    Both rebuilds start from ``data.df_input`` (issue #30): the bound Dataset
+    already listwise-deleted on ITS covariates at construction, so rebuilding
+    from ``data.df`` would keep rows deleted for a foreign outcome the new
+    spec no longer declares — truncating the scan sample and defeating the
+    issue-#1 row bookkeeping (``n_rows_input`` counted the truncated frame).
     """
     spec = data.spec
     same_roles = c.treatment == spec.treatment and c.outcome == spec.outcome
@@ -258,16 +264,16 @@ def _dataset_for(data: Dataset, c: DesignCandidate, known_outcomes: set[str]) ->
         if not leaked:
             return data
         kept = [col for col in spec.covariates if col not in leaked]
-        return Dataset(data.df, spec.model_copy(update={"covariates": kept}))
+        return Dataset(data.df_input, spec.model_copy(update={"covariates": kept}))
     reserved = {c.treatment} | ({c.outcome} if c.outcome else set()) | foreign_outcomes
-    covariates = [col for col in data.df.columns if col not in reserved]
+    covariates = [col for col in data.df_input.columns if col not in reserved]
     if c.design == "rdd":
         new_spec = DatasetSpec(treatment=c.treatment, outcome=c.outcome,
                                forcing=list(c.forcing), covariates=covariates)
     else:
         new_spec = DatasetSpec(treatment=c.treatment, outcome=c.outcome, forcing=[],
                                covariates=covariates, time=c.time, unit=c.unit)
-    return Dataset(data.df, new_spec)
+    return Dataset(data.df_input, new_spec)
 
 
 def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,

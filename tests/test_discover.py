@@ -365,6 +365,45 @@ def test_issue_7_bound_dataset_covariate_outcome_leak_repaired(monkeypatch):
     assert captured[0] is clean
 
 
+def test_issue_30_foreign_outcome_missingness_never_truncates_scan_rows():
+    """Issue #30: a foreign outcome in the bound spec's covariates listwise-
+    deleted rows at Dataset CONSTRUCTION, before the issue-#7 leak guard could
+    strip it; both rebuild paths inherited the truncated ``data.df``, so the
+    primary outcome's scan sample, LLR, and row bookkeeping silently changed."""
+    df = _rdd_dataset().df.copy()
+    df["y2"] = df["y"] + 0.1
+    df.loc[df.index % 2 == 0, "y2"] = np.nan  # poison half the rows
+
+    plan = SearchPlan(candidates=[
+        # bound + leak path: candidate equals the bound spec's roles
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0", "x1"], priority=0),
+        # unbound rebuild path: different forcing forces a full rebuild
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x0"], priority=1),
+        # declares y2 as an outcome so it is foreign to the two above
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0", "x1"], priority=2),
+    ])
+
+    def run(covariates):
+        ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                     covariates=covariates))
+        return discover(ds, search_plan=plan, rng=np.random.default_rng(123),
+                        budget=SMALL).configs
+
+    poisoned = run(["x0", "x1", "y2"])
+    clean = run(["x0", "x1"])
+    for rec_poisoned, rec_clean in zip(poisoned[:2], clean[:2]):
+        assert rec_poisoned.status == rec_clean.status == "scanned"
+        # y2's missingness must not shrink the scan sample or defeat the
+        # issue-#1 row bookkeeping: input rows are the RAW frame's rows.
+        assert rec_poisoned.n_rows_input == rec_clean.n_rows_input == len(df)
+        assert rec_poisoned.n_rows_used == rec_clean.n_rows_used == len(df)
+        assert rec_poisoned.row_loss == rec_clean.row_loss == {}
+        assert rec_poisoned.llr == rec_clean.llr
+
+
 # ---------------------------------------------------------------------------
 # did path
 # ---------------------------------------------------------------------------
