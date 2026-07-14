@@ -476,9 +476,9 @@ Legacy scan outputs are therefore **not** treated as ground truth in parity test
 
 ## Project status
 
-All eight original build phases are complete; v0.1.0 is the first tagged release. The
-known-cutoff kink-design extension is implemented on top. Run of record:
-`uv run pytest -q` collects 1046 non-backtest tests (optional-extra tests skip gracefully
+All eight original build phases are complete; the latest tagged release is v0.2.0
+(regression kink designs + 33 adjudicated fixes on top of v0.1.0). Run of record:
+`uv run pytest -q` collects 1070 non-backtest tests (optional-extra tests skip gracefully
 when an extra is missing); `uv run pytest -m backtest` collects 32 real-data backtests
 over the six registered datasets; `uv run ruff check src tests` is clean.
 

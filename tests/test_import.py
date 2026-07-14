@@ -2,7 +2,9 @@ import natex
 
 
 def test_version():
-    assert natex.__version__.startswith("0.1")
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:\.\w+)?", natex.__version__)
 
 
 def test_kink_estimators_are_public():

@@ -1,6 +1,6 @@
 [project]
 name = "natex-discovery"
-version = "0.1.0"
+version = "0.2.0"
 description = "Discover and estimate natural experiments, including RDD, DiD, RKD, DiK, IV, and synthetic control"
 readme = "README.md"
 license = { text = "MIT" }
