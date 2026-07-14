@@ -215,6 +215,50 @@ def test_plan_candidates_scanned_first_and_exhaustive_deduped():
     assert rep.best().candidate.treatment == "T"  # planted jump beats the decoy
 
 
+def test_issue_31_plan_candidate_with_other_outcome_never_absorbs_bound_estimation():
+    """Issue #31: DesignCandidate.key() is outcome-blind (the scan never reads
+    the outcome), but execution IS outcome-specific — a plan candidate naming
+    the same treatment/forcing design for y2 (or no outcome at all) must not
+    swallow the bound dataset's y execution record (spec 6b: a plan orders the
+    search, it never truncates it)."""
+    df = _rdd_dataset().df.copy()
+    df["y2"] = df["y"] + 1.0
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x0", "x1"],
+                                 covariates=["x0", "x1"]))
+    plan = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y2",
+                        forcing=["x0", "x1"], priority=0),
+    ])
+    rep = discover(ds, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
+    assert [(r.source, r.candidate.outcome) for r in rep.configs] == [
+        ("plan", "y2"), ("exhaustive", "y"),
+    ]
+    assert rep.searched["exhaustive_candidates"] == 1
+    assert all(r.status == "scanned" for r in rep.configs)
+    # one blind scan per outcome-specific record, and both outcomes estimated
+    effects = [r.summary["effects"] for r in rep.configs]
+    assert all(e for e in effects)
+
+    # a plan candidate with NO outcome must not suppress y estimation either
+    blank = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", forcing=["x0", "x1"], priority=0),
+    ])
+    rep2 = discover(ds, search_plan=blank, rng=np.random.default_rng(2), budget=SMALL)
+    assert [(r.source, r.candidate.outcome) for r in rep2.configs] == [
+        ("plan", None), ("exhaustive", "y"),
+    ]
+    assert all(r.status == "scanned" for r in rep2.configs)
+
+    # identical outcome still absorbs: no duplicate execution record
+    same = SearchPlan(candidates=[
+        DesignCandidate(design="rdd", treatment="T", outcome="y",
+                        forcing=["x1", "x0"], priority=0),
+    ])
+    rep3 = discover(ds, search_plan=same, rng=np.random.default_rng(2), budget=SMALL)
+    assert [r.source for r in rep3.configs] == ["plan"]
+    assert rep3.searched["exhaustive_candidates"] == 0
+
+
 def test_max_configs_skips_are_still_listed():
     rep = discover(_rdd_dataset_with_decoy(), search_plan=_two_candidate_plan(),
                    rng=np.random.default_rng(2), budget={**SMALL, "max_configs": 1})
@@ -321,12 +365,16 @@ def test_issue_7_rebuilt_dataset_reserves_every_candidate_outcome(monkeypatch):
 
     monkeypatch.setattr(discover_mod, "lord3_scan", spy)
     rep = discover(data, search_plan=plan, rng=np.random.default_rng(2), budget=SMALL)
-    assert [r.status for r in rep.configs] == ["scanned", "scanned"]
-    ds0, ds1 = captured
+    # issue #31: the y2 plan candidate no longer absorbs the bound (y, x0, x1)
+    # execution record, so the exhaustive config is scanned as well.
+    assert [r.status for r in rep.configs] == ["scanned"] * 3
+    ds0, ds1, ds2 = captured
     assert "y" not in ds0.spec.covariates  # the other candidate's outcome
     assert "y2" not in ds0.spec.covariates  # its own outcome, as before
     assert "y2" not in ds1.spec.covariates
     assert ds1.n == data.n  # y2's NaNs no longer listwise-delete scan rows
+    assert "y2" not in ds2.spec.covariates
+    assert ds2.n == data.n
 
 
 def test_issue_7_bound_dataset_covariate_outcome_leak_repaired(monkeypatch):

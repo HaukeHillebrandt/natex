@@ -465,6 +465,12 @@ def discover(
         guidance = LoggedBackend(guidance, log)  # one JSONL line per hook call
 
     # -- config list (spec 6b: plan orders, never truncates) ------------------
+    # Dedup identity is (scan key, outcome) — issue #31: DesignCandidate.key()
+    # stays outcome-blind because the SCAN never reads the outcome, but an
+    # execution record is outcome-specific (effects are estimated against
+    # ``c.outcome``). Keying on the blind key alone let a plan candidate for
+    # y2 (or with no outcome at all) absorb the bound dataset's y record, so
+    # y was never estimated — a plan must order the search, never truncate it.
     records: list[ConfigRecord] = []
     seen: set[tuple] = set()
     n_plan = 0
@@ -473,7 +479,7 @@ def discover(
             if design != "auto" and c.design != design:
                 continue
             n_plan += 1
-            seen.add(c.key())
+            seen.add((c.key(), c.outcome))
             err = _candidate_error(c, data.df)
             records.append(ConfigRecord(
                 candidate=c, source="plan",
@@ -481,10 +487,10 @@ def discover(
             ))
     n_exhaustive = 0
     for c in enumerate_configs(data, design):
-        if c.key() in seen:
-            continue  # absorbed by an identical plan candidate
+        if (c.key(), c.outcome) in seen:
+            continue  # absorbed by an identical plan candidate (same outcome)
         n_exhaustive += 1
-        seen.add(c.key())
+        seen.add((c.key(), c.outcome))
         err = _candidate_error(c, data.df)
         records.append(ConfigRecord(
             candidate=c, source="exhaustive",
