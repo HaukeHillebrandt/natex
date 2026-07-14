@@ -199,5 +199,14 @@ def wald_estimate(dataset: Dataset, d: Discovery) -> EffectEstimate:
     dy = ym[g].mean() - ym[~g].mean()
     tau = dy / dt
     vy = ym[g].var(ddof=1) / n1 + ym[~g].var(ddof=1) / n0
-    se = float(np.sqrt(max(vy / dt**2 + (dy**2 / dt**4) * vt, 0.0)))
+    # Full delta method for the ratio dy/dt (issue #32): y and T share the
+    # same observations, so Cov(dy, dt) = Cov(y,T|side1)/n1 + Cov(y,T|side0)/n0
+    # (cross-side covariances vanish). Omitting the -2*(dy/dt^3)*cov term made
+    # the SE wrong in both directions — anti-conservative whenever
+    # dy*Cov(dy, dt) < 0 — and reported SE 0.268 for the exactly proportional
+    # y = 2T case whose ratio has zero sampling variance. The existing clamp
+    # keeps that case's roundoff (~-1e-17) from producing NaN; a single-member
+    # side still yields NaN via var/cov with ddof=1 (NaN-never-0.0).
+    cyt = np.cov(ym[g], Tm[g], ddof=1)[0, 1] / n1 + np.cov(ym[~g], Tm[~g], ddof=1)[0, 1] / n0
+    se = float(np.sqrt(max(vy / dt**2 + (dy**2 / dt**4) * vt - 2.0 * (dy / dt**3) * cyt, 0.0)))
     return _package(tau, se, "wald", dt, fs_t, n_used)
