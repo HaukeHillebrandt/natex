@@ -10,6 +10,11 @@
   biases a cross-sectional RKD but cancels in DiK.
 - `natex kink` with strict sharp/fuzzy arguments, NaN-clean `kink.json` output, clean numeric
   validation, and nonzero exit status for undefined core estimates.
+- The paper's diagnostic battery as callable functions (`natex.kink`): bandwidth/donut
+  `sensitivity_grid`, `placebo_kinks` with empirical size, per-period `event_study_kinks`,
+  `covariate_kinks` placebo outcomes, and the binned pre/post `density_kink_difference`
+  test (degree-2 default; the paper's degree-13 Table A3 spec over-rejects in calibration
+  and is opt-in).
 - Public Python exports and a method card tied to IZA DP 18313.
 
 ## Deliberate boundaries
@@ -19,8 +24,8 @@
 - The paper has no automatic DiK bandwidth selector. The CLI requires a bandwidth and the
   method card requires sensitivity analysis.
 - The conventional interval is not robust-bias-corrected.
-- A coefficient event study, joint pretrend test, automated bandwidth/donut/placebo grids,
-  density-change test, and report/paper bundle integration remain follow-ups.
+- A joint pretrend test, CLI flags for the diagnostic battery, and report/paper bundle
+  integration remain follow-ups.
 - Fuzzy DiK's positive-weight interpretation is documented with an additional stable latent
   composition (or valid reweighting) assumption because the paper's proof otherwise changes
   measures between periods.
@@ -30,7 +35,7 @@
 Targeted kink tests:
 
 ```bash
-uv run pytest -q tests/test_kink.py tests/test_synthetic_kink.py tests/test_cli_kink.py tests/test_kink_docs.py
+uv run pytest -q tests/test_kink.py tests/test_kink_diagnostics.py tests/test_synthetic_kink.py tests/test_cli_kink.py tests/test_kink_docs.py
 ```
 
 Final repository gates:

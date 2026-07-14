@@ -165,8 +165,21 @@ pre/post kinks, effective cell counts, design rank, row loss, covariance choice,
 strength, and ratio confidence sets. These are computation diagnostics, not assumption
 certification.
 
-Before a causal claim, also inspect binned plots, multiple bandwidths and donuts, shifted
-placebo cutoffs, density/sorting behavior, predetermined covariates as placebo outcomes,
-and period-specific pretrend kink contrasts. The current API leaves those analysis grids
-explicit rather than silently choosing a specification or mechanically declaring a design
-valid.
+The paper's validation battery (Figures A2-A4, Table A3) is callable from `natex.kink`:
+
+```python
+from natex.kink import (
+    covariate_kinks,       # predetermined covariates as placebo outcomes (Fig. A4 B-D)
+    density_kink_difference,  # binned pre/post density-difference kink test (Fig. A4 A)
+    event_study_kinks,     # per-period kinks relative to a base period (Fig. A2 D)
+    placebo_kinks,         # shifted placebo cutoffs with empirical size (Fig. A3 C)
+    sensitivity_grid,      # bandwidth-by-donut re-estimation grid (Fig. A3 A-B)
+)
+```
+
+All five reuse the estimator's right-minus-left reduced-form contrast and NaN-never-0.0
+row handling. The density test defaults to a degree-2 bin regression because the paper's
+degree-13 specification over-rejects under the null in calibration; the Table A3 spec is
+available via `degree=13`. These grids are falsification evidence — passing them does not
+certify the identifying assumptions, and a joint pretrend test, CLI flags, and report/paper
+bundle integration remain follow-ups.

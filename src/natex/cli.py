@@ -616,7 +616,7 @@ def kink(
         raise typer.Exit(code=2) from None
 
     caveats = [
-        "The cutoff and bandwidth are user-specified; report bandwidth, donut, and placebo-cutoff sensitivity.",
+        "The cutoff and bandwidth are user-specified; report bandwidth, donut, and placebo-cutoff sensitivity (natex.kink: sensitivity_grid, placebo_kinks, covariate_kinks, event_study_kinks, density_kink_difference).",
         "The reported interval is conventional local-polynomial inference and may retain smoothing bias.",
     ]
     if design == "rkd":
