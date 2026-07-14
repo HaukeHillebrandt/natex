@@ -52,9 +52,14 @@ class IntakeReport:
     search_plan: SearchPlan
     guidance_log_path: str | None
     context: str | None
-    source: str  # csv path, or "<dataframe>"
+    source: str  # csv path AS INVOKED (display), or "<dataframe>"
     guidance_errors: list[str]  # fallbacks, dropped candidates, snooping warnings
     prep_log: list[str]  # PrepPlan.apply log of the study() run
+    # Resolved absolute csv path recorded at study() time (issue #33): a saved
+    # report must replay from its recorded source regardless of the process's
+    # LATER working directory, so ``prepare()`` prefers this over ``source``.
+    # None for dataframe input and for reports saved by older natex versions.
+    source_resolved: str | None = None
     _df: pd.DataFrame | None = field(default=None, repr=False, compare=False)  # not serialized
 
     def to_json(self) -> str:
@@ -66,6 +71,7 @@ class IntakeReport:
             "guidance_log_path": self.guidance_log_path,
             "context": self.context,
             "source": self.source,
+            "source_resolved": self.source_resolved,
             "guidance_errors": list(self.guidance_errors),
             "prep_log": list(self.prep_log),
         }
@@ -106,6 +112,7 @@ class IntakeReport:
             guidance_log_path=d.get("guidance_log_path"),
             context=d.get("context"),
             source=d["source"],
+            source_resolved=d.get("source_resolved"),
             guidance_errors=list(d.get("guidance_errors", [])),
             prep_log=list(d.get("prep_log", [])),
         )
@@ -114,7 +121,11 @@ class IntakeReport:
         """Re-apply the prep plan and build a :class:`Dataset` for one candidate.
 
         Frame resolution: ``df`` arg, else the study() frame, else re-read
-        ``source`` if it is an existing csv path. Spec mirrors
+        ``source_resolved`` (the absolute path recorded at study() time —
+        issue #33: a relative ``source`` resolved against a LATER cwd made
+        saved reports location-dependent), else ``source`` if it is an
+        existing csv path (reports saved by older natex versions). Spec
+        mirrors
         ``Dataset.from_csv`` defaults: covariates = all prepared columns minus
         {treatment, outcome}, minus EVERY known outcome — each ranked
         candidate's and each prep-plan ``outcome``-roled column (issue #7: a
@@ -129,8 +140,11 @@ class IntakeReport:
         only). The candidate's own outcome stays in the frame for estimation.
         """
         frame = df if df is not None else self._df
-        if frame is None and self.source != "<dataframe>" and Path(self.source).exists():
-            frame = pd.read_csv(self.source)
+        if frame is None:
+            for recorded in (self.source_resolved, self.source):
+                if recorded and recorded != "<dataframe>" and Path(recorded).exists():
+                    frame = pd.read_csv(recorded)
+                    break
         if frame is None:
             raise ValueError("no dataframe available; pass df=")
         df2, _ = self.prep_plan.apply(frame)
@@ -205,10 +219,14 @@ def study(
     if rng is None:
         raise ValueError("pass an explicit numpy Generator (reproducibility contract)")
     if isinstance(csv_or_df, (str, Path)):
-        source = str(csv_or_df)
+        source = str(csv_or_df)  # original spelling, for display
+        # Absolute replay path (issue #33): resolved NOW, against the study()
+        # invocation's cwd, so a saved report replays after any later chdir.
+        source_resolved = str(Path(csv_or_df).resolve())
         df = pd.read_csv(csv_or_df)
     else:
         source = "<dataframe>"
+        source_resolved = None
         df = csv_or_df
 
     backend: GuidanceBackend = guidance if guidance is not None else NullBackend()
@@ -337,6 +355,7 @@ def study(
         guidance_log_path=guidance_log_path,
         context=context,
         source=source,
+        source_resolved=source_resolved,
         guidance_errors=errors,
         prep_log=prep_log,
         _df=df,

@@ -98,6 +98,38 @@ def test_determinism_same_seed_same_json(tmp_path):
     assert r1.to_json() == r2.to_json()
 
 
+def test_issue_33_saved_report_replays_relative_source_from_another_directory(
+    tmp_path, monkeypatch
+):
+    """Issue #33: study() serialized a relative CSV source verbatim and
+    prepare() resolved it against the CURRENT working directory, so a saved
+    report could not use its advertised recorded-source fallback after a
+    chdir. The report now also records the resolved absolute path for replay
+    while ``source`` keeps the user's original spelling for display."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _write_fake_test_score(a)
+    monkeypatch.chdir(a)
+    report = study("RDD_Guide_Dataset_0.csv", rng=np.random.default_rng(0), out="out")
+    assert report.source == "RDD_Guide_Dataset_0.csv"  # original spelling, for display
+
+    loaded = IntakeReport.load(a / "out" / "intake_report.json")
+    monkeypatch.chdir(b)
+    ds = loaded.prepare()
+    assert isinstance(ds, Dataset)
+    assert ds.n > 0
+
+    # a report saved by an OLDER natex (no resolved path) still resolves the
+    # relative source against the cwd, exactly as before
+    payload = json.loads((a / "out" / "intake_report.json").read_text())
+    payload.pop("source_resolved", None)
+    legacy = a / "out" / "legacy_report.json"
+    legacy.write_text(json.dumps(payload))
+    monkeypatch.chdir(a)
+    assert IntakeReport.load(legacy).prepare().n > 0
+
+
 def test_mock_prepare_fallback_to_null(tmp_path):
     csv = _write_synthetic_csv(tmp_path)
     mock = MockBackend([
