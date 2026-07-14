@@ -1,8 +1,9 @@
 # natex
 
 **Automated natural-experiment discovery**: find, validate, and estimate regression
-discontinuities, difference-in-differences designs, instrumental variables, and
-synthetic-control donor pools in any tabular dataset. natex is a modern reimplementation of the LoRD3 lineage — Herlands, Moraffah,
+discontinuities, difference-in-differences designs, known-cutoff regression kinks and
+difference-in-kinks, instrumental variables, and synthetic-control donor pools in tabular
+data. natex is a modern reimplementation of the LoRD3 lineage — Herlands, Moraffah,
 McFowland & Neill (KDD 2018), Herlands (PhD thesis, CMU 2019), and Jakubowski et al.
 (JMLR 2023) — that searches local neighborhoods of a dataset for treatment-assignment
 discontinuities using a log-likelihood-ratio scan, then subjects each candidate to a
@@ -182,6 +183,46 @@ Also available: `natex.validate.placebo.placebo_tests` (intercept-continuity pla
 battery), `natex.validate.density.density_test` (signed-distance McCrary-style density
 check), `natex.validate.honest.honest_split` (discovery/estimation split), and
 `natex.estimate.local2sls.wald_estimate`.
+
+### Known-cutoff kink designs
+
+For a policy with a known cutoff and slope kink, use the dedicated RKD/DiK evaluator
+([method card](docs/method_cards/kink.md)). A sharp design supplies the known policy-slope
+contrast; a fuzzy design supplies the observed policy variable. Bandwidth is required—there
+is no automatic DiK selector in the paper:
+
+```bash
+uv run natex kink data.csv --design rkd --outcome y --running score \
+  --policy-kink -0.4 --cutoff 0 --bandwidth 1500 --out out/
+
+uv run natex kink panel.csv --design dik --outcome y --running score \
+  --treatment policy --time year --t0 2011 --bandwidth 1500 \
+  --cluster person_id --out out/
+```
+
+For sharp DiK, replace `--treatment policy` with
+`--policy-kink-change VALUE`. Both designs use an explicit right-minus-left slope
+convention; DiK then takes post-minus-pre. The output `out/kink.json` includes cell slopes,
+HC1 or clustered CR1 inference (`t(G-1)` critical values), first-stage strength, and a
+Fieller set for fuzzy ratios. Undefined core estimates are written for diagnosis and return
+a nonzero command status.
+
+```python
+from natex import difference_in_kinks, regression_kink
+
+rkd = regression_kink(y, running, policy_kink=-0.4, bandwidth=1500)
+dik = difference_in_kinks(
+    y, running, post=year >= 2011, treatment=policy,
+    bandwidth=1500, clusters=person_id,
+)
+print(rkd.tau, dik.tau, dik.fieller_kind, dik.first_stage_F)
+```
+
+DiK requires parallel changes in the non-policy slope kink and a time-stable marginal
+response. Fuzzy DiK additionally needs same-sign individual kink changes and stable latent
+policy-schedule composition at the cutoff (or valid reweighting); the latter makes explicit
+an aggregation condition missing from the linked paper's proof. The command evaluates a
+known design—it does not search unknown cutoffs or mechanically certify these assumptions.
 
 ### DEE: debias an observational CATE estimator
 
@@ -435,8 +476,9 @@ Legacy scan outputs are therefore **not** treated as ground truth in parity test
 
 ## Project status
 
-All eight build phases are complete; v0.1.0 is the first tagged release. Run of record:
-`uv run pytest -q` collects 816 non-backtest tests (optional-extra tests skip gracefully
+All eight original build phases are complete; v0.1.0 is the first tagged release. The
+known-cutoff kink-design extension is implemented on top. Run of record:
+`uv run pytest -q` collects 1046 non-backtest tests (optional-extra tests skip gracefully
 when an extra is missing); `uv run pytest -m backtest` collects 32 real-data backtests
 over the six registered datasets; `uv run ruff check src tests` is clean.
 
@@ -450,6 +492,7 @@ over the six registered datasets; `uv run ruff check src tests` is clean.
 | 6 | **Done** — LLM analyst pass (`natex study` → `natex discover --plan`) + scan guidance (Null/Agent/Anthropic/Gemini backends, `[llm]` extra) with the blind-vs-informed eval scaffold; gate met: guidance provably never alters a statistic, coverage always reported ([status](docs/status/phase-llm-analyst.md)) |
 | 7 | **Done** — reporting & paper pipeline (`report/`): results bundle, standard figures, jinja2 md/LaTeX drafts with the AI-draft banner, `natex paper`, deep-research brief, paperbanana adapter; gate met: bundle → figures → paper renders end to end for rdd and did, markdown always, LaTeX compiling under tectonic ([status](docs/status/phase-report-paper.md)) |
 | 8 | **Done** — agent skills (skills/), AGENTS.md + CLAUDE.md, v0.1.0 release ([status](docs/status/phase-skills-docs.md)) |
+| Kink extension | **Done** — known-cutoff sharp/fuzzy RKD and DiK estimators, HC1/CR1 + Fieller inference, synthetic oracles, and `natex kink` ([status](docs/status/phase-kinks.md)) |
 
 What each real-data backtest demonstrated (natex is never told the answer — it must
 rediscover it; details in the linked status files):

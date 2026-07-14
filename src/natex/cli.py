@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,7 @@ from natex.intake.prep import PrepPlan
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
+from natex.kink import difference_in_kinks, regression_kink
 from natex.llm import AgentBackend, AnthropicBackend, GeminiBackend, GuidanceBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.report.bundle import ResultsBundle
@@ -483,6 +485,200 @@ def discover(
         e = effects["2sls"]
         typer.echo(f"2SLS tau={e['tau']:.3f} CI=({e['ci'][0]:.3f},{e['ci'][1]:.3f}) weak_iv={e['weak_instrument']}")
     typer.echo(f"results: {out / 'results.json'}")
+
+
+@app.command()
+def kink(
+    csv: Path,
+    design: str = typer.Option("rkd", help="rkd|dik (known-cutoff kink design)"),
+    outcome: str = typer.Option(..., help="outcome column"),
+    running: str = typer.Option(..., help="running-variable column"),
+    treatment: str = typer.Option(
+        None, help="observed policy/treatment column (fuzzy RKD or DiK)"
+    ),
+    policy_kink: float = typer.Option(
+        None, "--policy-kink", help="known right-minus-left policy slope kink (sharp RKD)"
+    ),
+    policy_kink_change: float = typer.Option(
+        None,
+        "--policy-kink-change",
+        help="known post-minus-pre change in the policy slope kink (sharp DiK)",
+    ),
+    time: str = typer.Option(None, help="time/period column (--design dik)"),
+    t0: float = typer.Option(None, help="first post-policy period (--design dik)"),
+    cutoff: float = typer.Option(0.0, help="known running-variable cutoff"),
+    bandwidth: float = typer.Option(..., help="required symmetric bandwidth around cutoff"),
+    degree: int = typer.Option(1, help="local polynomial degree (>=1)"),
+    kernel: str = typer.Option("triangular", help="triangular|uniform|epanechnikov"),
+    donut: float = typer.Option(0.0, help="exclude |running-cutoff| below this radius"),
+    covariates: str = typer.Option(None, help="comma-separated numeric adjustment columns"),
+    cluster: str = typer.Option(None, help="cluster column for CR1 covariance"),
+    alpha: float = typer.Option(0.05, help="two-sided confidence-set size"),
+    out: Path = typer.Option(Path("out"), help="output directory"),
+):
+    """Estimate a known-cutoff sharp/fuzzy RKD or difference-in-kinks design.
+
+    The slope convention is always right-minus-left. A fuzzy design estimates
+    that slope contrast on ``--treatment``; a sharp design divides by the
+    supplied policy kink. DiK forms post-minus-pre before taking the ratio.
+    The command requires an explicit bandwidth because no automatic DiK
+    bandwidth selector is established; inspect bandwidth, donut, and placebo
+    cutoff sensitivity before treating the conventional interval as final.
+    """
+    if design not in ("rkd", "dik"):
+        typer.echo(f"--design must be 'rkd' or 'dik', got {design!r}")
+        raise typer.Exit(code=2)
+    covariate_names = [c.strip() for c in covariates.split(",") if c.strip()] if covariates else []
+    try:
+        df = pd.read_csv(csv)
+    except (OSError, pd.errors.ParserError) as exc:
+        typer.echo(f"could not read {csv}: {exc!r}")
+        raise typer.Exit(code=2) from None
+
+    known: float | None
+    if design == "rkd":
+        if time is not None or t0 is not None:
+            typer.echo("--time/--t0 apply only to --design dik")
+            raise typer.Exit(code=2)
+        if policy_kink_change is not None:
+            typer.echo("--policy-kink-change applies only to --design dik")
+            raise typer.Exit(code=2)
+        known = policy_kink
+    else:
+        if time is None or t0 is None:
+            typer.echo("--design dik requires both --time COLUMN and --t0 VALUE")
+            raise typer.Exit(code=2)
+        if policy_kink is not None:
+            typer.echo("--policy-kink applies only to --design rkd")
+            raise typer.Exit(code=2)
+        known = policy_kink_change
+    if (treatment is None) == (known is None):
+        flag = "--policy-kink" if design == "rkd" else "--policy-kink-change"
+        typer.echo(f"supply exactly one of --treatment (fuzzy) or {flag} (sharp)")
+        raise typer.Exit(code=2)
+
+    columns = [outcome, running, *covariate_names]
+    columns += [c for c in (treatment, time, cluster) if c is not None]
+    missing = sorted({c for c in columns if c not in df.columns})
+    if missing:
+        typer.echo(f"columns not in dataframe: {missing}")
+        raise typer.Exit(code=2)
+
+    def numeric_column(name: str) -> np.ndarray:
+        try:
+            return df[name].to_numpy(dtype=float)
+        except (TypeError, ValueError):
+            raise ValueError(f"column {name!r} must be numeric") from None
+
+    try:
+        outcome_values = numeric_column(outcome)
+        running_values = numeric_column(running)
+        treatment_values = None if treatment is None else numeric_column(treatment)
+        covariate_values = (
+            np.column_stack([numeric_column(name) for name in covariate_names])
+            if covariate_names
+            else None
+        )
+        cluster_values = None if cluster is None else df[cluster].to_numpy()
+        common = {
+            "treatment": treatment_values,
+            "cutoff": cutoff,
+            "bandwidth": bandwidth,
+            "degree": degree,
+            "kernel": kernel,
+            "donut": donut,
+            "covariates": covariate_values,
+            "clusters": cluster_values,
+            "alpha": alpha,
+        }
+        if design == "rkd":
+            estimate = regression_kink(
+                outcome_values,
+                running_values,
+                policy_kink=policy_kink,
+                **common,
+            )
+            post = None
+        else:
+            time_values = numeric_column(time)
+            post = np.full(time_values.shape, np.nan, dtype=float)
+            finite_time = np.isfinite(time_values)
+            post[finite_time] = (time_values[finite_time] >= t0).astype(float)
+            estimate = difference_in_kinks(
+                outcome_values,
+                running_values,
+                post,
+                policy_kink_change=policy_kink_change,
+                **common,
+            )
+    except (TypeError, ValueError) as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from None
+
+    caveats = [
+        "The cutoff and bandwidth are user-specified; report bandwidth, donut, and placebo-cutoff sensitivity (natex.kink: sensitivity_grid, placebo_kinks, covariate_kinks, event_study_kinks, density_kink_difference).",
+        "The reported interval is conventional local-polynomial inference and may retain smoothing bias.",
+    ]
+    if design == "rkd":
+        caveats.append(
+            "Causal interpretation requires no kink in the non-policy outcome derivative and a continuous marginal response at the cutoff."
+        )
+    else:
+        caveats.append(
+            "Causal interpretation requires parallel changes in non-policy slope kinks and a time-stable marginal response at the cutoff."
+        )
+        if treatment is not None:
+            caveats.extend(
+                [
+                    "Fuzzy DiK additionally requires stable latent policy-schedule composition at the cutoff (or valid reweighting).",
+                    "Individual latent policy kink changes must have the same sign for positive-weight interpretation.",
+                ]
+            )
+    payload = _clean(
+        {
+            "params": {
+                "design": design,
+                "outcome": outcome,
+                "running": running,
+                "treatment": treatment,
+                "policy_kink": policy_kink,
+                "policy_kink_change": policy_kink_change,
+                "time": time,
+                "t0": t0,
+                "cutoff": cutoff,
+                "bandwidth": bandwidth,
+                "degree": degree,
+                "kernel": kernel,
+                "donut": donut,
+                "covariates": covariate_names,
+                "cluster": cluster,
+                "alpha": alpha,
+                "contrast": "right_minus_left",
+                "csv": str(csv),
+            },
+            "estimate": asdict(estimate),
+            "identification_caveats": caveats,
+        }
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "kink.json"
+    path.write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    tau_text = "undefined" if not np.isfinite(estimate.tau) else f"{estimate.tau:.4f}"
+    se_text = "undefined" if not np.isfinite(estimate.se) else f"{estimate.se:.4f}"
+    fs_text = (
+        "undefined" if not np.isfinite(estimate.first_stage_F) else f"{estimate.first_stage_F:.2f}"
+    )
+    typer.echo(
+        f"{estimate.method}: tau={tau_text} se={se_text} "
+        f"first-stage F={fs_text} weak={estimate.weak_first_stage}"
+    )
+    typer.echo(f"results: {path}")
+    if not np.isfinite(estimate.tau):
+        reason = estimate.extras.get(
+            "reason", "the estimand is undefined because its denominator is zero or non-finite"
+        )
+        typer.echo(f"estimation failed: {reason}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
