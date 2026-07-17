@@ -74,7 +74,9 @@ def randomization_test(
             f"non-finite observed max LLR ({observed}): the scan statistic is "
             "degenerate and cannot be ranked"
         )
+    # 'model' is passed explicitly as `kind`; strip from scan_kwargs to avoid duplicate keyword
     scan_kwargs = dict(scan_kwargs or {})
+    scan_kwargs.pop("model", None)
     scan_kwargs.setdefault("k", scan_result.k)
     kind = scan_result.model
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
