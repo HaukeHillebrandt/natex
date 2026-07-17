@@ -24,9 +24,12 @@ Flow (plan task 5):
    (task 8).
 
 The survey layer adds NO new inference code: rdd and did REUSE
-``natex.discover`` end to end; the remaining family runners arrive in plan
-task 6 (until then they raise NotImplementedError, which the isolation
-boundary records as an honest ``failed`` — never a silent absence).
+``natex.discover`` end to end; kink, iv, sc, bunching and dee REUSE
+``regression_kink``/``sensitivity_grid``, ``discover_instruments``,
+``unit_time_matrix``/``select_donors``/``sc_placebo_test``,
+``binned_poisson_jump`` and ``lord3_scan``/``dee_debias`` respectively.
+dee carries one runtime gate ON TOP of applicability: it only runs after a
+CREDIBLE rdd family result (there must be a validated discovery to debias).
 """
 
 from __future__ import annotations
@@ -40,14 +43,30 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from natex.data.spec import Dataset, DatasetSpec
-from natex.discover import DiscoverReport, discover
+from natex.dee.debias import dee_debias
+
+# _effective_budget is discover's own budget resolution (defaults <- plan
+# hints <- explicit dict); dee reuses it so its scan k matches the rdd
+# family's effective budget exactly.
+from natex.discover import DiscoverReport, _effective_budget, discover
 from natex.intake.analyst import IntakeReport, study
+from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
+from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
+from natex.kink import regression_kink, sensitivity_grid
 from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
+from natex.rdd.lord3 import lord3_scan
 from natex.survey.applicability import FamilyPlan, resolve_applicability
 from natex.survey.registry import FAMILIES, FAMILY_ORDER, DeclaredInputs
+from natex.validate.density import binned_poisson_jump
+
+# Holm step-down with NaN entries excluded and preserved — the SAME
+# convention as placebo_tests/did.effects/validate.panel (plan task 6: no
+# new math, plain step-down on the vector of per-cutoff/threshold p-values).
+from natex.validate.placebo import _holm
 
 ALPHA = 0.05  # verdict gate for scan/kink/bunching p-values
 # sc placebo gate: the in-space +1-rank test has granularity 1/(n_used+1), so
@@ -380,20 +399,526 @@ def _run_did(
     )
 
 
-def _not_implemented(name: str):
-    def runner(df, intake, declared, plan, budget, fam_rng, fam_dir) -> FamilyResult:
-        raise NotImplementedError(f"{name} family runner arrives in plan task 6")
+# ---------------------------------------------------------------------------
+# kink / iv / sc / bunching / dee runners (plan task 6). Shared helpers first.
+# ---------------------------------------------------------------------------
 
-    return runner
+_NO_OUTCOME_REASON = "no numeric outcome column identified"
+
+# audit 18: McCrary/density on calendar time is information-free when record
+# times are design-determined; composition/anticipation carry the burden.
+_AUDIT18_CAVEAT = (
+    "a density test on the calendar-time column {col!r} is information-free when "
+    "record times are design-determined (audit 18); composition and anticipation "
+    "checks are the informative diagnostics"
+)
+
+_CALENDAR_KINK_CAVEAT = (
+    "the running variable {col!r} is calendar time: this kink is a before/after "
+    "slope contrast, so composition and anticipation caveats apply — not a "
+    "density test (audit 18)"
+)
 
 
-# Plan task 6 replaces these with real runners; until then a family that
-# should run reports an honest "failed" through the isolation boundary.
-_run_kink = _not_implemented("kink")
-_run_iv = _not_implemented("iv")
-_run_sc = _not_implemented("sc")
-_run_bunching = _not_implemented("bunching")
-_run_dee = _not_implemented("dee")
+def _numeric_columns(intake: IntakeReport) -> set[str]:
+    return {c.name for c in intake.profile.columns if c.is_numeric}
+
+
+def _time_like_columns(intake: IntakeReport) -> set[str]:
+    return {c.name for c in intake.profile.columns if c.is_time_like}
+
+
+def _first_outcome_guess(
+    intake: IntakeReport, df: pd.DataFrame, exclude: set[str]
+) -> str | None:
+    """First Understanding outcome guess that exists, is numeric, and is not excluded."""
+    numeric = _numeric_columns(intake)
+    return next(
+        (g.column for g in intake.understanding.outcomes
+         if g.column not in exclude and g.column in df.columns and g.column in numeric),
+        None,
+    )
+
+
+def _two_sided_p(tau: float, se: float) -> float:
+    """Normal two-sided p for tau/se; NaN — never 0.0 — when undefined."""
+    if not (np.isfinite(tau) and np.isfinite(se)) or se <= 0.0:
+        return float("nan")
+    return float(2.0 * stats.norm.sf(abs(tau / se)))
+
+
+def _nanmean(a) -> float:
+    """Mean over finite entries; NaN (never 0.0, never a warning) when none."""
+    arr = np.asarray(a, dtype=float).ravel()
+    finite = arr[np.isfinite(arr)]
+    return float(finite.mean()) if finite.size else float("nan")
+
+
+def _min_holm(p_values: dict[str, float]) -> tuple[dict[str, float], float]:
+    """Holm-adjust the vector; return (adjusted dict, min finite adjusted p or NaN)."""
+    p_holm = _holm(p_values)
+    usable = [v for v in p_holm.values() if np.isfinite(v)]
+    return p_holm, (min(usable) if usable else float("nan"))
+
+
+def _run_kink(
+    df: pd.DataFrame,
+    intake: IntakeReport,
+    declared: DeclaredInputs,
+    plan: FamilyPlan,
+    budget: dict | None,
+    fam_rng: np.random.Generator,
+    fam_dir: Path,
+) -> FamilyResult:
+    numeric = _numeric_columns(intake)
+    time_like = _time_like_columns(intake)
+    caveats = [FAMILIES["kink"].caveat]
+    skipped: dict[str, str] = {}  # per-cutoff recorded reasons (plan task 6)
+    used_cutoffs: dict[str, float] = {}
+    per_cutoff: dict[str, dict] = {}
+    sensitivity: dict[str, list[dict]] = {}
+    sensitivity_errors: dict[str, str] = {}
+    p_values: dict[str, float] = {}
+    saw_no_outcome = False
+
+    for col, cut in declared.cutoffs.items():
+        if col not in df.columns:
+            skipped[col] = f"cutoff column {col!r} not in the dataset"
+            continue
+        if col not in numeric:
+            skipped[col] = f"cutoff column {col!r} is not numeric"
+            continue
+        outcome = _first_outcome_guess(intake, df, exclude={col})
+        if outcome is None:
+            saw_no_outcome = True
+            skipped[col] = _NO_OUTCOME_REASON
+            continue
+        r = df[col].to_numpy(dtype=float)
+        y = df[outcome].to_numpy(dtype=float)
+        c = float(cut)
+        # Documented default with NO optimality claim: the median absolute
+        # distance to the cutoff puts about half the sample in-window.
+        bw = float(np.nanquantile(np.abs(r - c), 0.5))
+        if not (np.isfinite(bw) and bw > 0.0):
+            skipped[col] = (
+                "default bandwidth (median |running - cutoff|) is not finite and positive"
+            )
+            continue
+        try:
+            est = regression_kink(y, r, policy_kink=1.0, cutoff=c, bandwidth=bw)
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            skipped[col] = f"kink fit failed: {exc}"
+            continue
+        used_cutoffs[col] = c
+        # With policy_kink=1, tau IS the reduced-form outcome slope kink
+        # (right-minus-left, kink-card convention).
+        p = _two_sided_p(est.tau, est.se)
+        p_values[col] = p
+        per_cutoff[col] = {
+            "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
+            "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
+        }
+        bws = [0.5 * bw, bw, 2.0 * bw]
+        try:
+            grid = sensitivity_grid(y, r, bandwidths=bws, policy_kink=1.0, cutoff=c)
+            sensitivity[col] = [
+                {"bandwidth": h, "tau": g.tau, "se": g.se}
+                for h, g in zip(bws, grid, strict=True)
+            ]
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            sensitivity_errors[col] = str(exc)
+        if col in time_like:
+            caveats.append(_CALENDAR_KINK_CAVEAT.format(col=col))
+
+    diagnostics = {
+        "caveats": caveats, "cutoffs": used_cutoffs, "per_cutoff": per_cutoff,
+        "sensitivity": sensitivity,
+    }
+    if skipped:
+        diagnostics["skipped_cutoffs"] = skipped
+    if sensitivity_errors:
+        diagnostics["sensitivity_errors"] = sensitivity_errors
+
+    if not per_cutoff:
+        reason = _NO_OUTCOME_REASON if saw_no_outcome else (
+            "no usable declared cutoff ("
+            + "; ".join(f"{c}: {r}" for c, r in skipped.items()) + ")"
+        )
+        return FamilyResult(
+            family="kink", status="needs_input", reason=reason,
+            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+        )
+
+    p_holm, min_holm = _min_holm(p_values)
+    diagnostics["p_holm"] = p_holm
+    m = len(p_values)
+    if not np.isfinite(min_holm):
+        status = "null"
+        reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
+    elif min_holm <= ALPHA:
+        status = "credible"
+        reason = (
+            f"min Holm-adjusted kink p={min_holm:.3g} at or below {ALPHA} "
+            f"across {m} declared cutoff(s)"
+        )
+    else:
+        status = "null"
+        reason = (
+            f"min Holm-adjusted kink p={min_holm:.2f} above {ALPHA} "
+            f"across {m} declared cutoff(s)"
+        )
+    first = per_cutoff[next(iter(per_cutoff))]
+    key_numbers = {
+        "tau": first["tau"], "se": first["se"],
+        "ci_low": first["ci"][0], "ci_high": first["ci"][1],
+        "bandwidth": first["bandwidth"], "n_used": first["n_used"],
+        "p_value": first["p_value"], "min_holm_p": min_holm,
+    }
+    return FamilyResult(
+        family="kink", status=status, reason=reason,
+        key_numbers=key_numbers, diagnostics=diagnostics,
+        no_figure_reason=_NO_FIGURE_YET,
+    )
+
+
+def _run_iv(
+    df: pd.DataFrame,
+    intake: IntakeReport,
+    declared: DeclaredInputs,
+    plan: FamilyPlan,
+    budget: dict | None,
+    fam_rng: np.random.Generator,
+    fam_dir: Path,
+) -> FamilyResult:
+    numeric = _numeric_columns(intake)
+    treatment = next(
+        (g.column for g in intake.understanding.treatments if g.column in df.columns),
+        None,
+    )
+    if treatment is None:
+        if not intake.profile.treatment_candidates:
+            raise ValueError("no treatment candidate available for the iv family")
+        treatment = intake.profile.treatment_candidates[0]
+
+    dropped: dict[str, str] = {}
+    pool: list[str] = []
+    for col in declared.instruments:
+        if col not in df.columns:
+            dropped[col] = "not in the dataset"
+        elif col not in numeric:
+            dropped[col] = "not numeric"
+        elif col == treatment:
+            dropped[col] = "is the treatment column"
+        else:
+            pool.append(col)
+    if not pool:
+        reason = (
+            "no usable declared instrument column ("
+            + "; ".join(f"{c}: {r}" for c, r in dropped.items()) + ")"
+        )
+        return FamilyResult(
+            family="iv", status="needs_input", reason=reason,
+            diagnostics={"caveats": [FAMILIES["iv"].caveat],
+                         "dropped_instruments": dropped},
+            no_figure_reason=_NO_FIGURE_YET,
+        )
+    outcome = _first_outcome_guess(intake, df, exclude={treatment, *pool})
+
+    res = discover_instruments(
+        df, treatment, pool, outcome=outcome, honest=True, rng=fam_rng
+    )
+    search, est = res.search, res.estimate
+    diagnostics = {
+        "caveats": [FAMILIES["iv"].caveat],
+        "honest_split": (
+            f"instruments selected on a {res.n_discovery}-row discovery half and "
+            f"estimated on a held-out {res.n_estimation}-row half"
+        ),
+        "treatment": treatment, "outcome": outcome, "pool": pool,
+        "selected": list(search.selected),
+        "first_stage_F_discovery": search.first_stage_F,
+        "partial_r2_discovery": search.partial_r2,
+    }
+    if dropped:
+        diagnostics["dropped_instruments"] = dropped
+    key_numbers: dict = {
+        "n_selected": len(search.selected),
+        "first_stage_F": est.first_stage_F if est is not None else search.first_stage_F,
+        "partial_r2": est.partial_r2 if est is not None else search.partial_r2,
+        "n_discovery": res.n_discovery, "n_estimation": res.n_estimation,
+    }
+    if est is not None:
+        key_numbers.update(
+            tau=est.tau, se=est.se, ci_low=est.ci[0], ci_high=est.ci[1],
+            j_p=est.j_p, ar_kind=est.ar_kind,
+        )
+        if est.ar_ci is not None:
+            key_numbers.update(ar_ci_low=est.ar_ci[0], ar_ci_high=est.ar_ci[1])
+
+    if not search.selected:
+        status, reason = "null", "no instrument selected from the declared pool"
+    elif search.weak or (est is not None and est.weak_instrument):
+        # audit 10: first-stage relevance is measured, never assumed — a weak
+        # first stage on EITHER half demotes the family.
+        weak_f = search.first_stage_F if search.weak else est.first_stage_F
+        half = "discovery" if search.weak else "estimation"
+        status = "null"
+        if _finite(weak_f):
+            reason = (
+                f"weak first stage (F={weak_f:.1f} on the {half} half) — "
+                "instrument relevance not established (audit 10)"
+            )
+        else:
+            reason = (
+                f"first-stage F unavailable on the {half} half — "
+                "instrument relevance not established (audit 10)"
+            )
+    else:
+        f_used = key_numbers["first_stage_F"]
+        tail = (
+            " (selection only — no outcome column identified)"
+            if est is None else " on the held-out estimation half"
+        )
+        status = "credible"
+        reason = (
+            f"{len(search.selected)} instrument(s) selected with "
+            f"first-stage F={f_used:.1f}{tail}"
+        )
+    return FamilyResult(
+        family="iv", status=status, reason=reason,
+        key_numbers=key_numbers, diagnostics=diagnostics,
+        no_figure_reason=_NO_FIGURE_YET,
+    )
+
+
+def _run_sc(
+    df: pd.DataFrame,
+    intake: IntakeReport,
+    declared: DeclaredInputs,
+    plan: FamilyPlan,
+    budget: dict | None,
+    fam_rng: np.random.Generator,
+    fam_dir: Path,
+) -> FamilyResult:
+    profile = intake.profile
+    panel = profile.panel_candidates[0] if profile.panel_candidates else (None, None)
+    unit = declared.unit or panel[0]
+    time = declared.time or panel[1]
+    if unit is None or time is None:
+        raise ValueError("no panel structure (unit, time) declared or profiled for sc")
+    outcome = _first_outcome_guess(
+        intake, df, exclude={unit, time, *profile.treatment_candidates}
+    )
+    diagnostics: dict = {
+        "caveats": [FAMILIES["sc"].caveat], "unit": unit, "time": time,
+        "outcome": outcome,
+    }
+    if outcome is None:
+        return FamilyResult(
+            family="sc", status="needs_input", reason=_NO_OUTCOME_REASON,
+            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+        )
+    Y, units, times = unit_time_matrix(df, unit, time, outcome)
+
+    treated = declared.treated_unit
+    t0 = declared.t0
+    if treated is None or t0 is None:
+        tcol = next((c for c in profile.treatment_candidates if c in df.columns), None)
+        if tcol is None:
+            return FamilyResult(
+                family="sc", status="needs_input",
+                reason=(
+                    "could not identify a treated unit (no binary treatment column "
+                    "profiled); provide treated_unit/t0 via guidance"
+                ),
+                diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+            )
+        t_on = df[tcol].to_numpy(dtype=float) == 1.0
+        if treated is None:
+            ever = pd.unique(df.loc[t_on, unit])  # per-unit ever-treated set
+            if len(ever) != 1:
+                return FamilyResult(
+                    family="sc", status="needs_input",
+                    reason=(
+                        f"could not identify a single treated unit from {tcol!r} "
+                        f"(found {len(ever)}); provide treated_unit/t0 via guidance"
+                    ),
+                    diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+                )
+            treated = ever[0]
+        if t0 is None:
+            t0 = float(df.loc[t_on, time].min())  # min(time where T == 1)
+    t0 = float(t0)
+    diagnostics["treated_unit"] = treated
+    diagnostics["t0"] = t0
+
+    sel = select_donors(Y, units, times, treated, t0)
+    if "failure" in sel.extras:
+        failure = str(sel.extras["failure"])
+        return FamilyResult(
+            family="sc", status="failed", reason=failure, error=failure,
+            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+        )
+    rep = sc_placebo_test(Y, units, times, treated, t0)
+    diagnostics["n_skipped_placebos"] = rep.n_skipped
+    key_numbers = {
+        "att_post": sel.att_post, "pre_rmspe": sel.pre_rmspe,
+        "post_rmspe": sel.post_rmspe, "ratio_treated": rep.ratio_treated,
+        "p_value": rep.p_value, "n_donors": len(sel.donors),
+        "n_placebos": len(rep.ratios),
+    }
+    p = rep.p_value  # audit 5: the +1-rank RMSPE-ratio p, verbatim
+    if not _finite(p):
+        status, reason = "null", "too few usable placebos (<5) for the ratio test"
+    elif p <= SC_ALPHA:
+        status = "credible"
+        reason = f"in-space placebo RMSPE-ratio p={p:.3f} at or below {SC_ALPHA}"
+    else:
+        status = "null"
+        reason = f"in-space placebo RMSPE-ratio p={p:.2f} above {SC_ALPHA}"
+    return FamilyResult(
+        family="sc", status=status, reason=reason,
+        key_numbers=key_numbers, diagnostics=diagnostics,
+        no_figure_reason=_NO_FIGURE_YET,
+    )
+
+
+def _run_bunching(
+    df: pd.DataFrame,
+    intake: IntakeReport,
+    declared: DeclaredInputs,
+    plan: FamilyPlan,
+    budget: dict | None,
+    fam_rng: np.random.Generator,
+    fam_dir: Path,
+) -> FamilyResult:
+    numeric = _numeric_columns(intake)
+    time_like = _time_like_columns(intake)
+    caveats = [FAMILIES["bunching"].caveat]
+    skipped: dict[str, str] = {}
+    per_threshold: dict[str, dict] = {}
+    p_values: dict[str, float] = {}
+
+    for col, thr in declared.thresholds.items():
+        if col not in df.columns:
+            skipped[col] = f"threshold column {col!r} not in the dataset"
+            continue
+        if col not in numeric:
+            skipped[col] = f"threshold column {col!r} is not numeric"
+            continue
+        t = float(thr)
+        s = df[col].to_numpy(dtype=float) - t
+        rep = binned_poisson_jump(s)  # drops non-finite s itself
+        p_values[col] = rep.p_value
+        per_threshold[col] = {
+            "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
+            "n_finite": int(np.isfinite(s).sum()),
+        }
+        if col in time_like:
+            caveats.append(_AUDIT18_CAVEAT.format(col=col))
+
+    diagnostics: dict = {"caveats": caveats, "per_threshold": per_threshold}
+    if skipped:
+        diagnostics["skipped_thresholds"] = skipped
+    if not per_threshold:
+        reason = (
+            "no usable declared threshold ("
+            + "; ".join(f"{c}: {r}" for c, r in skipped.items()) + ")"
+        )
+        return FamilyResult(
+            family="bunching", status="needs_input", reason=reason,
+            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+        )
+
+    p_holm, min_holm = _min_holm(p_values)
+    diagnostics["p_holm"] = p_holm
+    if not np.isfinite(min_holm):
+        status = "null"
+        reason = "density fits degenerate at every declared threshold"
+    elif min_holm <= ALPHA:
+        status = "credible"
+        reason = (
+            "density discontinuity at a declared threshold — bunching/manipulation "
+            f"signal (min Holm-adjusted p={min_holm:.3g})"
+        )
+    else:
+        status = "null"
+        reason = (
+            "no density discontinuity at the declared threshold(s) "
+            f"(min Holm-adjusted p={min_holm:.2f})"
+        )
+    first = per_threshold[next(iter(per_threshold))]
+    key_numbers = {
+        "p_value": first["p_value"], "theta": first["theta"],
+        "n_finite": first["n_finite"], "min_holm_p": min_holm,
+    }
+    return FamilyResult(
+        family="bunching", status=status, reason=reason,
+        key_numbers=key_numbers, diagnostics=diagnostics,
+        no_figure_reason=_NO_FIGURE_YET,
+    )
+
+
+# dee query lattice: fewer points per forcing dim than the CLI debias
+# default (15) — the survey favors breadth over surface resolution.
+_DEE_GRID = 8
+
+
+def _run_dee(
+    df: pd.DataFrame,
+    intake: IntakeReport,
+    declared: DeclaredInputs,
+    plan: FamilyPlan,
+    budget: dict | None,
+    fam_rng: np.random.Generator,
+    fam_dir: Path,
+) -> FamilyResult:
+    # The survey() loop already gated on a CREDIBLE rdd family result; this
+    # runner rebuilds the same rdd Dataset and debiases over its discoveries.
+    ds = _rdd_dataset(df, intake)
+    eff = _effective_budget(intake.search_plan, budget)
+    scan = lord3_scan(ds, k=int(eff["k"]), degree=1, rng=fam_rng)
+    # query lattice: _DEE_GRID points per forcing dim over observed ranges
+    axes = [
+        np.linspace(ds.Z[:, j].min(), ds.Z[:, j].max(), _DEE_GRID)
+        for j in range(ds.Z.shape[1])
+    ]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    query = np.column_stack([m.ravel() for m in mesh])
+    res = dee_debias(
+        ds, query, scan, m_prime=min(10, len(scan.discoveries)), rng=fam_rng
+    )
+    n_experiments = len(res.vknn.experiments)
+    n_used = int(np.asarray(res.used, dtype=bool).sum())
+    key_numbers = {
+        "w_debias": res.weights.w_debias,
+        "n_experiments": n_experiments,
+        "n_experiments_used": n_used,
+        "mean_cate_raw": _nanmean(res.cate_raw),
+        "mean_cate_debiased": _nanmean(res.cate_debiased),
+        "mean_cate_direct": _nanmean(res.cate_direct),
+    }
+    diagnostics = {
+        "caveats": [FAMILIES["dee"].caveat],
+        "weights_strategy": res.weights.strategy,
+        "scan_k": int(eff["k"]),
+        "n_query": int(query.shape[0]),
+        "n_experiments_used_bias": res.diagnostics.get("n_experiments_used_bias"),
+        "dropped_experiments": res.diagnostics.get("dropped"),
+    }
+    if "reason" in res.diagnostics:
+        status, reason = "null", str(res.diagnostics["reason"])
+    else:
+        # Documented status-semantics stretch: dee is a surface fit, not a
+        # hypothesis test — "credible" here means the fit completed with a
+        # usable experiment ensemble (the method card explains).
+        status = "credible"
+        reason = f"debiased CATE surface fitted over {n_used} experiments"
+    return FamilyResult(
+        family="dee", status=status, reason=reason,
+        key_numbers=key_numbers, diagnostics=diagnostics,
+        no_figure_reason=_NO_FIGURE_YET,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +1011,17 @@ def survey(
                 no_figure_reason="no figure: family did not run",
             )
             not_run[name] = plan.reason
+            continue
+        if name == "dee" and families["rdd"].status != "credible":
+            # Runtime gate ON TOP of applicability (plan task 6): dee debiases
+            # a VALIDATED rdd discovery; without one there is nothing to debias.
+            reason = "no validated rdd discovery to debias"
+            families[name] = FamilyResult(
+                family=name, status="skipped", reason=reason,
+                applicability=_plan_dict(plan),
+                no_figure_reason="no figure: family did not run",
+            )
+            not_run[name] = reason
             continue
         fam_dir = out_dir / "families" / name
         runner_fn = globals()[f"_run_{name}"]  # module attribute: monkeypatchable
