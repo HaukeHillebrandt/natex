@@ -280,11 +280,14 @@ def pretrend_plot(
     n=None,
     out_dir: str | Path,
     stem: str = "pretrend",
+    ylabel: str | None = None,
 ) -> FigurePaths:
     """Per-period treated-minus-control gaps around ``t0`` (descriptive).
 
     Zero reference line, vertical T0 line, pre/post shading; marker area
-    scales with the per-period usable count ``n`` when given.
+    scales with the per-period usable count ``n`` when given. ``ylabel``
+    overrides the default gap label (e.g. the survey's synthetic-control
+    "treated − synthetic gap").
     """
     plt = _mpl()
     times = np.asarray(times, dtype=float).ravel()
@@ -310,7 +313,7 @@ def pretrend_plot(
             ax.plot(times, gaps, color=_BASE, linewidth=1.2, zorder=2)
             ax.scatter(times, gaps, s=sizes, color=_BASE, zorder=3)
             ax.set_xlabel("period")
-            ax.set_ylabel("treated − control gap (raw y)")
+            ax.set_ylabel(ylabel if ylabel is not None else "treated − control gap (raw y)")
             ax.set_title(f"Per-period gaps around T0 = {_fmt(t0)}", fontsize=10)
             return _save(fig, out_dir, stem)
         finally:

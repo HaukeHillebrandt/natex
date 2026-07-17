@@ -60,6 +60,7 @@ from natex.kink import regression_kink, sensitivity_grid
 from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.survey.applicability import FamilyPlan, resolve_applicability
+from natex.survey.figures import missing_matplotlib_reason, render_family_figures
 from natex.survey.registry import FAMILIES, FAMILY_ORDER, DeclaredInputs
 from natex.validate.density import binned_poisson_jump
 
@@ -73,8 +74,6 @@ ALPHA = 0.05  # verdict gate for scan/kink/bunching p-values
 # 0.05 is often unattainable with few donors — documented coarser gate.
 SC_ALPHA = 0.10
 
-_NO_FIGURE_YET = "no figure: figure generation arrives with the report stage (plan task 7)"
-
 
 @dataclass
 class FamilyResult:
@@ -85,7 +84,7 @@ class FamilyResult:
     key_numbers: dict = field(default_factory=dict)  # flat name->number (NaN -> null)
     diagnostics: dict = field(default_factory=dict)  # extras incl. attached caveats
     figures: dict[str, str] = field(default_factory=dict)  # name -> out_dir-relative posix path
-    no_figure_reason: str | None = None  # set whenever figures == {}
+    no_figure_reason: str | None = None  # set whenever figures are absent or incomplete
     details_path: str | None = None  # families/<name>.json relative to out_dir
     error: str | None = None  # verbatim str(exc) when status == "failed"
 
@@ -248,7 +247,9 @@ def _did_dataset(df: pd.DataFrame, intake: IntakeReport, declared: DeclaredInput
 
 # ---------------------------------------------------------------------------
 # Per-family runners. Each returns a FamilyResult; exceptions are handled by
-# the survey()'s documented isolation boundary.
+# the survey()'s documented isolation boundary. ``artifacts`` is the family's
+# live-object figure payload (plan task 7): the runner stashes the arrays and
+# objects it already has in hand so the figure glue never re-reads the CSV.
 # ---------------------------------------------------------------------------
 
 
@@ -264,7 +265,6 @@ def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> Fam
             family=family, status="failed",
             reason=f"no {family} configuration scanned — first config error recorded",
             diagnostics=diagnostics, error=first_error,
-            no_figure_reason=f"no figure: no {family} configuration scanned",
         )
     reason = (
         f"no {family} configuration could be scanned "
@@ -284,6 +284,7 @@ def _run_rdd(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     ds = _rdd_dataset(df, intake)
     rep = discover(
@@ -295,6 +296,13 @@ def _run_rdd(
     if best is None:
         return _scanless_result("rdd", rep, diagnostics)
     s = best.summary
+    # Figure payload (task 7): the glue re-scans ds at the same effective
+    # k/degree — presentational only, the randomization test is NOT re-run.
+    eff_budget = _effective_budget(intake.search_plan, budget)
+    artifacts.update(
+        ds=ds, k=int(eff_budget["k"]), degree=int(eff_budget["degree"]),
+        rng=fam_rng, summary=s,
+    )
     p, density_p = best.p_value, s.get("density_p")
     if not _finite(p):
         status, reason = "null", "scan p-value unavailable — no credible discovery"
@@ -337,7 +345,6 @@ def _run_rdd(
     return FamilyResult(
         family="rdd", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -349,6 +356,7 @@ def _run_did(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     ds = _did_dataset(df, intake, declared)
     rep = discover(
@@ -360,6 +368,12 @@ def _run_did(
     if best is None:
         return _scanless_result("did", rep, diagnostics)
     s = best.summary
+    # Figure payload (task 7): the glue rebuilds the panel and re-runs the
+    # scan at the same effective budget to recover the pretrend discovery.
+    artifacts.update(
+        ds=ds, budget=_effective_budget(intake.search_plan, budget),
+        rng=fam_rng, summary=s,
+    )
     p = best.p_value
     if not _finite(p):
         status, reason = "null", "scan p-value unavailable — no credible discovery"
@@ -395,7 +409,6 @@ def _run_did(
     return FamilyResult(
         family="did", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -469,6 +482,7 @@ def _run_kink(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     numeric = _numeric_columns(intake)
     time_like = _time_like_columns(intake)
@@ -518,6 +532,11 @@ def _run_kink(
             "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
             "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
         }
+        # Figure payload (task 7): kink_fit_plot per usable cutoff.
+        artifacts.setdefault("cutoffs", []).append({
+            "column": col, "running": r, "outcome_values": y, "cutoff": c,
+            "bandwidth": bw, "estimate": est,
+        })
         bws = [0.5 * bw, bw, 2.0 * bw]
         try:
             grid = sensitivity_grid(y, r, bandwidths=bws, policy_kink=1.0, cutoff=c)
@@ -546,7 +565,7 @@ def _run_kink(
         )
         return FamilyResult(
             family="kink", status="needs_input", reason=reason,
-            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+            diagnostics=diagnostics,
         )
 
     p_holm, min_holm = _min_holm(p_values)
@@ -577,7 +596,6 @@ def _run_kink(
     return FamilyResult(
         family="kink", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -589,6 +607,7 @@ def _run_iv(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     numeric = _numeric_columns(intake)
     treatment = next(
@@ -620,7 +639,6 @@ def _run_iv(
             family="iv", status="needs_input", reason=reason,
             diagnostics={"caveats": [FAMILIES["iv"].caveat],
                          "dropped_instruments": dropped},
-            no_figure_reason=_NO_FIGURE_YET,
         )
     outcome = _first_outcome_guess(intake, df, exclude={treatment, *pool})
 
@@ -654,6 +672,8 @@ def _run_iv(
         )
         if est.ar_ci is not None:
             key_numbers.update(ar_ci_low=est.ar_ci[0], ar_ci_high=est.ar_ci[1])
+        # Figure payload (task 7): forest of the 2SLS row (+ finite AR interval).
+        artifacts["estimate"] = est
 
     if not search.selected:
         status, reason = "null", "no instrument selected from the declared pool"
@@ -687,7 +707,10 @@ def _run_iv(
     return FamilyResult(
         family="iv", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
+        no_figure_reason=(
+            "no figure: selection-only run (no outcome column)"
+            if outcome is None else None
+        ),
     )
 
 
@@ -699,6 +722,7 @@ def _run_sc(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     profile = intake.profile
     panel = profile.panel_candidates[0] if profile.panel_candidates else (None, None)
@@ -716,7 +740,7 @@ def _run_sc(
     if outcome is None:
         return FamilyResult(
             family="sc", status="needs_input", reason=_NO_OUTCOME_REASON,
-            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+            diagnostics=diagnostics,
         )
     Y, units, times = unit_time_matrix(df, unit, time, outcome)
 
@@ -731,7 +755,7 @@ def _run_sc(
                     "could not identify a treated unit (no binary treatment column "
                     "profiled); provide treated_unit/t0 via guidance"
                 ),
-                diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+                diagnostics=diagnostics,
             )
         t_on = df[tcol].to_numpy(dtype=float) == 1.0
         if treated is None:
@@ -743,7 +767,7 @@ def _run_sc(
                         f"could not identify a single treated unit from {tcol!r} "
                         f"(found {len(ever)}); provide treated_unit/t0 via guidance"
                     ),
-                    diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+                    diagnostics=diagnostics,
                 )
             treated = ever[0]
         if t0 is None:
@@ -757,8 +781,10 @@ def _run_sc(
         failure = str(sel.extras["failure"])
         return FamilyResult(
             family="sc", status="failed", reason=failure, error=failure,
-            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+            diagnostics=diagnostics,
         )
+    # Figure payload (task 7): per-period treated-minus-synthetic gap.
+    artifacts.update(times=sel.times, gaps=sel.effect_by_time, t0=t0)
     rep = sc_placebo_test(Y, units, times, treated, t0)
     diagnostics["n_skipped_placebos"] = rep.n_skipped
     key_numbers = {
@@ -779,7 +805,6 @@ def _run_sc(
     return FamilyResult(
         family="sc", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -791,6 +816,7 @@ def _run_bunching(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     numeric = _numeric_columns(intake)
     time_like = _time_like_columns(intake)
@@ -814,6 +840,11 @@ def _run_bunching(
             "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
             "n_finite": int(np.isfinite(s).sum()),
         }
+        # Figure payload (task 7): bunching_hist per usable threshold.
+        artifacts.setdefault("thresholds", []).append({
+            "column": col, "values": df[col].to_numpy(dtype=float),
+            "threshold": t, "p_value": rep.p_value,
+        })
         if col in time_like:
             caveats.append(_AUDIT18_CAVEAT.format(col=col))
 
@@ -827,7 +858,7 @@ def _run_bunching(
         )
         return FamilyResult(
             family="bunching", status="needs_input", reason=reason,
-            diagnostics=diagnostics, no_figure_reason=_NO_FIGURE_YET,
+            diagnostics=diagnostics,
         )
 
     p_holm, min_holm = _min_holm(p_values)
@@ -855,7 +886,6 @@ def _run_bunching(
     return FamilyResult(
         family="bunching", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -872,6 +902,7 @@ def _run_dee(
     budget: dict | None,
     fam_rng: np.random.Generator,
     fam_dir: Path,
+    artifacts: dict,
 ) -> FamilyResult:
     # The survey() loop already gated on a CREDIBLE rdd family result; this
     # runner rebuilds the same rdd Dataset and debiases over its discoveries.
@@ -890,6 +921,10 @@ def _run_dee(
     )
     n_experiments = len(res.vknn.experiments)
     n_used = int(np.asarray(res.used, dtype=bool).sum())
+    # Figure payload (task 7): forest of per-experiment local-2SLS taus.
+    artifacts.update(
+        tau=[e.tau for e in res.effects], se=[e.se for e in res.effects]
+    )
     key_numbers = {
         "w_debias": res.weights.w_debias,
         "n_experiments": n_experiments,
@@ -917,7 +952,6 @@ def _run_dee(
     return FamilyResult(
         family="dee", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
-        no_figure_reason=_NO_FIGURE_YET,
     )
 
 
@@ -997,6 +1031,7 @@ def survey(
     families: dict[str, FamilyResult] = {}
     ran: list[str] = []
     not_run: dict[str, str] = {}
+    family_artifacts: dict[str, dict] = {}  # live-object figure payloads (task 7)
     for name in FAMILY_ORDER:
         plan = plans[name]
         if not plan.run:
@@ -1008,7 +1043,7 @@ def survey(
             families[name] = FamilyResult(
                 family=name, status=status, reason=plan.reason,
                 applicability=_plan_dict(plan),
-                no_figure_reason="no figure: family did not run",
+                no_figure_reason=f"no figure: family did not run ({plan.reason})",
             )
             not_run[name] = plan.reason
             continue
@@ -1019,14 +1054,15 @@ def survey(
             families[name] = FamilyResult(
                 family=name, status="skipped", reason=reason,
                 applicability=_plan_dict(plan),
-                no_figure_reason="no figure: family did not run",
+                no_figure_reason=f"no figure: family did not run ({reason})",
             )
             not_run[name] = reason
             continue
         fam_dir = out_dir / "families" / name
         runner_fn = globals()[f"_run_{name}"]  # module attribute: monkeypatchable
         try:
-            result = runner_fn(df, intake, declared, plan, budget, fam_rngs[name], fam_dir)
+            result = runner_fn(df, intake, declared, plan, budget, fam_rngs[name],
+                               fam_dir, family_artifacts.setdefault(name, {}))
         except Exception as exc:  # noqa: BLE001 — DOCUMENTED isolation boundary (plan task 5):
             # a family failure must never abort the survey; BaseException
             # (KeyboardInterrupt/SystemExit) still propagates.
@@ -1034,7 +1070,6 @@ def survey(
                 family=name, status="failed", reason="family raised",
                 error=str(exc),
                 diagnostics={"traceback": traceback.format_exc()},
-                no_figure_reason="no figure: family failed",
             )
         result.applicability = _plan_dict(plan)
         # NaN -> None NOW (not just at save): FamilyResult equality across a
@@ -1043,6 +1078,28 @@ def survey(
         result.diagnostics = jsonable(result.diagnostics)
         families[name] = result
         ran.append(name)
+
+    # ------------------------------------------------------------------
+    # Figures (plan task 7) — presentation only, never a verdict change.
+    # matplotlib importability is probed ONCE per survey.
+    mpl_reason = missing_matplotlib_reason()
+    for name in ran:
+        fam = families[name]
+        if fam.status in ("failed", "needs_input"):
+            fam.figures = {}
+            fam.no_figure_reason = f"no figure: family did not run ({fam.reason})"
+            continue
+        if mpl_reason is not None:
+            fam.figures = {}
+            fam.no_figure_reason = mpl_reason
+            continue
+        artifacts = family_artifacts.get(name)
+        if not artifacts:
+            # keep a runner-recorded reason (scanless rdd/did, selection-only iv)
+            if fam.no_figure_reason is None:
+                fam.no_figure_reason = f"no figure: nothing to draw for the {name} family"
+            continue
+        fam.figures, fam.no_figure_reason = render_family_figures(name, artifacts, out_dir)
 
     fam_root = out_dir / "families"
     for name in ran:
