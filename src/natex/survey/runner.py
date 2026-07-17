@@ -59,6 +59,7 @@ from natex.jsonutil import jsonable
 from natex.kink import regression_kink, sensitivity_grid
 from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
+from natex.report.survey_html import render_survey_html, render_survey_md
 from natex.survey.applicability import FamilyPlan, resolve_applicability
 from natex.survey.figures import missing_matplotlib_reason, render_family_figures
 from natex.survey.registry import FAMILIES, FAMILY_ORDER, DeclaredInputs
@@ -1126,4 +1127,17 @@ def survey(
         guidance_log_path=guidance_log_path,
     )
     result.save()
+
+    # Reports (plan task 8): report.md ALWAYS (pure Python); report.html only
+    # with the report extra — a missing jinja2 degrades to the md report plus
+    # a recorded install message, never an exception. Both renderers consume
+    # the JSON-NATIVE dict, the same path a re-render from survey.json takes.
+    payload = json.loads(result.to_json())
+    result.report_md = render_survey_md(payload, out_dir).name  # out_dir-relative
+    try:
+        result.report_html = render_survey_html(payload, out_dir).name
+    except ImportError as exc:  # message names natex-discovery[report]
+        result.report_html = None
+        coverage.setdefault("notes", []).append(str(exc))
+    result.save()  # re-save with the report paths recorded
     return result

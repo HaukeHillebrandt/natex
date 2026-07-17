@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+body { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+       margin: 2rem auto; max-width: 62rem; padding: 0 1rem; color: #222; line-height: 1.5; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.2rem; margin-top: 0; }
+.banner { background: #fdf3d7; border: 1px solid #E69F00; border-radius: 6px;
+          padding: .6rem 1rem; font-weight: 600; }
+.note { color: #555; }
+table { border-collapse: collapse; margin: 1rem 0; }
+th, td { border: 1px solid #ddd; padding: .35rem .6rem; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; }
+.meta th { width: 9rem; }
+.badge { display: inline-block; padding: .05rem .55rem; border-radius: 999px; color: #fff;
+         font-weight: 600; font-size: .85em; white-space: nowrap; }
+.badge-credible { background: #009E73; }
+.badge-null { background: #999999; }
+.badge-skipped { background: #0072B2; }
+.badge-needs_input { background: #E69F00; }
+.badge-failed { background: #D55E00; }
+.badge-unknown { background: #666666; }
+section { border-top: 1px solid #ddd; margin-top: 2rem; padding-top: 1rem; }
+figure { margin: 1rem 0; }
+img { max-width: 100%; height: auto; border: 1px solid #eee; }
+figcaption { color: #555; font-size: .9em; }
+.fig-note { color: #555; font-style: italic; }
+.caveat { color: #7a5900; background: #fdf6e3; border-left: 4px solid #E69F00;
+          padding: .4rem .8rem; }
+.error { color: #D55E00; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.override { color: #0072B2; }
+</style>
+</head>
+<body>
+<header>
+<h1>{{ title }}</h1>
+<p class="banner">{{ banner }}</p>
+<table class="meta">
+<tr><th>dataset</th><td>{{ source }} ({{ shape }})</td></tr>
+<tr><th>time column</th><td>{{ time_column }} (range {{ time_range }})</td></tr>
+<tr><th>software</th><td>natex-discovery {{ version }}</td></tr>
+<tr><th>seed</th><td>{{ seed }}</td></tr>
+<tr><th>created</th><td>{{ created }}</td></tr>
+{% if context %}
+<tr><th>context</th><td>{{ context }}</td></tr>
+{% endif %}
+</table>
+{% for note in notes %}
+<p class="note">{{ note }}</p>
+{% endfor %}
+</header>
+
+<h2>Verdicts</h2>
+<table class="verdicts">
+<tr><th>family</th><th>status</th><th>reason</th></tr>
+{% for fam in families %}
+<tr>
+<td><a href="#{{ fam.name }}">{{ fam.name }}</a></td>
+<td><span class="badge badge-{{ fam.status }}">{{ fam.icon }} {{ fam.status_label }}</span></td>
+<td>{{ fam.reason }}</td>
+</tr>
+{% endfor %}
+</table>
+
+{% for fam in families %}
+<section id="{{ fam.name }}">
+<h2>{{ fam.title }}
+<span class="badge badge-{{ fam.status }}">{{ fam.icon }} {{ fam.status_label }}</span></h2>
+{% if fam.description %}
+<p>{{ fam.description }}</p>
+{% endif %}
+<p><strong>Verdict:</strong> {{ fam.reason }}</p>
+<p><strong>Applicability:</strong> {{ fam.applicability_line }}</p>
+{% if fam.override_line %}
+<p class="override"><strong>Override:</strong> {{ fam.override_line }}</p>
+{% endif %}
+{% if fam.guidance_error %}
+<p class="note">guidance: {{ fam.guidance_error }}</p>
+{% endif %}
+{% if fam.key_numbers %}
+<table class="numbers">
+<tr><th>quantity</th><th>value</th></tr>
+{% for k, v in fam.key_numbers %}
+<tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% for fig in fam.figures %}
+{% if fig.b64 %}
+<figure>
+<img src="data:image/png;base64,{{ fig.b64 }}" alt="{{ fig.name }}">
+<figcaption>{{ fig.name }}</figcaption>
+</figure>
+{% else %}
+<p class="fig-note">{{ fig.note }}</p>
+{% endif %}
+{% endfor %}
+{% if fam.no_figure_reason %}
+<p class="fig-note">{{ fam.no_figure_reason }}</p>
+{% endif %}
+{% if fam.diagnostics %}
+<details open>
+<summary>Diagnostics</summary>
+<ul>
+{% for k, v in fam.diagnostics %}
+<li><strong>{{ k }}:</strong> {{ v }}</li>
+{% endfor %}
+</ul>
+</details>
+{% endif %}
+{% if fam.error %}
+<p class="error">error: {{ fam.error }}</p>
+{% endif %}
+{% for caveat in fam.caveats %}
+<p class="caveat">Caveat: {{ caveat }}</p>
+{% endfor %}
+</section>
+{% endfor %}
+</body>
+</html>
