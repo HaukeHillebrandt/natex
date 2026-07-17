@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import math
 import typer
 
 from natex.data.registry import REGISTRY, data_root, verify
@@ -1158,8 +1159,9 @@ def _discover_did(
     typer.echo(f"composition passed: {comp.passed}   anticipation passed: {antic.passed}")
     if effects:
         e = effects["dd"]
+        p_str = f"{e['p']:.3f}" if not math.isnan(e['p']) else "NaN (randomization test refused)"
         typer.echo(
-            f"dd tau={e['tau']:.3f} p={e['p']:.3f} "
+            f"dd tau={e['tau']:.3f} p={p_str} "
             f"(synthetic tau={effects['synthetic']['tau']:.3f}, "
             f"gess tau={effects['gess']['tau']:.3f})"
         )
