@@ -48,6 +48,28 @@ everything runs on core deps without them.
 
 ## Quickstart
 
+### One-command survey
+
+Don't want to pick a design first? `natex survey` runs one dataset systematically against
+all seven method families — rdd, did, kink, iv, sc, bunching, dee — and writes one visual
+report with an applicability verdict per family, including reasoned skips:
+
+```bash
+uv run natex survey mydata.csv --seed 0
+uv run natex survey mydata.csv --seed 0 --context "state-year panel of cigarette sales" \
+  --cutoff score=215 --instrument rainfall --threshold income=85000 --out out/survey
+open out/survey/report.html    # report.md is always written alongside as a fallback
+```
+
+The report opens with the banner "AI-generated — verify before citing", then shows a
+verdict table (credible / null / skipped / needs_input / failed, one row per family with a
+one-sentence reason) and a per-family section with a plain-language description, key
+numbers, figures, and the family's honest-inference caveats. Families needing inputs you
+didn't declare (kink cutoffs, IV instruments, bunching thresholds) are reported as
+`needs_input` rather than silently dropped. Details: the
+[survey method card](docs/method_cards/survey.md) and the
+[natex-survey skill](skills/natex-survey/SKILL.md).
+
 ### CLI
 
 Point `natex discover` at a CSV with a treatment column (binary or continuous) and,
