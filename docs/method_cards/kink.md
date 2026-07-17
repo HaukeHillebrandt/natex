@@ -223,3 +223,7 @@ degree-13 specification over-rejects under the null in calibration; the Table A3
 available via `degree=13`. These grids are falsification evidence — passing them does not
 certify the identifying assumptions, and a joint pretrend test, CLI flags, and report/paper
 bundle integration remain follow-ups.
+
+Under the `plot` extra, `natex.report.figures.kink_fit_plot` renders the estimation-window
+scatter, the two-sided kernel-weighted local-linear fits, the dashed pre-trend continuation
+past the cutoff, and an optional tau/se annotation from a `KinkEstimate`.

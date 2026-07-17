@@ -18,8 +18,10 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 
+from natex.data.synthetic_kink import make_rkd_synthetic  # noqa: E402
 from natex.did.panel import build_panel  # noqa: E402
 from natex.did.suddds import suddds_scan  # noqa: E402
+from natex.kink import KinkEstimate, regression_kink  # noqa: E402
 from natex.rdd.lord3 import lord3_scan  # noqa: E402
 from natex.report.bundle import ResultsBundle  # noqa: E402
 from natex.report.figures import (  # noqa: E402
@@ -28,6 +30,7 @@ from natex.report.figures import (  # noqa: E402
     did_figures,
     discovery_scatter,
     effect_forest,
+    kink_fit_plot,
     pretrend_plot,
     rdd_figures,
 )
@@ -174,7 +177,85 @@ def test_did_figures_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 6. import guard: module import is guard-free; calls fail with install hint
+# 6. kink_fit_plot: scatter + two-sided fits, counterfactual, annotation
+# ---------------------------------------------------------------------------
+
+
+def _rkd_arrays(seed: int):
+    data, truth = make_rkd_synthetic(n=400, rng=np.random.default_rng(seed))
+    return data.df["running"].to_numpy(), data.df["y"].to_numpy(), truth
+
+
+def test_kink_fit_plot_saves_and_is_idempotent(tmp_path):
+    running, y, _truth = _rkd_arrays(0)
+    p = kink_fit_plot(running, y, 0.0, 0.6, tmp_path / "kink_fit")
+    _assert_saved(p)
+    p2 = kink_fit_plot(running, y, 0.0, 0.6, tmp_path / "kink_fit")  # same paths
+    assert p2 == p
+    _assert_saved(p2)
+
+
+def test_kink_fit_plot_estimate_annotation_and_options(tmp_path):
+    running, y, truth = _rkd_arrays(1)
+    est = regression_kink(
+        y, running, policy_kink=truth.policy_kink, cutoff=truth.cutoff, bandwidth=0.6
+    )
+    assert np.isfinite(est.tau)  # the annotation shows real numbers, not dashes
+    p = kink_fit_plot(
+        running,
+        y,
+        truth.cutoff,
+        0.6,
+        tmp_path / "kink_annotated",
+        kernel="uniform",
+        donut=0.05,
+        estimate=est,
+        cutoff_label="reform",
+        counterfactual=False,
+    )
+    _assert_saved(p)
+
+
+def test_kink_fit_plot_nan_estimate_never_renders_nan(tmp_path):
+    running, y, _truth = _rkd_arrays(2)
+    nan = float("nan")
+    est = KinkEstimate(
+        tau=nan,
+        se=nan,
+        ci=(nan, nan),
+        method="sharp_rkd",
+        reduced_form=nan,
+        reduced_form_se=nan,
+        first_stage=nan,
+        first_stage_se=nan,
+        first_stage_F=nan,
+        weak_first_stage=True,
+        n_used=0,
+        n_by_cell={"left": 0, "right": 0},
+    )
+    _assert_saved(
+        kink_fit_plot(running, y, 0.0, 0.6, tmp_path / "kink_nan", estimate=est)
+    )
+
+
+def test_kink_fit_plot_one_sided_data_still_saves(tmp_path):
+    running, y, _truth = _rkd_arrays(3)
+    left = running < 0.0  # right cell empty: scatter renders, no fabricated fit
+    _assert_saved(
+        kink_fit_plot(running[left], y[left], 0.0, 0.6, tmp_path / "kink_left_only")
+    )
+
+
+def test_kink_fit_plot_validates_like_the_estimator(tmp_path):
+    running, y, _truth = _rkd_arrays(4)
+    with pytest.raises(ValueError, match="kernel"):
+        kink_fit_plot(running, y, 0.0, 0.6, tmp_path / "bad", kernel="gaussian")
+    with pytest.raises(ValueError, match="bandwidth"):
+        kink_fit_plot(running, y, 0.0, -1.0, tmp_path / "bad")
+
+
+# ---------------------------------------------------------------------------
+# 7. import guard: module import is guard-free; calls fail with install hint
 # ---------------------------------------------------------------------------
 
 

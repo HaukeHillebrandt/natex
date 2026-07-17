@@ -24,8 +24,21 @@ if TYPE_CHECKING:
     from natex.data.spec import Dataset
     from natex.did.panel import CategoricalPanel
     from natex.did.suddds import DiDDiscovery
+    from natex.kink.estimate import KinkEstimate
     from natex.rdd.lord3 import LoRD3Result
     from natex.report.bundle import ResultsBundle
+
+__all__ = [
+    "FigurePaths",
+    "OKABE_ITO",
+    "density_hist",
+    "did_figures",
+    "discovery_scatter",
+    "effect_forest",
+    "kink_fit_plot",
+    "pretrend_plot",
+    "rdd_figures",
+]
 
 OKABE_ITO = (
     "#0072B2", "#E69F00", "#009E73", "#D55E00",
@@ -302,6 +315,104 @@ def effect_forest(
             ax.set_xlabel("effect (tau)")
             ax.set_title("Effect estimates", fontsize=10)
             return _save(fig, out_dir, stem)
+        finally:
+            plt.close(fig)
+
+
+def kink_fit_plot(
+    running,
+    outcome,
+    cutoff: float,
+    bandwidth: float,
+    out_stem: str | Path,
+    *,
+    kernel: str = "triangular",
+    donut: float = 0.0,
+    estimate: KinkEstimate | None = None,
+    cutoff_label: str | None = None,
+    counterfactual: bool = True,
+) -> FigurePaths:
+    """Scatter + two-sided kernel-weighted local-linear kink fit at ``cutoff``.
+
+    Presentational only: the overlay re-runs the SAME weighted local-linear
+    fit the kink estimator uses (``natex.kink.estimate`` internals, so kernel
+    and design definitions cannot drift) and draws no confidence bands — the
+    tau/se corner annotation comes from the ``estimate`` you pass in, never a
+    new fit here (non-finite values render as an em dash). The scatter shows
+    the padded window: estimation-sample points dark, bandwidth/donut-excluded
+    context points light. ``counterfactual=True`` continues the below-cutoff
+    fit dashed past the cutoff ("pre-trend continued"). When a side has too
+    few points for a line the scatter still renders — no fabricated fit.
+    Writes ``<out_stem>.png`` (150 dpi) + ``<out_stem>.pdf``.
+    """
+    plt = _mpl()
+    from natex.kink.estimate import _fit, _kernel_weights, _prepare, _validate_common
+
+    _validate_common(cutoff, bandwidth, 1, kernel, donut, 0.05)
+    running_arr = np.asarray(running, dtype=float).ravel()
+    outcome_arr = np.asarray(outcome, dtype=float).ravel()
+    prepared = _prepare(
+        outcome_arr,
+        running_arr,
+        treatment=None,
+        post=None,
+        cutoff=cutoff,
+        bandwidth=bandwidth,
+        degree=1,
+        kernel=kernel,
+        donut=donut,
+        covariates=None,
+        clusters=None,
+    )
+    beta = None
+    if all(count >= 2 for count in prepared.n_by_cell.values()):
+        try:
+            # [a_left, b_left, a_right, b_right] on powers of u = distance/bandwidth
+            beta = _fit(prepared, prepared.y).beta
+        except (np.linalg.LinAlgError, ValueError):
+            beta = None  # degenerate design: scatter-only figure
+    distance = running_arr - cutoff
+    finite = np.isfinite(distance) & np.isfinite(outcome_arr)
+    pad = 1.15 * bandwidth
+    inside = finite & (np.abs(distance) <= bandwidth) & (np.abs(distance) >= donut)
+    weight = np.zeros_like(distance)
+    weight[inside] = _kernel_weights(distance[inside] / bandwidth, kernel)
+    context = finite & (np.abs(distance) <= pad) & ~(inside & (weight > 0.0))
+    with plt.rc_context(_RC):
+        fig, ax = plt.subplots(figsize=(6.4, 4.2))
+        try:
+            ax.scatter(running_arr[context], outcome_arr[context], s=12,
+                       color="0.8", zorder=1)
+            ax.scatter(cutoff + prepared.x, prepared.y, s=14, color="0.45",
+                       alpha=0.8, zorder=2)
+            ax.axvline(cutoff, color="black", linestyle="--", linewidth=1.2,
+                       label=cutoff_label)
+            if beta is not None:
+                left_grid = np.linspace(-bandwidth, 0.0, 64)
+                right_grid = np.linspace(0.0, bandwidth, 64)
+                a_left, b_left, a_right, b_right = (float(b) for b in beta[:4])
+                ax.plot(cutoff + left_grid, a_left + b_left * left_grid / bandwidth,
+                        color=_BASE, linewidth=1.8, zorder=3, label="fit below cutoff")
+                ax.plot(cutoff + right_grid, a_right + b_right * right_grid / bandwidth,
+                        color=OKABE_ITO[1], linewidth=1.8, zorder=3,
+                        label="fit at/above cutoff")
+                if counterfactual:
+                    ax.plot(cutoff + right_grid, a_left + b_left * right_grid / bandwidth,
+                            color=_BASE, linewidth=1.4, linestyle="--", zorder=3,
+                            label="pre-trend continued")
+            if estimate is not None:
+                ax.text(0.98, 0.02,
+                        f"tau = {_fmt(estimate.tau)}\nse = {_fmt(estimate.se)}",
+                        transform=ax.transAxes, ha="right", va="bottom",
+                        fontsize=8, color="0.25")
+            if any(ax.get_legend_handles_labels()[1]):
+                ax.legend(frameon=False, fontsize=8)
+            ax.set_xlim(cutoff - pad, cutoff + pad)
+            ax.set_xlabel("running")
+            ax.set_ylabel("outcome")
+            ax.set_title(f"Local-linear kink fit at cutoff = {_fmt(cutoff)}", fontsize=10)
+            stem = Path(out_stem)
+            return _save(fig, stem.parent, stem.name)
         finally:
             plt.close(fig)
 
