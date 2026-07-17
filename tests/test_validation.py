@@ -4,7 +4,7 @@ import pandas as pd
 from natex.data.spec import Dataset, DatasetSpec
 from natex.data.synthetic import make_synthetic
 from natex.rdd.lord3 import Discovery, lord3_scan
-from natex.validate.density import density_test
+from natex.validate.density import binned_poisson_jump, density_test
 from natex.validate.honest import honest_split
 from natex.validate.placebo import _holm, hc1_ols, placebo_tests, signed_distance
 
@@ -164,3 +164,49 @@ def test_density_smoke():
     s = signed_distance(ds, res.discoveries[0])
     assert s.shape == (res.discoveries[0].members.size,)
     assert np.isfinite(s).all()
+
+
+def test_binned_poisson_jump_matches_density_test():
+    """Pure-refactor proof (phase survey, task 4): density_test must delegate
+    to binned_poisson_jump, so on the same signed distances both return the
+    IDENTICAL statistic bitwise — same p_value, same theta."""
+    rng = np.random.default_rng(4)
+    ds, _ = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=40, rng=np.random.default_rng(5))
+    d = res.discoveries[0]
+    rep = density_test(ds, d)
+    rep2 = binned_poisson_jump(signed_distance(ds, d))
+    assert rep.p_value == rep2.p_value  # bitwise, not approx
+    assert rep.theta == rep2.theta
+
+
+def test_binned_poisson_jump_detects_gap():
+    """Tripling the mass on [0, 0.1] of 2000 uniform[-1, 1] draws must yield a
+    tiny p; the untouched symmetric sample must not.
+
+    Calibrated across seeds 0-4: gap p = 0.0 on every seed; null p was
+    {0: 0.979, 1: 0.0093, 2: 0.24, 3: 0.0, 4: 0.056}. On this shape (20 bins
+    of ~100 counts) the frozen IRLS (100 iterations, tol 1e-10 — pure
+    refactor, not retuned here) exits before full convergence, so the null p
+    is seed-noisy; on real discovery signed distances it converges to
+    machine precision (see test_binned_poisson_jump_matches_density_test).
+    Seed 0 pinned per plan: gap p = 0.0 < 0.01, null p = 0.979 > 0.05 —
+    wide margin on both gates, and the draw is deterministic.
+    """
+    rng = np.random.default_rng(0)
+    s = rng.uniform(-1.0, 1.0, 2000)
+    bump = s[(s >= 0.0) & (s < 0.1)]
+    s_gap = np.concatenate([s, bump, bump])  # mass on [0, 0.1] tripled
+    assert binned_poisson_jump(s_gap).p_value < 0.01
+    assert binned_poisson_jump(s).p_value > 0.05
+
+
+def test_binned_poisson_jump_degenerate():
+    """Constant input (< 2 distinct finite values) -> NaN p, NaN theta —
+    NaN, never 0. Same for empty and all-non-finite input."""
+    rep = binned_poisson_jump(np.full(50, 3.7))
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta)
+    rep_empty = binned_poisson_jump(np.array([]))
+    assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
+    rep_nan = binned_poisson_jump(np.array([np.nan, np.inf, -np.inf, 1.0]))
+    assert np.isnan(rep_nan.p_value) and np.isnan(rep_nan.theta)

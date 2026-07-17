@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FigurePaths",
     "OKABE_ITO",
+    "bunching_hist",
     "density_hist",
     "did_figures",
     "discovery_scatter",
@@ -212,6 +213,58 @@ def density_hist(
                 0.02, 0.98,
                 "Frozen discovered geometry only;\n"
                 "search selection not accounted for (audit 6).",
+                transform=ax.transAxes, va="top", fontsize=7, color="0.35",
+            )
+            return _save(fig, out_dir, stem)
+        finally:
+            plt.close(fig)
+
+
+def bunching_hist(
+    values,
+    threshold: float,
+    *,
+    out_dir: str | Path,
+    n_bins: int = 20,
+    p_value=None,
+    name: str | None = None,
+    stem: str = "bunching_hist",
+) -> FigurePaths:
+    """Raw-value histogram split at a DECLARED threshold.
+
+    Mirrors :func:`density_hist` styling but carries NO audit-item-6 search
+    caveat: the threshold was declared by the user, not searched, and the
+    annotation says exactly that. ``p_value`` (typically
+    :func:`natex.validate.density.binned_poisson_jump` on
+    ``values - threshold``) goes in the title; non-finite values are dropped
+    — never zeroed — and missing numbers render as an em dash, never "nan".
+    """
+    plt = _mpl()
+    v = np.asarray(values, dtype=float).ravel()
+    v = v[np.isfinite(v)]
+    threshold = float(threshold)
+    if v.size:
+        edges = np.histogram_bin_edges(v, bins=n_bins)
+    else:
+        edges = np.linspace(threshold - 1.0, threshold + 1.0, n_bins + 1)
+    with plt.rc_context(_RC):
+        fig, ax = plt.subplots(figsize=(6.4, 4.2))
+        try:
+            ax.hist(v[v < threshold], bins=edges, color=_BASE, alpha=0.85,
+                    label="below threshold")
+            ax.hist(v[v >= threshold], bins=edges, color=OKABE_ITO[1], alpha=0.85,
+                    label="at/above threshold")
+            ax.axvline(threshold, color="black", linestyle="--", linewidth=1.2)
+            title = f"Bunching at declared threshold = {_fmt(threshold)}"
+            if p_value is not None:
+                title += f" — p = {_fmt(p_value)}"
+            ax.set_title(title, fontsize=10)
+            ax.set_xlabel(name if name else "value")
+            ax.set_ylabel("count")
+            ax.legend(frameon=False, fontsize=8)
+            ax.text(
+                0.02, 0.98,
+                "Split at the declared threshold — not searched.",
                 transform=ax.transAxes, va="top", fontsize=7, color="0.35",
             )
             return _save(fig, out_dir, stem)

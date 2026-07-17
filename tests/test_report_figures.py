@@ -26,6 +26,7 @@ from natex.rdd.lord3 import lord3_scan  # noqa: E402
 from natex.report.bundle import ResultsBundle  # noqa: E402
 from natex.report.figures import (  # noqa: E402
     FigurePaths,
+    bunching_hist,
     density_hist,
     did_figures,
     discovery_scatter,
@@ -95,6 +96,48 @@ def test_density_hist(tmp_path):
     # NaN p-value and NaN distances must not raise (rendered as an em dash)
     s_nan = np.append(s, np.nan)
     _assert_saved(density_hist(s_nan, out_dir=tmp_path, p_value=float("nan")))
+
+
+# ---------------------------------------------------------------------------
+# bunching_hist: raw values at a DECLARED threshold (phase survey, task 4)
+# ---------------------------------------------------------------------------
+
+
+def test_bunching_hist(tmp_path, monkeypatch):
+    """Writes png+pdf (png nonempty); the title names the declared threshold;
+    with p_value=None no axis text ever reads 'nan' — missing numbers are
+    em-dashed or omitted, never rendered raw."""
+    import natex.report.figures as figmod
+
+    captured: dict[str, list[str]] = {}
+    orig_save = figmod._save
+
+    def spy(fig, out_dir, stem):
+        captured["texts"] = [
+            t.get_text()
+            for ax in fig.axes
+            for t in (ax.title, ax.xaxis.label, ax.yaxis.label, *ax.texts)
+        ]
+        return orig_save(fig, out_dir, stem)
+
+    monkeypatch.setattr(figmod, "_save", spy)
+    rng = np.random.default_rng(0)
+    v = np.concatenate([rng.uniform(10.0, 20.0, 300), np.full(60, 15.0)])
+    p = bunching_hist(v, 15.0, out_dir=tmp_path, p_value=None, name="income")
+    _assert_saved(p)
+    assert p.png.name == "bunching_hist.png"
+    texts = captured["texts"]
+    assert any("15" in t for t in texts if t)  # threshold in the title
+    assert not any("nan" in t.lower() for t in texts if t)
+    # declared-threshold annotation, NOT the audit-6 search caveat
+    assert any("declared threshold" in t for t in texts)
+    assert not any("audit" in t.lower() for t in texts)
+    # idempotent overwrite; NaN values dropped and NaN p em-dashed, never "nan"
+    v_nan = np.append(v, np.nan)
+    p2 = bunching_hist(v_nan, 15.0, out_dir=tmp_path, p_value=float("nan"))
+    assert p2 == p
+    _assert_saved(p2)
+    assert not any("nan" in t.lower() for t in captured["texts"] if t)
 
 
 # ---------------------------------------------------------------------------
