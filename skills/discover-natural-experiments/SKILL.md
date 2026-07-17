@@ -65,7 +65,7 @@ filename** into `out/guidance/responses/`.
 Every request file contains exactly five keys:
 
 - `task` — one of `understand`, `prepare`, `search_plan`, `interpret_discovery`,
-  `audit_assumptions`, `review_control_group`.
+  `audit_assumptions`, `review_control_group`, `method_applicability`.
 - `payload` — the data profile or discovery summary you must reason over.
 - `schema_hint` — the JSON schema your answer must satisfy.
 - `instructions` — what to do for this task.

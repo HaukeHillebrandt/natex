@@ -336,3 +336,50 @@ def test_unknown_task_raises_value_error():
     bogus = GuidanceRequest.model_construct(task="bogus", payload={}, schema_hint={})
     with pytest.raises(ValueError, match="bogus"):
         be.complete(bogus)
+
+
+def test_method_applicability_echoes_heuristics():
+    """Pure echo of payload["heuristics"]: run iff status=="applicable", reason
+    verbatim, empty hints (NullBackend proposes nothing), bitwise-stable raw_text."""
+    from natex.survey.applicability import ApplicabilityResponse
+
+    be = NullBackend()
+    payload = {
+        "profile": {},
+        "context": None,
+        "declared": {},
+        "families": [],
+        "heuristics": {
+            "rdd": {"status": "applicable", "reason": "all requirements met", "unmet": []},
+            "kink": {
+                "status": "needs_input",
+                "reason": "no pre-declared cutoff",
+                "unmet": ["needs_declared_cutoff"],
+            },
+            "dee": {
+                "status": "inapplicable",
+                "reason": "gp extra missing",
+                "unmet": ["needs_gp_extra"],
+            },
+        },
+    }
+    req = GuidanceRequest(task="method_applicability", payload=payload)
+    r1 = be.complete(req)
+    r2 = be.complete(req)
+    assert r1.raw_text == r2.raw_text  # bitwise
+    assert json.loads(r1.raw_text) == r1.content
+
+    parsed = ApplicabilityResponse.model_validate(r1.content)
+    assert [d.family for d in parsed.families] == ["rdd", "kink", "dee"]
+    assert [d.run for d in parsed.families] == [True, False, False]
+    assert [d.reason for d in parsed.families] == [
+        "all requirements met",
+        "no pre-declared cutoff",
+        "gp extra missing",
+    ]
+    for d in parsed.families:  # empty hints: NullBackend proposes nothing
+        assert d.config_hints.cutoffs == []
+        assert d.config_hints.instruments == []
+        assert d.config_hints.thresholds == []
+        assert d.config_hints.treated_unit is None
+        assert d.config_hints.t0 is None

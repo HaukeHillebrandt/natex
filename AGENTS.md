@@ -68,7 +68,8 @@ and blocking until you answer. You — the coding agent — are the LLM backend.
   `OUT/guidance` — so with `--out out/` you watch `out/guidance/requests/`.
 - **Request shape.** Every request file is a JSON object with exactly five
   keys: `task` — one of `understand`, `prepare`, `search_plan`,
-  `interpret_discovery`, `audit_assumptions`, `review_control_group`;
+  `interpret_discovery`, `audit_assumptions`, `review_control_group`,
+  `method_applicability`;
   `payload` — the profile or discovery summary to reason over; `schema_hint`
   — the JSON schema the answer must satisfy; `instructions` — what to do for
   this task; `respond_to` — the absolute path to write the answer to.

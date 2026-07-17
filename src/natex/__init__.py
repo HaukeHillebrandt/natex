@@ -28,6 +28,10 @@ from natex.rdd.lord3 import LoRD3Result, lord3_scan
 from natex.report.bundle import ResultsBundle
 from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
 
+# NOTE: binds the name ``survey`` to the function, shadowing the subpackage
+# attribute — same module/function precedent as ``discover`` above.
+from natex.survey.runner import FamilyResult, SurveyResult, survey
+
 __version__ = "0.2.0"
 __all__ = [
     "CoarseToFineResult",
@@ -38,6 +42,7 @@ __all__ = [
     "DesignCandidate",
     "DiDDiscovery",
     "DiscoverReport",
+    "FamilyResult",
     "IntakeReport",
     "KinkEstimate",
     "LoRD3Result",
@@ -45,6 +50,7 @@ __all__ = [
     "ResultsBundle",
     "SearchPlan",
     "SuDDDSResult",
+    "SurveyResult",
     "build_panel",
     "coarse_to_fine_scan",
     "covariate_kinks",
@@ -65,6 +71,7 @@ __all__ = [
     "sensitivity_grid",
     "study",
     "suddds_scan",
+    "survey",
     "voronoi_knn_repair",
     "__version__",
 ]

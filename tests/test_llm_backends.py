@@ -25,8 +25,8 @@ class TestGuidanceModels:
         with pytest.raises(ValidationError):
             GuidanceRequest(task="bogus", payload={})
 
-    def test_all_six_tasks_validate(self):
-        assert len(TASKS) == 6
+    def test_all_seven_tasks_validate(self):
+        assert len(TASKS) == 7
         for task in TASKS:
             req = GuidanceRequest(task=task, payload={"a": 1})
             assert req.task == task
@@ -120,7 +120,7 @@ class TestLoggedBackend:
 
 
 class TestTaskInstructions:
-    def test_exactly_six_nonempty(self):
+    def test_exactly_seven_nonempty(self):
         assert set(TASK_INSTRUCTIONS) == set(TASKS)
         for v in TASK_INSTRUCTIONS.values():
             assert isinstance(v, str) and v.strip()

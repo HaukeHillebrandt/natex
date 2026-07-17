@@ -22,6 +22,7 @@ TASKS = (
     "interpret_discovery",
     "audit_assumptions",
     "review_control_group",
+    "method_applicability",
 )
 
 Task = Literal[
@@ -31,6 +32,7 @@ Task = Literal[
     "interpret_discovery",
     "audit_assumptions",
     "review_control_group",
+    "method_applicability",
 ]
 
 
@@ -96,6 +98,15 @@ TASK_INSTRUCTIONS: dict[str, str] = {
         "Review the proposed DiD control group (GESS expansion profile and composition "
         "summary) for plausibility as a counterfactual. You may veto it; the veto is recorded "
         "as a flag alongside the unchanged effect estimate, never in place of it."
+    ),
+    "method_applicability": (
+        "You are shown a dataset profile, user context, declared inputs, per-family method "
+        "descriptors and natex's heuristic applicability verdicts. For each family decide run "
+        "true/false with a reason a non-statistician can follow, and optionally propose config "
+        "hints (kink cutoffs, candidate instrument columns, bunching thresholds, a "
+        "synthetic-control treated unit and t0) grounded in the context. You may override the "
+        "heuristics in either direction; overrides are recorded, and your hints feed "
+        "configuration only — never statistics."
     ),
 }
 
@@ -194,6 +205,10 @@ class NullBackend:
 
     ``review_control_group``: ``face_valid`` None, ``veto`` False (NullBackend never
     vetoes), reason reports ``n_expansions``.
+
+    ``method_applicability``: pure echo of ``payload["heuristics"]`` — one decision
+    per family with ``run = (status == "applicable")``, the heuristic reason
+    verbatim, and empty config hints (NullBackend proposes nothing).
     """
 
     name = "null"
@@ -206,6 +221,7 @@ class NullBackend:
             "interpret_discovery": self._interpret_discovery,
             "audit_assumptions": self._audit_assumptions,
             "review_control_group": self._review_control_group,
+            "method_applicability": self._method_applicability,
         }
         handler = handlers.get(request.task)
         if handler is None:  # unreachable through GuidanceRequest, but never silent
@@ -452,6 +468,27 @@ class NullBackend:
             "sutva": "unreviewed",
             "veto": False,
             "caveats": ["NullBackend: assumption audit requires a human or LLM reviewer"],
+        }
+
+    @staticmethod
+    def _method_applicability(payload: dict) -> dict:
+        """Echo the heuristic verdicts: NullBackend never overrides, never hints."""
+        return {
+            "families": [
+                {
+                    "family": name,
+                    "run": h["status"] == "applicable",
+                    "reason": h["reason"],
+                    "config_hints": {
+                        "cutoffs": [],
+                        "instruments": [],
+                        "thresholds": [],
+                        "treated_unit": None,
+                        "t0": None,
+                    },
+                }
+                for name, h in payload["heuristics"].items()
+            ]
         }
 
     @staticmethod
