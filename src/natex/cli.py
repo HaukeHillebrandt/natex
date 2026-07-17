@@ -37,6 +37,7 @@ from natex.report.paper import render_paper
 from natex.report.research_brief import research_brief
 from natex.scan.coarse import coarse_to_fine_scan, coarse_to_fine_search
 from natex.scan.geometry import build_geometry
+from natex.survey import survey as run_survey
 from natex.validate.density import density_test
 from natex.validate.panel import (
     anticipation_test,
@@ -200,6 +201,110 @@ def _candidate_line(c) -> str:
     return f"{c.design} treatment={c.treatment} {where}"
 
 
+def _given(ctx: typer.Context, name: str) -> bool:
+    """True when the option was explicitly passed on the command line.
+
+    Compared by enum NAME: typer >= 0.16 vendors click, so the
+    click.core.ParameterSource class itself is not importable.
+    """
+    src = ctx.get_parameter_source(name)
+    return src is not None and src.name == "COMMANDLINE"
+
+
+def _parse_col_value_pairs(items: list[str] | None, option: str) -> dict[str, float]:
+    """Repeatable ``COL=VALUE`` flags -> ``{col: float(value)}``.
+
+    A malformed item (no ``=``, empty column, non-numeric value) exits 2
+    naming the offending item, no traceback.
+    """
+    pairs: dict[str, float] = {}
+    for item in items or []:
+        col, sep, raw = item.partition("=")
+        try:
+            if not col or not sep:
+                raise ValueError(item)
+            pairs[col] = float(raw)
+        except ValueError:
+            typer.echo(f"{option} expects COL=VALUE with a numeric VALUE, got {item!r}")
+            raise typer.Exit(code=2) from None
+    return pairs
+
+
+@app.command()
+def survey(
+    ctx: typer.Context,
+    csv: Path,
+    context: str = typer.Option(None, help="free-text dataset context passed to the analyst"),
+    backend: str = typer.Option("null", help=_BACKEND_HELP),
+    model: str = typer.Option(None, help="LLM model name (--backend anthropic|gemini)"),
+    workdir: Path = typer.Option(
+        None, help="agent-backend request/response dir; default OUT/guidance"
+    ),
+    out: Path = typer.Option(Path("out/survey"), help="output directory"),
+    seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
+    time: str = typer.Option(None, help="panel time column (did/sc families)"),
+    unit: str = typer.Option(None, help="panel unit column (did/sc families)"),
+    cutoff: list[str] = typer.Option(
+        None, "--cutoff", help="declared kink cutoff COL=VALUE (repeatable)"
+    ),
+    instrument: list[str] = typer.Option(
+        None, "--instrument", help="candidate instrument column (repeatable)"
+    ),
+    threshold: list[str] = typer.Option(
+        None, "--threshold", help="declared bunching threshold COL=VALUE (repeatable)"
+    ),
+    k: int = typer.Option(50, help="scan neighborhood size (forwarded into the budget when passed)"),
+    q: int = typer.Option(99, help="randomization replicas (forwarded into the budget when passed)"),
+    coarse: bool = typer.Option(False, "--coarse/--no-coarse",
+                                help="coarse-to-fine scan (large datasets)"),
+    n_coarse: int = typer.Option(2000, help="coarse-stage center subsample size"),
+    max_configs: int = typer.Option(
+        None, "--max-configs",
+        help="scan-attempt budget across configurations; the remainder is "
+             "listed as skipped_budget, never dropped",
+    ),
+):
+    """One-command systematic design survey: run the dataset against ALL seven
+    method families (rdd, did, kink, iv, sc, bunching, dee) and write one
+    visual report with an applicability verdict per family.
+
+    Writes OUT/survey.json, OUT/report.md (always) and OUT/report.html (with
+    the [report] extra), per-family details under OUT/families/ and the
+    stage-0 analyst artifacts under OUT/intake/. Failed families are a
+    recorded outcome, not a CLI failure — exit 0 whenever survey.json was
+    written.
+    """
+    cutoffs = _parse_col_value_pairs(cutoff, "--cutoff")
+    thresholds = _parse_col_value_pairs(threshold, "--threshold")
+    try:
+        pd.read_csv(csv)  # readability check only; survey() re-reads and records the path
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # ValueError covers pandas ParserError/EmptyDataError
+        typer.echo(f"could not read {csv}: {exc}")
+        raise typer.Exit(code=2) from None
+    guidance = _make_backend(
+        backend, model, workdir if workdir is not None else out / "guidance"
+    )
+    budget: dict = {}
+    for key, value in (("k", k), ("q", q), ("coarse", coarse), ("n_coarse", n_coarse)):
+        if _given(ctx, key):
+            budget[key] = value
+    if max_configs is not None:
+        budget["max_configs"] = max_configs
+    res = run_survey(
+        csv, context=context, guidance=guidance, rng=np.random.default_rng(seed),
+        out_dir=out, budget=budget or None, time=time, unit=unit,
+        cutoffs=cutoffs or None, instruments=list(instrument or []) or None,
+        thresholds=thresholds or None, seed=seed,
+    )
+    for name, fam in res.families.items():
+        typer.echo(f"{name:<9}{fam.status:<12}{fam.reason[:70]}")
+    for note in res.coverage.get("notes", []):
+        typer.echo(f"note: {note}")
+    typer.echo(f"report: {out / (res.report_html or res.report_md)}")
+    typer.echo(f"survey: {out / 'survey.json'}")
+
+
 def _discover_plan(
     ctx: typer.Context,
     *,
@@ -230,10 +335,7 @@ def _discover_plan(
     """
 
     def given(name: str) -> bool:
-        # compared by enum NAME: typer >= 0.16 vendors click, so the
-        # click.core.ParameterSource class itself is not importable
-        src = ctx.get_parameter_source(name)
-        return src is not None and src.name == "COMMANDLINE"
+        return _given(ctx, name)
 
     plan_design = design if given("design") else "auto"
     if plan_design not in ("auto", "rdd", "did"):
