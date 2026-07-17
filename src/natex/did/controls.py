@@ -367,7 +367,9 @@ def gess_control(
         expansions.append(
             {
                 "dim": panel.dim_names[j],
-                "value": None if k is None else np.asarray(panel.dim_values[j])[k].item(),
+                # tolist() (not .item()): object-dtype dim_values (string dims
+                # via pd.factorize) hold plain Python scalars with no .item().
+                "value": None if k is None else np.asarray(panel.dim_values[j]).tolist()[k],
             }
         )
 

@@ -551,6 +551,19 @@ def test_placebo_dimensions_time_invariant_composition_passes():
     assert rep.passed is True
 
 
+def test_placebo_dimensions_object_dtype_dim_values():
+    # build_panel stores non-numeric dims as OBJECT-dtype arrays (pd.factorize
+    # uniques) whose elements are plain Python scalars without `.item()` — the
+    # Epoch dogfood crash (natex-runs/REPORT.md section 3, finding 1), second
+    # site: the modal-value decode of each free dimension.
+    panel, disc = two_dim_panel(jump_h=False)
+    panel.dim_values = [np.asarray(v, dtype=object) for v in panel.dim_values]
+    rep = placebo_dimension_tests(panel, disc, control="dd")
+    assert set(rep.p_values) == {"h"}
+    modal = rep.extras["modal_values"]["h"]
+    assert modal in (0, 1) and type(modal) is int
+
+
 def test_placebo_dimensions_detect_composition_jump():
     # Pool = n_g - 1 = 24 whole-g placebo cells (the tested dim is removed
     # from the profile definition), so the minimum p is 1/25 = 0.04.

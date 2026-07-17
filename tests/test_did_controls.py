@@ -448,6 +448,18 @@ def test_gess_requires_outcome():
         gess_control(panel, disc)
 
 
+def test_gess_object_dtype_dim_values():
+    # build_panel stores string dims as OBJECT-dtype arrays (pd.factorize
+    # uniques), whose elements are plain Python str without `.item()` — the
+    # Epoch dogfood crash (natex-runs/REPORT.md section 3, finding 1:
+    # AttributeError: 'str' object has no attribute 'item').
+    panel, disc = toy_panel()
+    panel.dim_values = [np.array(["a", "b", "c"], dtype=object)]
+    res = gess_control(panel, disc)
+    assert res.extras["expansions"] == [{"dim": "g", "value": "b"}]
+    assert type(res.extras["expansions"][0]["value"]) is str
+
+
 def _sparse_control_panel(with_complete_control=True):
     """Treated 'tau' at t=0..6 (t0=5); complete control 'A' (small wiggle, so
     pre-MSE 0.0864 > 0); sparse control 'B' with records at t=0,1 ONLY —

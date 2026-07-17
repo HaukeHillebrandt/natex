@@ -629,7 +629,9 @@ def placebo_dimension_tests(
     reports: dict[str, TauRandomizationReport] = {}
     for j, name in free_dims:
         modal_code = int(np.bincount(panel.codes[mask, j], minlength=panel.dim_sizes[j]).argmax())
-        modal_values[name] = np.asarray(panel.dim_values[j])[modal_code].item()
+        # tolist() (not .item()): object-dtype dim_values (string dims via
+        # pd.factorize) hold plain Python scalars with no .item().
+        modal_values[name] = np.asarray(panel.dim_values[j]).tolist()[modal_code]
         share = (panel.codes[:, j] == modal_code).astype(float)
         keep = [jj for jj in range(panel.m) if jj != j]
         panel_j = CategoricalPanel(
