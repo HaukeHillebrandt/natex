@@ -32,6 +32,7 @@ SKILL_DIRS = [
     "discover-natural-experiments",
     "natex-write-paper",
     "natex-lit-review",
+    "natex-survey",
 ]
 
 KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -39,6 +40,7 @@ KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 DISCOVER = "discover-natural-experiments"
 PAPER = "natex-write-paper"
 LIT = "natex-lit-review"
+SURVEY = "natex-survey"
 
 
 def frontmatter(path: Path) -> tuple[dict[str, str], str]:
@@ -263,3 +265,39 @@ def test_lit_skill_vetting_warning():
     assert "verify" in low
     assert "never fabricate" in low
     assert "every citation" in low
+
+
+# --- natex-survey specifics ---------------------------------------------------
+
+
+def test_survey_skill_contract():
+    """Plan task 11: triggers, parsing JSON examples, the guidance task name,
+    the seven families, the verbatim report banner, and the config-not-
+    statistics rule (shared contracts — kebab name, one-line description,
+    commands taught, safety phrases — run via SKILL_DIRS)."""
+    from natex.report.survey_html import SURVEY_BANNER
+    from natex.survey.registry import FAMILY_ORDER
+
+    meta, body = frontmatter(skill_path(SURVEY))
+    desc = meta["description"]
+    assert "survey" in desc.lower()
+    for phrase in (
+        "survey this dataset for natural experiments",
+        "run natex against this dataset",
+        "which quasi-experimental designs apply to this data",
+        "one-command natex report",
+    ):
+        assert phrase in desc, f"missing trigger phrase {phrase!r}"
+
+    for block in json_blocks(body):
+        json.loads(block)  # every ```json example must parse
+
+    text = flat(body)
+    assert "method_applicability" in text
+    assert "guidance" in text
+    assert "natex survey" in commands_taught(body) or "natex survey" in text
+    assert "survey" in commands_taught(body), "the skill must teach the survey command"
+    for family in FAMILY_ORDER:
+        assert family in text.lower(), f"missing family {family!r}"
+    assert SURVEY_BANNER in text, "skill must quote the report banner verbatim"
+    assert "never statistics" in text.lower(), "missing the config-not-statistics rule"
