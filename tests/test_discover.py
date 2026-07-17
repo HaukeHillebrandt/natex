@@ -72,10 +72,23 @@ def test_unknown_budget_key_named_in_error():
         discover(_rdd_dataset(), rng=np.random.default_rng(0), budget={"warp_speed": 1})
 
 
-def test_unknown_search_plan_budget_key_named_in_error():
-    plan = SearchPlan(candidates=[], budget={"warp_speed": 1})
-    with pytest.raises(ValueError, match="warp_speed"):
-        discover(_rdd_dataset(), search_plan=plan, rng=np.random.default_rng(0))
+def test_unknown_search_plan_budget_keys_ignored():
+    # Epoch dogfood finding 3 (natex-runs/REPORT.md section 3): the search_plan
+    # schema_hint declares budget with additionalProperties: true, so agent
+    # backends legitimately attach extra keys (e.g. a 'note'); discover must
+    # honor the advertised schema — known hints apply, unknown keys are
+    # ignored — instead of crashing on the plan it solicited.
+    plan = SearchPlan(
+        candidates=[DesignCandidate(design="rdd", treatment="T", outcome="y",
+                                    forcing=["x0", "x1"])],
+        budget={**SMALL, "note": "agent rationale", "warp_speed": 1},
+    )
+    assert SearchPlan.model_json_schema()["properties"]["budget"]["additionalProperties"]
+    rep = discover(_rdd_dataset(), search_plan=plan, rng=np.random.default_rng(0))
+    assert rep.searched["budget"]["k"] == SMALL["k"]  # known hints still apply
+    assert rep.searched["budget"]["q"] == SMALL["q"]
+    assert "note" not in rep.searched["budget"]
+    assert "warp_speed" not in rep.searched["budget"]
 
 
 def test_budget_precedence_explicit_wins_over_plan_hints():

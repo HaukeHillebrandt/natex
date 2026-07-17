@@ -207,17 +207,24 @@ def enumerate_configs(data: Dataset, design: str = "auto") -> list[DesignCandida
 
 
 def _effective_budget(search_plan: SearchPlan | None, budget: dict | None) -> dict:
-    """defaults <- search_plan.budget (hints) <- budget arg (explicit wins)."""
+    """defaults <- search_plan.budget (hints) <- budget arg (explicit wins).
+
+    ``search_plan.budget`` is agent-provided against a schema_hint declaring
+    ``additionalProperties: true`` (Epoch dogfood finding 3): unknown keys
+    (e.g. a ``note``) are advertised as acceptable, so they are ignored here
+    rather than crashing the plan discover solicited. The explicit ``budget``
+    argument is caller-typed and still raises on unknown keys.
+    """
     eff = dict(_BUDGET_DEFAULTS)
-    sources = [("search_plan.budget", search_plan.budget if search_plan else {}),
-               ("budget", budget or {})]
-    for name, src in sources:
-        unknown = sorted(set(src) - set(_BUDGET_DEFAULTS))
-        if unknown:
-            raise ValueError(
-                f"unknown {name} keys: {unknown}; known keys: {sorted(_BUDGET_DEFAULTS)}"
-            )
-        eff.update(src)
+    plan_budget = search_plan.budget if search_plan else {}
+    eff.update({k: v for k, v in plan_budget.items() if k in _BUDGET_DEFAULTS})
+    src = budget or {}
+    unknown = sorted(set(src) - set(_BUDGET_DEFAULTS))
+    if unknown:
+        raise ValueError(
+            f"unknown budget keys: {unknown}; known keys: {sorted(_BUDGET_DEFAULTS)}"
+        )
+    eff.update(src)
     return eff
 
 
@@ -423,9 +430,10 @@ def discover(
 ) -> DiscoverReport:
     """Scan every enumerated configuration: plan-ranked first, exhaustive still.
 
-    Effective budget = ``_BUDGET_DEFAULTS`` <- ``search_plan.budget`` (hints)
-    <- ``budget`` arg (explicit wins); unknown keys raise ValueError naming
-    them. Plan candidates run in ranked order (invalid ones are recorded as
+    Effective budget = ``_BUDGET_DEFAULTS`` <- ``search_plan.budget`` (hints;
+    unknown keys ignored per the open schema_hint) <- ``budget`` arg (explicit
+    wins; unknown keys raise ValueError naming them). Plan candidates run in
+    ranked order (invalid ones are recorded as
     ``status="invalid"``, not dropped), then the exhaustive remainder from
     :func:`enumerate_configs`, deduped on ``DesignCandidate.key()``. Once
     ``max_configs`` scan attempts have happened, the rest are listed with
