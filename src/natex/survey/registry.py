@@ -142,10 +142,13 @@ _REQ_NUMERIC_FORCING = Requirement(
     check=_has_numeric_forcing,
 )
 
+# Not user_suppliable: declaring --unit/--time names an existing panel structure
+# (and then _has_panel is met), but a dataset with no panel structure at all
+# cannot be fixed by declaration -> "inapplicable", never "needs_input".
 _REQ_PANEL = Requirement(
     key="needs_panel",
     description="a panel structure: unit and time columns",
-    user_suppliable=True,
+    user_suppliable=False,
     check=_has_panel,
 )
 
