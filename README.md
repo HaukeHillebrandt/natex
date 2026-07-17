@@ -224,6 +224,10 @@ policy-schedule composition at the cutoff (or valid reweighting); the latter mak
 an aggregation condition missing from the linked paper's proof. The command evaluates a
 known design—it does not search unknown cutoffs or mechanically certify these assumptions.
 
+For a worked field application — two calendar-time RKDs, a falsification companion, and a
+group difference-in-kinks on public Epoch AI datasets — see the
+[Epoch kinks case study](docs/case_studies/epoch-kinks.md).
+
 ### DEE: debias an observational CATE estimator
 
 Turn the discovered discontinuities into disjoint quasi-experiments and use their local

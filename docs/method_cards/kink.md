@@ -85,6 +85,17 @@ The ordinary Wald interval is conventional local-polynomial inference and may re
 **smoothing bias**. Robust bias correction is not implemented; polynomial and bandwidth
 sensitivity is part of the required analysis.
 
+### SE convention
+
+natex applies the HC1 degrees-of-freedom correction **jointly across all cells**: `n − k`
+counts every observation and coefficient in the stacked side/period regression, not each
+side separately. Cross-checks that fit each side on its own and apply per-side `n − k` will
+report SEs roughly 5% larger at n ≈ 50 while matching the point estimate exactly. In the
+METR time-horizon cross-validation (uniform kernel, bw = 720), natex and an independent
+per-side OLS fit agreed on the kink to 10 decimals (both 0.0067291763) while the SEs were
+0.0023236 (joint-cell dof) vs 0.0024334 (per-side dof). This is a convention difference,
+not an error; the gap shrinks as cell sizes grow.
+
 ## Identification assumptions
 
 ### Sharp RKD
@@ -120,6 +131,35 @@ post-minus-pre contrast. Interchanging derivatives and expectations separately b
 does not make those two measures equal. Without composition stability, the claimed
 same-sign positive weights need not result. The software records this caveat but cannot test
 the assumption.
+
+### Time as the running variable
+
+Calendar-time RKD — "did the trend bend at this dated event?" — is a legitimate use of the
+estimator but **not** a manipulable-running-variable design: no unit sorts itself across a
+date, so density/manipulation arguments give no protection. Identification reduces to a
+single untestable assumption: *no co-located slope-changing event* — nothing else may bend
+the outcome's expected slope at that exact date. Two practices are therefore mandatory,
+not optional:
+
+- **Always run the placebo-kink grid** (`placebo_kinks`), and read it as separating
+  **bend existence** from **date attribution**. A significant kink at the true cutoff plus
+  significant kinks at shifted cutoffs means the series bends over an era, not at the
+  event. In the Epoch field pass, the METR time-horizon kink was positive in 8/8
+  bandwidth-donut cells, yet pre-side placebos at −270/−180/−90 days also rejected
+  (empirical size 3/6 at bw = 720): an era bend, honestly reported as "reasoning-era slope
+  doubling", not "o1-preview caused it". GPQA-diamond, in contrast, passed with empirical
+  size 0/7 — a bend that does localize to the date.
+- **Run a sibling-series falsification**: an aggregate or related series where the same
+  test demonstrably has power but reads null at the candidate date. The Epoch Capabilities
+  Index played this role for the METR/GPQA claims: its placebo grid rejected at 4/7 shifted
+  cutoffs (so the test has power in that data) while every specification at the o1 date was
+  null (t between −0.60 and −1.54) — evidence that the per-benchmark bends are not a global
+  measurement shift.
+
+With a dummy unit denominator (`--policy-kink 1.0`), tau is a descriptive slope change in
+outcome units per day, not a marginal causal response to a measured policy variable; label
+it as such. A worked example of all of the above is the Epoch case study:
+[docs/case_studies/epoch-kinks.md](../case_studies/epoch-kinks.md).
 
 ## API
 
