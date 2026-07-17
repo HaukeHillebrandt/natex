@@ -55,6 +55,11 @@ def randomization_test(
     procedure-matched only for a full (or fixed-center) observed scan; using
     it for a coarse-to-fine observed statistic gives stochastically larger
     replica maxima and an inflated p-value.
+
+    ``scan_kwargs["model"]`` is accepted for callers that share scan
+    configuration with the observed scan, but it must equal
+    ``scan_result.model``. The replica model is always taken from the observed
+    result so that it cannot be supplied twice to :func:`lord3_scan`.
     """
     if rng is None:
         raise ValueError("pass an explicit numpy Generator")
@@ -75,8 +80,14 @@ def randomization_test(
             "degenerate and cannot be ranked"
         )
     scan_kwargs = dict(scan_kwargs or {})
-    scan_kwargs.setdefault("k", scan_result.k)
     kind = scan_result.model
+    configured_model = scan_kwargs.pop("model", kind)
+    if configured_model != kind:
+        raise ValueError(
+            f"scan_kwargs model ({configured_model!r}) does not match "
+            f"scan_result.model ({kind!r})"
+        )
+    scan_kwargs.setdefault("k", scan_result.k)
     X, T, Z = dataset.X, dataset.T, dataset.Z_std
     # Geometry depends only on Z_std, which is identical across all replicas:
     # build once, reuse everywhere. Replica draw order is unchanged, so

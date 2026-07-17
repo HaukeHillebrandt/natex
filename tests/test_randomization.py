@@ -27,6 +27,37 @@ def test_null_p_value_not_degenerate():
     assert rep.p_value > 0.05  # null data should not (usually) reject at the floor
 
 
+def test_issue_38_scan_kwargs_model_matching_result_is_accepted():
+    rng = np.random.default_rng(3)
+    ds, _ = make_synthetic(n=200, zeta=0.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=20, model="normal", rng=np.random.default_rng(4))
+
+    rep = randomization_test(
+        ds,
+        res,
+        Q=3,
+        rng=np.random.default_rng(5),
+        scan_kwargs={"k": 20, "model": "normal"},
+    )
+
+    assert rep.null_max_llrs.shape == (3,)
+
+
+def test_issue_38_scan_kwargs_model_must_match_result():
+    rng = np.random.default_rng(3)
+    ds, _ = make_synthetic(n=200, zeta=0.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=20, model="normal", rng=np.random.default_rng(4))
+
+    with pytest.raises(ValueError, match="does not match"):
+        randomization_test(
+            ds,
+            res,
+            Q=3,
+            rng=np.random.default_rng(5),
+            scan_kwargs={"k": 20, "model": "bernoulli"},
+        )
+
+
 def test_bernoulli_replicas_are_bernoulli():
     from natex.validate.randomization import _draw_null_treatment
 
