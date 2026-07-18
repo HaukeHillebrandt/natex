@@ -242,15 +242,17 @@ def test_binned_poisson_jump_window():
 
     Far-mass invariance: mass entirely outside the window must not move the
     statistic — the report on (base + far mass, window=w) equals the report
-    on the base sample alone, bitwise. Localization (seed 3, calibrated):
-    4000 uniform[-10,10] plus 300 planted on [-0.4, 0): the windowed fit
-    concentrates the statistic (|theta| 2.11 vs 0.42 diluted, p 3e-35 vs
-    2e-12). The <2-distinct-values guard applies AFTER subsetting: a window
+    on the base sample alone at the same window, bitwise (issue #43 pins the
+    windowed edges to [-w, w], so the comparison holds regardless of the
+    realized data range). Localization (seed 3, calibrated): 4000
+    uniform[-10,10] plus 300 planted on [-0.4, 0): the windowed fit
+    concentrates the statistic (|theta| 2.1 vs 0.42 diluted, p ~1e-35 vs
+    ~2e-12). The <2-distinct-values guard applies AFTER subsetting: a window
     that empties the sample yields NaN, never a crash or 0."""
     rng = np.random.default_rng(7)
     base = rng.uniform(-0.5, 0.5, 1500)
     far = rng.uniform(2.0, 3.0, 500)
-    rep_base = binned_poisson_jump(base)
+    rep_base = binned_poisson_jump(base, window=0.5)
     rep_win = binned_poisson_jump(np.concatenate([base, far]), window=0.5)
     assert rep_win.p_value == rep_base.p_value  # bitwise
     assert rep_win.theta == rep_base.theta
@@ -266,6 +268,59 @@ def test_binned_poisson_jump_window():
     rep_empty = binned_poisson_jump(np.array([5.0, 6.0, 7.0]), window=1.0)
     assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
     assert np.isnan(rep_empty.se)
+
+
+def test_binned_poisson_jump_pins_bin_edge_at_zero():
+    """Issue #43: edges ran min(s) -> max(s) with no regard for the cutoff,
+    so with asymmetric support one bin straddled 0 and its observations were
+    assigned wholesale to the sign of the bin MID — mixing the two sides,
+    attenuating theta, and letting the far tail (via min/max) silently steer
+    the side split. Edges are now built per side, pinned at 0, with a
+    log-bin-width exposure offset so unequal per-side widths cannot
+    masquerade as a jump.
+
+    Exact-grid pin: with window=1.0 the edges are deterministic (10 bins per
+    side, width 0.1); atoms at the 20 bin centers with 10 copies/bin left and
+    20 copies/bin right are a perfect piecewise-constant fit, so theta must
+    equal ln 2 to machine precision (old min->max edges misalign with the
+    atoms and miss). Statistical pin (x4 jump, support [-3, 0.6], 6000 left /
+    4800 right): calibrated over seeds 0-7 the new error |theta - ln 4| is
+    <= 0.036 while the old edges attenuate by 0.115-0.278 on every seed;
+    seed 0 pinned (error 0.001 vs 0.226) with gate 0.08."""
+    centers = -0.95 + 0.1 * np.arange(20)
+    s = np.concatenate([np.repeat(centers[:10], 10), np.repeat(centers[10:], 20)])
+    rep = binned_poisson_jump(s, window=1.0)
+    assert np.isclose(rep.theta, np.log(2.0), atol=1e-8)
+
+    rng = np.random.default_rng(0)
+    s4 = np.concatenate([rng.uniform(-3.0, 0.0, 6000), rng.uniform(0.0, 0.6, 4800)])
+    rep4 = binned_poisson_jump(s4)
+    assert abs(rep4.theta - np.log(4.0)) < 0.08
+    assert rep4.p_value < 1e-100
+
+
+def test_binned_poisson_jump_one_sided_support_is_nan():
+    """Issue #43: with every observation on one side of the cutoff there is
+    no jump to test; the old code still fit the GLM (side indicator constant
+    across bins) and returned a fabricated finite theta. NaN, never 0."""
+    rep = binned_poisson_jump(np.linspace(0.5, 3.0, 50))
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+    rep_neg = binned_poisson_jump(-np.linspace(0.5, 3.0, 50))
+    assert np.isnan(rep_neg.p_value) and np.isnan(rep_neg.theta)
+
+
+def test_density_test_threads_window():
+    """Issue #43: density_test forwards ``window`` to binned_poisson_jump so
+    the frozen-geometry path can also test the LOCAL density jump."""
+    rng = np.random.default_rng(4)
+    ds, _ = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=40, rng=np.random.default_rng(5))
+    d = res.discoveries[0]
+    s = signed_distance(ds, d)
+    w = float(np.quantile(np.abs(s), 0.8))
+    rep = density_test(ds, d, window=w)
+    rep2 = binned_poisson_jump(s, window=w)
+    assert rep.p_value == rep2.p_value and rep.theta == rep2.theta
 
 
 def test_density_report_carries_wald_se():
