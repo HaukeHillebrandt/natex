@@ -197,6 +197,8 @@ rep = randomization_test(ds, res, Q=99, rng=rng,    # fitted-null Monte Carlo, +
 print(rep.p_value)
 
 top = res.discoveries[0]                            # best local discontinuity
+side1 = top.members[top.group1]                     # global row indices, distance >= 0 side
+side0 = top.members[~top.group1]                    # group1 is a mask over members, NOT rows
 est = local_2sls(ds, top)                           # frozen-side 2SLS, HC1 errors
 print(est.tau, est.ci, est.first_stage_t, est.weak_instrument)
 ```

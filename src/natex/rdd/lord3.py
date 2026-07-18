@@ -22,14 +22,30 @@ _P_CLIP = 1e-6
 
 @dataclass
 class Discovery:
-    center_index: int
-    k: int
-    llr: float
-    normal: np.ndarray
-    members: np.ndarray
-    group1: np.ndarray
-    p_value: float | None = None
-    extras: dict = field(default_factory=dict)
+    """One scanned neighborhood, ranked by its local discontinuity LLR.
+
+    Indexing contract (issue #40): ``members`` holds GLOBAL dataset row
+    indices (the center's k-NN, center included); ``group1`` is a boolean
+    mask ALIGNED WITH ``members`` — length k, NOT global row indices — so
+    naive ``df.iloc[d.group1]`` or ``X[d.group1]`` raises IndexError (or
+    silently selects wrong rows when n happens to equal k). The correct
+    global-indexing idiom::
+
+        side1 = d.members[d.group1]   # signed distance >= 0 side of `normal`
+        side0 = d.members[~d.group1]  # the complementary side
+
+    The center always lies in group 1 (its own signed distance is exactly 0;
+    audit item 23). Duck-type twin: ``natex.dee.vknn.QuasiExperiment``.
+    """
+
+    center_index: int  # GLOBAL dataset row index of the neighborhood center
+    k: int  # neighborhood size, len(members)
+    llr: float  # local likelihood-ratio score of the best split (sort key)
+    normal: np.ndarray  # unit normal of that split, standardized-Z (Z_std) coordinates
+    members: np.ndarray  # int GLOBAL row indices: the center's k-NN (center included)
+    group1: np.ndarray  # bool over members: signed-distance >= 0 side; center in group 1
+    p_value: float | None = None  # per-discovery p; None = not computed, never a fake 0.0
+    extras: dict = field(default_factory=dict)  # free-form diagnostics
 
 
 @dataclass
