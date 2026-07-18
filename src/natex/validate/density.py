@@ -22,6 +22,7 @@ from natex.validate.placebo import signed_distance
 class DensityReport:
     p_value: float
     theta: float
+    se: float  # Wald SE of theta (issue #41); NaN whenever p_value is NaN
 
 
 def binned_poisson_jump(s: np.ndarray, n_bins: int = 20) -> DensityReport:
@@ -32,12 +33,14 @@ def binned_poisson_jump(s: np.ndarray, n_bins: int = 20) -> DensityReport:
     ``density_test`` now delegates: ``density_test(ds, d, n_bins) ==
     binned_poisson_jump(signed_distance(ds, d), n_bins)``. Non-finite ``s``
     are dropped; ``s`` with fewer than 2 distinct finite values yields
-    ``DensityReport(nan, nan)`` — NaN, never 0.
+    ``DensityReport(nan, nan, nan)`` — NaN, never 0. The Wald SE of theta is
+    reported alongside p and theta (issue #41): it stays finite when p
+    underflows to 0.0 and is NaN whenever p is NaN.
     """
     s = np.asarray(s, dtype=float).ravel()
     s = s[np.isfinite(s)]
     if np.unique(s).size < 2:
-        return DensityReport(p_value=float("nan"), theta=float("nan"))
+        return DensityReport(p_value=float("nan"), theta=float("nan"), se=float("nan"))
     edges = np.linspace(s.min(), s.max() + 1e-12, n_bins + 1)
     counts, _ = np.histogram(s, bins=edges)
     mids = 0.5 * (edges[:-1] + edges[1:])
@@ -60,7 +63,7 @@ def binned_poisson_jump(s: np.ndarray, n_bins: int = 20) -> DensityReport:
     se = float(np.sqrt(max(cov[2, 2], 0.0)))
     theta = float(beta[2])
     p = float(2 * stats.norm.sf(abs(theta / se))) if se > 0 else float("nan")
-    return DensityReport(p_value=p, theta=theta)
+    return DensityReport(p_value=p, theta=theta, se=se if se > 0 else float("nan"))
 
 
 def density_test(dataset: Dataset, d: Discovery, n_bins: int = 20) -> DensityReport:

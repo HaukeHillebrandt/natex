@@ -589,7 +589,9 @@ def test_mock_hooks_recorded_veto_is_flag_only(rdd_hook_run):
     assert interp["candidate"]["design"] == "rdd"
     audit = mock.requests[1].payload
     assert set(audit) == {"candidate", "validation"}
-    assert {"p_value", "placebo_passed", "placebo_holm", "density_p"} <= set(audit["validation"])
+    assert {"p_value", "placebo_passed", "placebo_holm", "density_p", "density_se"} <= set(
+        audit["validation"]
+    )
 
 
 def test_never_gates_veto_everywhere_vs_none_identical_statistics():

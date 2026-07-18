@@ -839,6 +839,7 @@ def _run_bunching(
         p_values[col] = rep.p_value
         per_threshold[col] = {
             "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
+            "se": rep.se,
             "n_finite": int(np.isfinite(s).sum()),
         }
         # Figure payload (task 7): bunching_hist per usable threshold.

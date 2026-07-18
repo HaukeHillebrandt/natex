@@ -179,6 +179,9 @@ def test_bunching_declared_threshold(tmp_path):
     assert b.key_numbers["min_holm_p"] <= ALPHA
     assert b.key_numbers["n_finite"] == len(gap)
     assert np.isfinite(b.key_numbers["theta"])
+    # issue #41: the per-threshold detail carries the Wald SE alongside theta
+    se = b.diagnostics["per_threshold"]["v"]["se"]
+    assert se is not None and np.isfinite(se) and se > 0
 
     res0 = survey(pd.DataFrame({"v": s}), rng=np.random.default_rng(0),
                   out_dir=tmp_path / "null", thresholds={"v": 0.0})

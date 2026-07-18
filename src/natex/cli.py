@@ -567,7 +567,7 @@ def discover(
             ],
             "validation": {
                 "placebo_holm": placebo.p_holm, "placebo_passed": placebo.passed,
-                "density_p": dens.p_value,
+                "density_p": dens.p_value, "density_se": dens.se,
             },
             "effects": effects,
             **({"coarse": coarse_block} if coarse_block is not None else {}),

@@ -327,6 +327,7 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
         "placebo_passed": placebo.passed,
         "placebo_holm": placebo.p_holm,
         "density_p": dens.p_value,
+        "density_se": dens.se,
         "coarse": coarse_block,
     }
     # Advisory hooks after validation, before effects (spec 6c); the audit
@@ -334,7 +335,8 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
     # a flag only: effects below are computed regardless.
     hooks.interpret(summary)
     hooks.audit({"p_value": rand.p_value, "placebo_passed": placebo.passed,
-                 "placebo_holm": placebo.p_holm, "density_p": dens.p_value}, summary)
+                 "placebo_holm": placebo.p_holm, "density_p": dens.p_value,
+                 "density_se": dens.se}, summary)
     effects: dict = {}
     if ds.y is not None:
         for est in (local_2sls(ds, top), wald_estimate(ds, top)):

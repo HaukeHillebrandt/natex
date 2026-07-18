@@ -202,11 +202,40 @@ def test_binned_poisson_jump_detects_gap():
 
 
 def test_binned_poisson_jump_degenerate():
-    """Constant input (< 2 distinct finite values) -> NaN p, NaN theta —
-    NaN, never 0. Same for empty and all-non-finite input."""
+    """Constant input (< 2 distinct finite values) -> NaN p, NaN theta, NaN
+    se — NaN, never 0. Same for empty and all-non-finite input."""
     rep = binned_poisson_jump(np.full(50, 3.7))
-    assert np.isnan(rep.p_value) and np.isnan(rep.theta)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
     rep_empty = binned_poisson_jump(np.array([]))
     assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
+    assert np.isnan(rep_empty.se)
     rep_nan = binned_poisson_jump(np.array([np.nan, np.inf, -np.inf, 1.0]))
     assert np.isnan(rep_nan.p_value) and np.isnan(rep_nan.theta)
+    assert np.isnan(rep_nan.se)
+
+
+def test_density_report_carries_wald_se():
+    """Issue #41: the Wald SE the GLM already computes must be surfaced as
+    ``DensityReport.se`` — reverse-engineering it as theta/isf(p/2) breaks
+    when p underflows to exactly 0.0 (isf -> inf) and is 0/0 when theta == 0.
+
+    Benign regime (task-4 seed-0 tripled-mass draw): se is finite, positive,
+    and internally consistent with the reported Wald p. Extreme regime
+    (right-side mass x100, n=20000): the reported p underflows toward 0 so
+    the isf hack degenerates, yet se stays finite and positive."""
+    from scipy import stats
+
+    rng = np.random.default_rng(0)
+    s = rng.uniform(-1.0, 1.0, 2000)
+    bump = s[(s >= 0.0) & (s < 0.1)]
+    rep = binned_poisson_jump(np.concatenate([s, bump, bump]))
+    assert np.isfinite(rep.se) and rep.se > 0
+    assert np.isclose(rep.p_value, 2 * stats.norm.sf(abs(rep.theta / rep.se)))
+
+    rng = np.random.default_rng(1)
+    s_extreme = np.concatenate(
+        [rng.uniform(-1.0, 0.0, 200), rng.uniform(0.0, 1.0, 20000)]
+    )
+    rep_x = binned_poisson_jump(s_extreme)
+    assert np.isfinite(rep_x.se) and rep_x.se > 0
+    assert rep_x.p_value < 1e-8
