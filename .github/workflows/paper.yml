@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "paper/**"
+      - "papers/**"
+      - "scripts/build_papers.sh"
       - ".github/workflows/paper.yml"
   workflow_dispatch:
 
@@ -33,18 +35,14 @@ jobs:
           sudo apt-get install -y latexml
           latexmlc --VERSION
 
-      - name: Build PDF
-        run: make -C paper pdf
+      # Builds every dir with a main.tex (paper/ + papers/*/): PDF via
+      # tectonic, HTML via latexmlc, plus the collection index at the site
+      # root. Same script as the local build — see papers/README.md.
+      - name: Build the paper collection (PDFs, HTML, site index)
+        run: scripts/build_papers.sh site
 
-      - name: Build HTML
-        run: make -C paper html
-
-      - name: Assemble Pages site
-        run: |
-          mkdir -p site
-          cp -r paper/html/. site/
-          cp paper/main.pdf site/main.pdf
-          ls -R site
+      - name: List site
+        run: ls -R site
 
       - uses: actions/upload-pages-artifact@v3
         with:
