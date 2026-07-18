@@ -44,9 +44,13 @@ from natex.validate.panel import (
 from natex.validate.placebo import placebo_tests
 from natex.validate.randomization import randomization_test
 
+# report_top_m (issue #36): length of the per-discovery localization table in
+# every scanned config's summary; the default matches the single-scan CLI's
+# res.top(20). Named report_top_m, NOT top_m — the coarse-to-fine stage already
+# records an internal top_m in ctf.params/coarse_block.
 _BUDGET_DEFAULTS = {"max_configs": None, "k": 50, "q": 99, "degree": 1, "coarse": False,
                     "n_coarse": 2000, "bins": 4, "restarts": 8, "method": "single_delta",
-                    "model": "auto", "windows": None}
+                    "model": "auto", "windows": None, "report_top_m": 20}
 
 _DESIGNS = ("auto", "rdd", "did")
 
@@ -341,6 +345,20 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
     hooks.audit({"p_value": rand.p_value, "placebo_passed": placebo.passed,
                  "placebo_note": placebo.note, "placebo_holm": placebo.p_holm,
                  "density_p": dens.p_value, "density_se": dens.se}, summary)
+    # Issue #36: per-discovery localization table (top report_top_m, LLR-
+    # ranked), mirroring the single-scan CLI's `discoveries` block — appended
+    # AFTER the hooks so their payloads stay byte-stable across the feature.
+    summary["top_discoveries"] = [
+        {
+            "center_z": ds.Z[d.center_index].tolist(),
+            "llr": d.llr,
+            "normal": d.normal.tolist(),
+            "forcing_influence": dict(
+                zip(ds.spec.forcing, np.abs(d.normal).tolist(), strict=True)
+            ),
+        }
+        for d in res.top(int(budget["report_top_m"]))
+    ]
     effects: dict = {}
     if ds.y is not None:
         for est in (local_2sls(ds, top), wald_estimate(ds, top)):
@@ -399,6 +417,12 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
     hooks.audit({"p_value": rand.p_value, "null_kind": rand.null_kind,
                  "composition_passed": comp.passed,
                  "anticipation_passed": antic.passed}, summary)
+    # Issue #36: per-discovery localization table — see _run_rdd (appended
+    # after the hooks so their payloads stay byte-stable).
+    summary["top_discoveries"] = [
+        {"subset_values": d.subset_values, "t0": d.t0, "window": d.window, "llr": d.llr}
+        for d in res.top(int(budget["report_top_m"]))
+    ]
     effects: dict = {}
     if ds.y is not None:
         # gess control precomputed ONCE: review_control_group slots between
@@ -445,7 +469,10 @@ def discover(
     ``max_configs`` scan attempts have happened, the rest are listed with
     ``status="skipped_budget"`` — the report always states full coverage
     (spec 6b). A failing config is isolated (``status="failed"``, llr/p stay
-    None) and never kills the sweep.
+    None) and never kills the sweep. Every scanned config's summary carries a
+    ``top_discoveries`` table — the ``budget["report_top_m"]`` (default 20)
+    LLR-ranked discoveries with their locations (issue #36: localization work
+    needs more than the single best ``center_z``).
 
     With ``guidance``, three ADVISORY hooks fire per scanned config, in this
     order (the contract MockBackend response lists rely on):

@@ -492,6 +492,62 @@ def test_did_path_summary_and_effects():
 
 
 # ---------------------------------------------------------------------------
+# issue #36: per-discovery localization table in every scanned config summary
+# ---------------------------------------------------------------------------
+
+
+def test_issue_36_rdd_summary_records_per_discovery_table():
+    """Issue #36: plan-mode discover kept only the best discovery per config
+    (a single center_z), so localization work — top-N centers, the rank of a
+    neighborhood near a hypothesized event — forced a Python-API re-run. The
+    summary must carry a top-M per-discovery table mirroring the single-scan
+    CLI's ``discoveries`` block."""
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(1), budget=SMALL)
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    assert rep.searched["budget"]["report_top_m"] == 20  # default matches res.top(20)
+    table = rec.summary["top_discoveries"]
+    assert len(table) == min(rec.n_discoveries, 20)
+    for row in table:
+        assert set(row) == {"center_z", "llr", "normal", "forcing_influence"}
+        assert set(row["forcing_influence"]) == {"x0", "x1"}
+    # LLR-ranked, and row 0 IS the summary's top discovery
+    llrs = [row["llr"] for row in table]
+    assert llrs == sorted(llrs, reverse=True)
+    assert table[0]["center_z"] == rec.summary["center_z"]
+    assert table[0]["normal"] == rec.summary["normal"]
+    assert table[0]["llr"] == rec.summary["llr"]
+    json.loads(rep.to_json())  # serializable (NaN -> null, never 0)
+
+
+def test_issue_36_report_top_m_budget_key_configures_table_length():
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(1),
+                   budget={**SMALL, "report_top_m": 2})
+    rec = rep.configs[0]
+    assert rec.n_discoveries > 2  # the cap really binds
+    assert len(rec.summary["top_discoveries"]) == 2
+    assert rep.searched["budget"]["report_top_m"] == 2
+
+
+def test_issue_36_did_summary_records_per_discovery_table():
+    ds, _ = make_did_synthetic(n=300, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    rep = discover(ds, design="did", rng=np.random.default_rng(0),
+                   budget={"q": 9, "bins": 3, "restarts": 2, "windows": (4.0,)})
+    rec = rep.configs[0]
+    assert rec.status == "scanned"
+    table = rec.summary["top_discoveries"]
+    assert len(table) == min(rec.n_discoveries, 20)
+    for row in table:
+        assert set(row) == {"subset_values", "t0", "window", "llr"}
+    llrs = [row["llr"] for row in table]
+    assert llrs == sorted(llrs, reverse=True)
+    assert table[0]["subset_values"] == rec.summary["subset_values"]
+    assert table[0]["t0"] == rec.summary["t0"]
+    assert table[0]["llr"] == rec.summary["llr"]
+    json.loads(rep.to_json())
+
+
+# ---------------------------------------------------------------------------
 # determinism
 # ---------------------------------------------------------------------------
 
@@ -585,6 +641,9 @@ def test_mock_hooks_recorded_veto_is_flag_only(rdd_hook_run):
     interp = mock.requests[0].payload
     assert set(interp) == {"candidate", "summary", "context"}
     assert "effects" not in interp["summary"]  # summary WITHOUT the effects key
+    # issue #36: the per-discovery table is appended AFTER the hooks fire, so
+    # guidance payloads stay byte-stable across the feature
+    assert "top_discoveries" not in interp["summary"]
     assert interp["context"] is None
     assert interp["candidate"]["design"] == "rdd"
     audit = mock.requests[1].payload
