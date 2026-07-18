@@ -1,6 +1,6 @@
 # Case study — kink designs on Epoch AI datasets (July 2026 field pass)
 
-> Paper version: [HTML](https://haukehillebrandt.github.io/natex/)
+> Paper version: [HTML](https://haukehillebrandt.github.io/natex/paper/)
 > ([PDF](https://haukehillebrandt.github.io/natex/main.pdf)), source in
 > [`paper/`](../../paper/). This file remains the numbers of record.
 
