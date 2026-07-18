@@ -1,5 +1,9 @@
 # Case study — kink designs on Epoch AI datasets (July 2026 field pass)
 
+> Paper version: [HTML](https://haukehillebrandt.github.io/natex/)
+> ([PDF](https://haukehillebrandt.github.io/natex/main.pdf)), source in
+> [`paper/`](../../paper/). This file remains the numbers of record.
+
 Four formal results from running `natex kink` (v0.2.0) over Epoch AI's open datasets
 (CC-BY 4.0, [epoch.ai/data](https://epoch.ai/data)). Two calendar-time RKDs, one
 falsification companion, one group difference-in-kinks. All candidates had externally

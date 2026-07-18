@@ -20,6 +20,21 @@ touches the outcome `y` (it enters only in estimation and outcome placebos), eve
 stochastic step consumes one explicit `numpy.random.Generator` (same seed ⇒ same result),
 and failed computations return `NaN`, never `0.0`.
 
+## Paper
+
+**Three Kinks and a Null: Formal Trend-Break Tests on the Public Record of AI Progress**
+— natex's kink/DiK estimators applied to Epoch AI's public datasets, with the full
+falsification battery (and a graveyard of rejected designs).
+
+- **HTML (latest): <https://haukehillebrandt.github.io/natex/>** ·
+  **PDF: <https://haukehillebrandt.github.io/natex/main.pdf>**
+- Source: [`paper/`](paper/) (LaTeX + deterministic figure pipeline); numbers of record:
+  [docs/case_studies/epoch-kinks.md](docs/case_studies/epoch-kinks.md)
+
+The HTML is rendered by [LaTeXML](https://math.nist.gov/~BMiller/LaTeXML/) — the same
+stack arXiv uses — by CI on every push to `paper/**`, so the link above always shows the
+latest version.
+
 ## Install
 
 From GitHub:
