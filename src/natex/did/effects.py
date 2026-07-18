@@ -456,7 +456,8 @@ def tau_randomization_test(
     case — is exactly placebo-in-space) and otherwise samples ``Q=199``
     (``rng`` required); an integer ``Q`` forces sampling. Placebo draws with
     NaN tau or se are dropped and counted in ``extras["n_failed"]``; fewer
-    than 5 usable placebos gives ``p = NaN``, never a fake 1.0.
+    than 5 usable placebos gives ``p = NaN``, never a fake 1.0, with the
+    reason recorded in ``extras["refusal"]`` (issue #37).
 
     Assumptions, stated (audit 5): the scan statistic is a function of
     ``(x, t, theta)`` only, so CONDITIONAL on the discovered ``(s_tau, T0)``
@@ -528,7 +529,14 @@ def tau_randomization_test(
 
     null_stats = np.asarray(stats, dtype=float)
     q = int(null_stats.size)
-    if q < _MIN_USABLE or np.isnan(observed):
+    # Issue #37: a refusal records WHY in ``extras["refusal"]`` so consumers
+    # (the CLI, reports) can explain the NaN instead of surfacing it bare.
+    refusal = None
+    if q < _MIN_USABLE:
+        refusal = f"only {q} usable placebos; >= {_MIN_USABLE} required"
+    elif np.isnan(observed):
+        refusal = "observed studentized statistic is undefined (tau or se non-finite)"
+    if refusal is not None:
         p_value = float("nan")
     else:
         p_value = float((1 + int(np.sum(np.abs(null_stats) >= abs(observed)))) / (1 + q))
@@ -545,6 +553,7 @@ def tau_randomization_test(
             "n_draws": len(draws),
             "tau_hat": eff_obs.tau,
             "se_hat": eff_obs.se,
+            **({"refusal": refusal} if refusal is not None else {}),
         },
     )
 

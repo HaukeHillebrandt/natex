@@ -99,6 +99,10 @@ uv run natex discover data.csv \
 
 - `--forcing` — comma-separated candidate forcing (running) variables; defaults to all
   numeric non-treatment/outcome columns.
+- `--covariates` (alias `--dims`) — comma-separated columns admitted to the scan space
+  (rdd covariate/forcing pool; `--design did` panel dims). Defaults to ALL non-reserved
+  columns, so an extra string label or NaN-bearing metric silently enters the scan (or
+  listwise-deletes rows) unless excluded here.
 - `--k` — neighborhood size for the local scan; `--q` — number of null replicas for the
   randomization test; `--seed` — RNG seed.
 - `--degree` — background polynomial degree of the treatment model (default 1).
@@ -212,6 +216,8 @@ rep = randomization_test(ds, res, Q=99, rng=rng,    # fitted-null Monte Carlo, +
 print(rep.p_value)
 
 top = res.discoveries[0]                            # best local discontinuity
+side1 = top.members[top.group1]                     # global row indices, distance >= 0 side
+side0 = top.members[~top.group1]                    # group1 is a mask over members, NOT rows
 est = local_2sls(ds, top)                           # frozen-side 2SLS, HC1 errors
 print(est.tau, est.ci, est.first_stage_t, est.weak_instrument)
 ```

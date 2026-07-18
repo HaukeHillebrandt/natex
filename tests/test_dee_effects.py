@@ -137,6 +137,18 @@ def test_balance_filter_drops_jumping_covariate_keeps_clean():
     assert [e.center_index for e in lax.experiments] == [25, 75]
 
 
+def test_issue_34_balance_filter_keeps_vacuous_battery():
+    """Issue #34: ``placebo_tests`` reports ``passed=None`` when the only
+    covariate is the forcing column (vacuous battery). The balance filter must
+    keep those experiments — only an actual False drops one; a bare
+    ``dtype=bool`` coercion of None would silently drop every experiment
+    whose battery had nothing to test."""
+    ds, res = two_experiment_setup()  # covariates = forcing only
+    filtered = balance_filter(ds, res, alpha=0.05)
+    assert [e.center_index for e in filtered.experiments] == [25, 75]
+    assert np.array_equal(filtered.accepted, [0, 1])
+
+
 def test_balance_filter_never_reads_y():
     rng = np.random.default_rng(7)
     x = np.arange(100.0)

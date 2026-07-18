@@ -112,6 +112,31 @@ def test_placebo_all_nan_fails_loud():
     assert rep.passed is False
 
 
+def test_issue_34_vacuous_battery_reports_none_with_note():
+    """Issue #34: a battery with NO testable covariate (the only covariate is
+    the forcing column) must never be recorded as a real pass — ``passed`` is
+    None (JSON null downstream), never True, with an explicit note saying the
+    battery was vacuous (mirrors the ``placebo_dimension_tests`` precedent)."""
+    rng = np.random.default_rng(5)
+    n = 80
+    z = rng.normal(size=n)
+    center = int(np.argsort(z)[n // 2])
+    df = pd.DataFrame({"z": z, "T": rng.binomial(1, 0.5, size=n).astype(float)})
+    spec = DatasetSpec(treatment="T", outcome=None, forcing=["z"], covariates=["z"])
+    ds = Dataset(df, spec)
+    normal = np.array([1.0])
+    group1 = ((ds.Z_std - ds.Z_std[center]) @ normal) >= 0
+    d = Discovery(
+        center_index=center, k=n, llr=1.0, normal=normal,
+        members=np.arange(n), group1=group1,
+    )
+    rep = placebo_tests(ds, d)
+    assert rep.passed is None  # not True: nothing was tested
+    assert rep.p_values == {} and rep.p_holm == {}
+    assert rep.m == 0
+    assert rep.note is not None and "vacuous" in rep.note
+
+
 def test_issue_3_row_unique_and_degenerate_dummies_stay_out_of_holm_family():
     """Issue #3: ``covariates="auto"`` sweeps in string date/ID columns whose
     one-hot levels have within-neighborhood support 1; each entered the Holm
@@ -184,14 +209,12 @@ def test_binned_poisson_jump_detects_gap():
     """Tripling the mass on [0, 0.1] of 2000 uniform[-1, 1] draws must yield a
     tiny p; the untouched symmetric sample must not.
 
-    Calibrated across seeds 0-4: gap p = 0.0 on every seed; null p was
-    {0: 0.979, 1: 0.0093, 2: 0.24, 3: 0.0, 4: 0.056}. On this shape (20 bins
-    of ~100 counts) the frozen IRLS (100 iterations, tol 1e-10 — pure
-    refactor, not retuned here) exits before full convergence, so the null p
-    is seed-noisy; on real discovery signed distances it converges to
-    machine precision (see test_binned_poisson_jump_matches_density_test).
-    Seed 0 pinned per plan: gap p = 0.0 < 0.01, null p = 0.979 > 0.05 —
-    wide margin on both gates, and the draw is deterministic.
+    Recalibrated for issue #42 (mean-initialized IRLS, converges in ~4-5
+    iterations; the old zero start exited the cap on this shape and the null
+    p was seed-noisy): across seeds 0-4 the gap p is < 1e-7 on every seed
+    and the null p is in [0.42, 0.89]. Seed 0 pinned per plan: gap
+    p ~ 9.3e-10 < 0.01, null p ~ 0.89 > 0.05 — wide margin on both gates,
+    and the draw is deterministic.
     """
     rng = np.random.default_rng(0)
     s = rng.uniform(-1.0, 1.0, 2000)
@@ -202,11 +225,188 @@ def test_binned_poisson_jump_detects_gap():
 
 
 def test_binned_poisson_jump_degenerate():
-    """Constant input (< 2 distinct finite values) -> NaN p, NaN theta —
-    NaN, never 0. Same for empty and all-non-finite input."""
+    """Constant input (< 2 distinct finite values) -> NaN p, NaN theta, NaN
+    se — NaN, never 0. Same for empty and all-non-finite input."""
     rep = binned_poisson_jump(np.full(50, 3.7))
-    assert np.isnan(rep.p_value) and np.isnan(rep.theta)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
     rep_empty = binned_poisson_jump(np.array([]))
     assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
+    assert np.isnan(rep_empty.se)
     rep_nan = binned_poisson_jump(np.array([np.nan, np.inf, -np.inf, 1.0]))
     assert np.isnan(rep_nan.p_value) and np.isnan(rep_nan.theta)
+    assert np.isnan(rep_nan.se)
+
+
+def test_binned_poisson_jump_smooth_null_calibrated():
+    """Issue #42: with the zero-initialized IRLS the smooth-null fit exited
+    at the iteration cap on ~100-count bins and reported a fabricated finite
+    p that was seed-noisy (p = 0.0 at seed 3 on a plain uniform!). With the
+    mean-initialized IRLS the fit converges in ~4 iterations and no smooth
+    null rejects. Calibrated (n=2000 uniform[-1,1], seeds {0..4, 42}):
+    p in [0.14, 0.89] — every seed clears the 0.01 gate by >= 14x."""
+    for seed in (1, 3, 42):
+        rng = np.random.default_rng(seed)
+        rep = binned_poisson_jump(rng.uniform(-1.0, 1.0, 2000))
+        assert rep.p_value > 0.01, f"seed {seed}: smooth null rejected (p={rep.p_value})"
+
+
+def test_binned_poisson_jump_nonconvergence_is_nan():
+    """Issue #42: a fit that exits the IRLS loop without converging must
+    report NaN (p, theta, se) — never a fabricated finite statistic from
+    wherever the iteration cap happened to leave beta (NaN-never-0.0)."""
+    rng = np.random.default_rng(0)
+    s = rng.uniform(-1.0, 1.0, 2000)
+    bump = s[(s >= 0.0) & (s < 0.1)]
+    rep = binned_poisson_jump(np.concatenate([s, bump, bump]), max_iter=1)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+
+
+def test_binned_poisson_jump_window():
+    """Issue #42: ``window`` restricts the fit to |s| <= window so the GLM
+    tests the LOCAL density jump instead of binning the full data range.
+
+    Far-mass invariance: mass entirely outside the window must not move the
+    statistic — the report on (base + far mass, window=w) equals the report
+    on the base sample alone at the same window, bitwise (issue #43 pins the
+    windowed edges to [-w, w], so the comparison holds regardless of the
+    realized data range). Localization (seed 3, calibrated): 4000
+    uniform[-10,10] plus 300 planted on [-0.4, 0): the windowed fit
+    concentrates the statistic (|theta| 2.1 vs 0.42 diluted, p ~1e-35 vs
+    ~2e-12). The <2-distinct-values guard applies AFTER subsetting: a window
+    that empties the sample yields NaN, never a crash or 0."""
+    rng = np.random.default_rng(7)
+    base = rng.uniform(-0.5, 0.5, 1500)
+    far = rng.uniform(2.0, 3.0, 500)
+    rep_base = binned_poisson_jump(base, window=0.5)
+    rep_win = binned_poisson_jump(np.concatenate([base, far]), window=0.5)
+    assert rep_win.p_value == rep_base.p_value  # bitwise
+    assert rep_win.theta == rep_base.theta
+    assert rep_win.se == rep_base.se
+
+    rng = np.random.default_rng(3)
+    sb = np.concatenate([rng.uniform(-10.0, 10.0, 4000), rng.uniform(-0.4, 0.0, 300)])
+    rep_full = binned_poisson_jump(sb)
+    rep_local = binned_poisson_jump(sb, window=1.0)
+    assert abs(rep_local.theta) > abs(rep_full.theta)
+    assert rep_local.p_value < 1e-20
+
+    rep_empty = binned_poisson_jump(np.array([5.0, 6.0, 7.0]), window=1.0)
+    assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
+    assert np.isnan(rep_empty.se)
+
+
+def test_binned_poisson_jump_pins_bin_edge_at_zero():
+    """Issue #43: edges ran min(s) -> max(s) with no regard for the cutoff,
+    so with asymmetric support one bin straddled 0 and its observations were
+    assigned wholesale to the sign of the bin MID — mixing the two sides,
+    attenuating theta, and letting the far tail (via min/max) silently steer
+    the side split. Edges are now built per side, pinned at 0, with a
+    log-bin-width exposure offset so unequal per-side widths cannot
+    masquerade as a jump.
+
+    Exact-grid pin: with window=1.0 the edges are deterministic (10 bins per
+    side, width 0.1); atoms at the 20 bin centers with 10 copies/bin left and
+    20 copies/bin right are a perfect piecewise-constant fit, so theta must
+    equal ln 2 to machine precision (old min->max edges misalign with the
+    atoms and miss). Statistical pin (x4 jump, support [-3, 0.6], 6000 left /
+    4800 right): calibrated over seeds 0-7 the new error |theta - ln 4| is
+    <= 0.036 while the old edges attenuate by 0.115-0.278 on every seed;
+    seed 0 pinned (error 0.001 vs 0.226) with gate 0.08."""
+    centers = -0.95 + 0.1 * np.arange(20)
+    s = np.concatenate([np.repeat(centers[:10], 10), np.repeat(centers[10:], 20)])
+    rep = binned_poisson_jump(s, window=1.0)
+    assert np.isclose(rep.theta, np.log(2.0), atol=1e-8)
+
+    rng = np.random.default_rng(0)
+    s4 = np.concatenate([rng.uniform(-3.0, 0.0, 6000), rng.uniform(0.0, 0.6, 4800)])
+    rep4 = binned_poisson_jump(s4)
+    assert abs(rep4.theta - np.log(4.0)) < 0.08
+    assert rep4.p_value < 1e-100
+
+
+def test_binned_poisson_jump_one_sided_support_is_nan():
+    """Issue #43: with every observation on one side of the cutoff there is
+    no jump to test; the old code still fit the GLM (side indicator constant
+    across bins) and returned a fabricated finite theta. NaN, never 0."""
+    rep = binned_poisson_jump(np.linspace(0.5, 3.0, 50))
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+    rep_neg = binned_poisson_jump(-np.linspace(0.5, 3.0, 50))
+    assert np.isnan(rep_neg.p_value) and np.isnan(rep_neg.theta)
+
+
+def test_density_test_threads_window():
+    """Issue #43: density_test forwards ``window`` to binned_poisson_jump so
+    the frozen-geometry path can also test the LOCAL density jump."""
+    rng = np.random.default_rng(4)
+    ds, _ = make_synthetic(n=1500, zeta=4.0, kind="real", rng=rng)
+    res = lord3_scan(ds, k=40, rng=np.random.default_rng(5))
+    d = res.discoveries[0]
+    s = signed_distance(ds, d)
+    w = float(np.quantile(np.abs(s), 0.8))
+    rep = density_test(ds, d, window=w)
+    rep2 = binned_poisson_jump(s, window=w)
+    assert rep.p_value == rep2.p_value and rep.theta == rep2.theta
+
+
+def test_binned_poisson_jump_min_per_side_guard():
+    """Issue #44: 2 observations on one side of the cutoff (the Epoch shape,
+    19/2 at n=21) still returned a finite theta from <= 2 informative bins of
+    a 4-parameter GLM (20/1 returned theta = -175). Below ``min_per_side``
+    (default 5) the report must refuse with NaN and say why (n_left, n_right,
+    note) — NaN, never 0."""
+    rng = np.random.default_rng(0)
+    s = np.concatenate([-rng.uniform(0.1, 3.0, 19), rng.uniform(0.0, 3.0, 2)])
+    rep = binned_poisson_jump(s)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+    assert rep.n_left == 19 and rep.n_right == 2
+    assert rep.note is not None and "5" in rep.note
+
+    # 20/1 (the theta = -175 shape) refuses identically
+    s2 = np.concatenate([-rng.uniform(0.1, 3.0, 20), rng.uniform(0.0, 3.0, 1)])
+    rep2 = binned_poisson_jump(s2)
+    assert np.isnan(rep2.theta) and rep2.n_right == 1
+
+    # the boundary runs: 5/5 at the default returns a finite report
+    s3 = np.concatenate([-rng.uniform(0.1, 3.0, 5), rng.uniform(0.0, 3.0, 5)])
+    rep3 = binned_poisson_jump(s3)
+    assert np.isfinite(rep3.p_value) and rep3.n_left == 5 and rep3.n_right == 5
+    assert rep3.note is None
+
+    # explicit override: min_per_side=2 lets the 19/2 shape through, noted or not
+    rep4 = binned_poisson_jump(s, min_per_side=2)
+    assert np.isfinite(rep4.p_value)
+
+    # side convention matches the bin indicator: s >= 0 counts as right, so a
+    # right side made only of exact zeros is counted there (and the support
+    # then fails to straddle the cutoff -> NaN with the counts surfaced)
+    z = np.concatenate([-rng.uniform(0.1, 1.0, 10), np.zeros(6)])
+    repz = binned_poisson_jump(z)
+    assert repz.n_left == 10 and repz.n_right == 6
+    assert np.isnan(repz.p_value)
+
+
+def test_density_report_carries_wald_se():
+    """Issue #41: the Wald SE the GLM already computes must be surfaced as
+    ``DensityReport.se`` — reverse-engineering it as theta/isf(p/2) breaks
+    when p underflows to exactly 0.0 (isf -> inf) and is 0/0 when theta == 0.
+
+    Benign regime (task-4 seed-0 tripled-mass draw): se is finite, positive,
+    and internally consistent with the reported Wald p. Extreme regime
+    (right-side mass x100, n=20000): the reported p underflows toward 0 so
+    the isf hack degenerates, yet se stays finite and positive."""
+    from scipy import stats
+
+    rng = np.random.default_rng(0)
+    s = rng.uniform(-1.0, 1.0, 2000)
+    bump = s[(s >= 0.0) & (s < 0.1)]
+    rep = binned_poisson_jump(np.concatenate([s, bump, bump]))
+    assert np.isfinite(rep.se) and rep.se > 0
+    assert np.isclose(rep.p_value, 2 * stats.norm.sf(abs(rep.theta / rep.se)))
+
+    rng = np.random.default_rng(1)
+    s_extreme = np.concatenate(
+        [rng.uniform(-1.0, 0.0, 200), rng.uniform(0.0, 1.0, 20000)]
+    )
+    rep_x = binned_poisson_jump(s_extreme)
+    assert np.isfinite(rep_x.se) and rep_x.se > 0
+    assert rep_x.p_value < 1e-8

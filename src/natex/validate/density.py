@@ -22,46 +22,141 @@ from natex.validate.placebo import signed_distance
 class DensityReport:
     p_value: float
     theta: float
+    se: float  # Wald SE of theta (issue #41); NaN whenever p_value is NaN
+    # issue #44 refusal audit trail (defaulted: backward compatible)
+    n_left: int | None = None  # finite (windowed) observations with s < 0
+    n_right: int | None = None  # finite (windowed) observations with s >= 0
+    note: str | None = None  # why the report is NaN, when it is
 
 
-def binned_poisson_jump(s: np.ndarray, n_bins: int = 20) -> DensityReport:
+def binned_poisson_jump(
+    s: np.ndarray,
+    n_bins: int = 20,
+    *,
+    window: float | None = None,
+    min_per_side: int = 5,
+    max_iter: int = 100,
+) -> DensityReport:
     """Binned-Poisson intercept-jump test on signed distances ``s`` (cutoff at 0).
 
-    Extracted from ``density_test`` (phase survey, task 4 — pure refactor, NO
-    new math) so declared-threshold bunching reuses the identical statistic;
-    ``density_test`` now delegates: ``density_test(ds, d, n_bins) ==
+    Extracted from ``density_test`` (phase survey, task 4) so declared-
+    threshold bunching reuses the identical statistic; ``density_test``
+    delegates: ``density_test(ds, d, n_bins) ==
     binned_poisson_jump(signed_distance(ds, d), n_bins)``. Non-finite ``s``
-    are dropped; ``s`` with fewer than 2 distinct finite values yields
-    ``DensityReport(nan, nan)`` — NaN, never 0.
+    are dropped; ``window`` (issue #42) then restricts the fit to
+    ``|s| <= window`` so the GLM tests the LOCAL density jump instead of
+    binning the full data range. ``s`` with fewer than 2 distinct finite
+    values AFTER those subsets yields ``DensityReport(nan, nan, nan)`` —
+    NaN, never 0. The Wald SE of theta is reported alongside p and theta
+    (issue #41): it stays finite when p underflows to 0.0 and is NaN
+    whenever p is NaN.
+
+    Binning (issue #43): a bin edge is ALWAYS pinned at the cutoff — edges
+    are built per side (``n_bins`` split proportionally to the side ranges,
+    min 2 bins per side) over ``[-window, window]`` when a window is given,
+    else over ``[min(s), max(s)]``. The old single ``linspace(min, max)``
+    let one bin straddle 0, assigning its observations wholesale to the sign
+    of the bin mid — mixing the sides, attenuating theta, and letting far-
+    tail mass silently steer the side split. Per-side widths can differ, so
+    the GLM carries a log-bin-width exposure offset (counts ~ Poisson(width
+    * exp(X beta))); without it the width ratio itself would masquerade as a
+    jump of log(w_r/w_l). Support entirely on one side of 0 has no jump to
+    test and reports NaN.
+
+    The IRLS starts at ``beta = [log(mean(counts)) - mean(offset), 0, 0,
+    0]`` (issue #42: the zero start needed ~mean-count iterations and
+    silently exited the cap on ~100-count bins, reporting a seed-noisy
+    fabricated p; the mean start converges in ~4). A fit that still exhausts
+    ``max_iter`` without converging reports NaN — never the statistic of an
+    unconverged beta.
+
+    Small-sample guard (issue #44): fewer than ``min_per_side`` observations
+    on either side of the cutoff (side convention matching the bin
+    indicator: ``s >= 0`` counts right) is refused with NaN — a 4-parameter
+    GLM on <= 2 informative bins returned Epoch-shaped fabrications like
+    theta = -175 at 20/1. Every refusal states its reason in ``note`` and
+    carries ``n_left``/``n_right`` where they were computed.
     """
+    if window is not None and not window > 0:
+        raise ValueError(f"window must be > 0, got {window!r}")
+    if n_bins < 4:
+        raise ValueError(f"n_bins must be >= 4 (2 per side), got {n_bins}")
+    nan = float("nan")
     s = np.asarray(s, dtype=float).ravel()
     s = s[np.isfinite(s)]
+    if window is not None:
+        s = s[np.abs(s) <= window]
     if np.unique(s).size < 2:
-        return DensityReport(p_value=float("nan"), theta=float("nan"))
-    edges = np.linspace(s.min(), s.max() + 1e-12, n_bins + 1)
+        return DensityReport(
+            p_value=nan, theta=nan, se=nan,
+            note="fewer than 2 distinct finite signed distances",
+        )
+    n_left = int((s < 0).sum())
+    n_right = int((s >= 0).sum())
+    if min(n_left, n_right) < min_per_side:
+        return DensityReport(
+            p_value=nan, theta=nan, se=nan, n_left=n_left, n_right=n_right,
+            note=(
+                f"fewer than min_per_side={min_per_side} observations on one "
+                f"side of the cutoff (n_left={n_left}, n_right={n_right})"
+            ),
+        )
+    lo = -float(window) if window is not None else float(s.min())
+    hi = float(window) if window is not None else float(s.max())
+    if not (lo < 0.0 < hi):
+        # every observation on one side of the cutoff: no jump to test
+        return DensityReport(
+            p_value=nan, theta=nan, se=nan, n_left=n_left, n_right=n_right,
+            note="support does not straddle the cutoff",
+        )
+    # per-side edges pinned at 0 (issue #43); np.histogram closes the last bin
+    k_l = int(round(n_bins * (-lo) / (hi - lo)))
+    k_l = min(max(k_l, 2), n_bins - 2)
+    edges = np.concatenate(
+        [np.linspace(lo, 0.0, k_l + 1)[:-1], np.linspace(0.0, hi, n_bins - k_l + 1)]
+    )
     counts, _ = np.histogram(s, bins=edges)
+    offset = np.log(np.diff(edges))  # exposure: per-bin width
     mids = 0.5 * (edges[:-1] + edges[1:])
     side = (mids >= 0).astype(float)
     X = np.c_[np.ones(n_bins), mids, side, mids * side]
     # Poisson GLM via IRLS
-    beta = np.zeros(4)
-    for _ in range(100):
-        mu = np.exp(np.clip(X @ beta, -30, 30))
+    beta = np.array(
+        [np.log(max(counts.mean(), 1e-12)) - float(np.mean(offset)), 0.0, 0.0, 0.0]
+    )
+    converged = False
+    for _ in range(max_iter):
+        mu = np.exp(np.clip(offset + X @ beta, -30, 30))
         W = mu
         z = X @ beta + (counts - mu) / np.maximum(mu, 1e-12)
         WX = X * W[:, None]
         beta_new = np.linalg.pinv(X.T @ WX) @ (WX.T @ z)
         if np.max(np.abs(beta_new - beta)) < 1e-10:
             beta = beta_new
+            converged = True
             break
         beta = beta_new
-    mu = np.exp(np.clip(X @ beta, -30, 30))
+    if not converged:
+        return DensityReport(
+            p_value=nan, theta=nan, se=nan, n_left=n_left, n_right=n_right,
+            note=f"IRLS did not converge within max_iter={max_iter} iterations",
+        )
+    mu = np.exp(np.clip(offset + X @ beta, -30, 30))
     cov = np.linalg.pinv(X.T @ (X * mu[:, None]))
     se = float(np.sqrt(max(cov[2, 2], 0.0)))
     theta = float(beta[2])
     p = float(2 * stats.norm.sf(abs(theta / se))) if se > 0 else float("nan")
-    return DensityReport(p_value=p, theta=theta)
+    return DensityReport(
+        p_value=p, theta=theta, se=se if se > 0 else nan,
+        n_left=n_left, n_right=n_right,
+    )
 
 
-def density_test(dataset: Dataset, d: Discovery, n_bins: int = 20) -> DensityReport:
-    return binned_poisson_jump(signed_distance(dataset, d), n_bins)
+def density_test(
+    dataset: Dataset,
+    d: Discovery,
+    n_bins: int = 20,
+    *,
+    window: float | None = None,
+) -> DensityReport:
+    return binned_poisson_jump(signed_distance(dataset, d), n_bins, window=window)

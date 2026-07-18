@@ -309,8 +309,10 @@ def _run_rdd(
         status, reason = "null", "scan p-value unavailable — no credible discovery"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
-    elif not s.get("placebo_passed"):
+    elif s.get("placebo_passed") is False:
         # audit 3 phrasing: a failed placebo battery demotes the discovery.
+        # Issue #34: None means the battery was VACUOUS (nothing testable) —
+        # only an actual False is a failure.
         status, reason = "null", "descriptive only — placebo battery failed"
     elif not _finite(density_p):
         status, reason = "null", "density diagnostic unavailable — manipulation check inconclusive"
@@ -318,8 +320,13 @@ def _run_rdd(
         status, reason = "null", f"density test rejects (p={density_p:.3f}) — manipulation risk"
     else:
         status = "credible"
+        placebo_txt = (
+            "placebo battery vacuous (no covariate was testable)"
+            if s.get("placebo_passed") is None
+            else "placebo battery passed"
+        )
         reason = (
-            f"scan p={p:.3f} at or below {ALPHA}, placebo battery passed, "
+            f"scan p={p:.3f} at or below {ALPHA}, {placebo_txt}, "
             f"density p={density_p:.2f}"
         )
     # placebo_holm in the scan summary is a per-covariate dict; key_numbers is
@@ -835,11 +842,16 @@ def _run_bunching(
             continue
         t = float(thr)
         s = df[col].to_numpy(dtype=float) - t
-        rep = binned_poisson_jump(s)  # drops non-finite s itself
+        # drops non-finite s itself; issue #42: an analyst-declared window
+        # restricts the fit to |s| <= window (local jump, not full support)
+        rep = binned_poisson_jump(s, window=declared.bunching_window)
         p_values[col] = rep.p_value
         per_threshold[col] = {
             "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
+            "se": rep.se, "window": declared.bunching_window,
             "n_finite": int(np.isfinite(s).sum()),
+            # issue #44 audit trail: side counts and the refusal reason
+            "n_left": rep.n_left, "n_right": rep.n_right, "note": rep.note,
         }
         # Figure payload (task 7): bunching_hist per usable threshold.
         artifacts.setdefault("thresholds", []).append({
@@ -993,6 +1005,7 @@ def survey(
     cutoffs: dict[str, float] | None = None,
     instruments: list[str] | None = None,
     thresholds: dict[str, float] | None = None,
+    bunching_window: float | None = None,  # issue #42: |x - threshold| <= window
     seed: int | None = None,  # metadata only; rng governs randomness
 ) -> SurveyResult:
     """Run every applicable method family against one dataset; see module docstring."""
@@ -1008,7 +1021,7 @@ def survey(
     declared = DeclaredInputs(
         time=time, unit=unit,
         cutoffs=dict(cutoffs or {}), instruments=list(instruments or []),
-        thresholds=dict(thresholds or {}),
+        thresholds=dict(thresholds or {}), bunching_window=bunching_window,
     )
 
     # ONE upfront spawn in registry order, BEFORE any other rng use: a skipped

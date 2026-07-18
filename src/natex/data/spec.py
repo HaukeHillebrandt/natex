@@ -6,16 +6,36 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class DatasetSpec(BaseModel):
+    """Column-role mapping bound to a :class:`Dataset`.
+
+    Invariant: forcing columns are always covariates (the scan's background
+    treatment model must condition on them). Any forcing column missing from
+    ``covariates`` is auto-unioned in at construction — order-preserving,
+    silent — so direct Python-API construction matches ``Dataset.from_csv``
+    semantics instead of raising (issue #39).
+    """
+
     treatment: str
     outcome: str | None = None
     forcing: list[str]  # may be [] (DiD-only datasets have no forcing variable)
-    covariates: list[str]
+    covariates: list[str]  # auto-unioned with forcing, see validator below
     time: str | None = None
     unit: str | None = None  # cross-sectional unit id column (e.g. "state")
+
+    @model_validator(mode="after")
+    def _union_forcing_into_covariates(self) -> "DatasetSpec":
+        # Issue #39: the mismatched state used to error later, at Dataset()
+        # construction only — so silently repairing it here is strictly
+        # backward compatible and serves every construction path uniformly
+        # (Python API, from_csv, discover rebuilds, survey runner).
+        missing = [f for f in self.forcing if f not in self.covariates]
+        if missing:
+            self.covariates = [*self.covariates, *missing]
+        return self
 
 
 class Dataset:
@@ -32,6 +52,10 @@ class Dataset:
         bad = [c for c in spec.forcing if not pd.api.types.is_numeric_dtype(df[c])]
         if bad:
             raise ValueError(f"forcing columns must be numeric: {bad}")
+        # Unreachable through validated construction — DatasetSpec auto-unions
+        # forcing into covariates (issue #39). Kept as a loud guard against
+        # validator bypasses: ``model_copy(update=...)`` and plain attribute
+        # assignment skip pydantic validation.
         if not set(spec.forcing) <= set(spec.covariates):
             raise ValueError("forcing columns must be a subset of covariates")
         if spec.time is not None:

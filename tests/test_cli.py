@@ -240,6 +240,97 @@ def test_issue_29_did_params_record_roles(tmp_path):
     assert params["time"] == "t"
 
 
+def test_issue_35_covariates_flag_restricts_rdd_scan_space(tmp_path):
+    """Issue #35: dims default to ALL non-reserved columns, so an extra
+    NaN-bearing metric listwise-deletes rows (here: every row) with no CLI way
+    to exclude it. ``--covariates`` restricts the scan space; the resolved
+    covariates are recorded in params (issue-29 pattern)."""
+    ds, _ = make_synthetic(n=300, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    df = ds.df.copy()
+    df["label"] = [f"q{i % 4}" for i in range(len(df))]  # string decoy
+    df["extra_metric"] = np.nan  # would listwise-delete EVERY row
+    csv = tmp_path / "d.csv"
+    df.to_csv(csv, index=False)
+    args = ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+            "--k", "25", "--q", "9", "--seed", "0", "--out", str(tmp_path / "out")]
+    # without the flag the NaN column silently deletes every scan row
+    assert CliRunner().invoke(app, args).exit_code != 0
+    result = CliRunner().invoke(app, args + ["--covariates", "x0,x1"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["params"]["covariates"] == ["x0", "x1"]
+    assert payload["params"]["forcing"] == ["x0", "x1"]
+    assert len(payload["discoveries"]) > 0
+    assert set(payload["discoveries"][0]["forcing_influence"]) == {"x0", "x1"}
+
+
+def test_issue_35_dims_flag_restricts_did_panel_dims(tmp_path):
+    """Issue #35, did shape: a string quarter label silently enters the SuDDDS
+    subset-search space; ``--dims`` (alias of ``--covariates``) restricts the
+    panel dims."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    df = ds.df.copy()
+    df["quarter_label"] = [f"Q{i % 4 + 1}" for i in range(len(df))]  # string decoy
+    csv = tmp_path / "did.csv"
+    df.to_csv(csv, index=False)
+    args = ["discover", str(csv), "--design", "did", "--treatment", "theta",
+            "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+            "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")]
+    # without the flag the decoy becomes a scan dim — the reported silent entry
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    searched = json.loads((tmp_path / "out" / "results.json").read_text())["did"]["searched"]
+    assert "quarter_label" in searched["dims"]
+    result = CliRunner().invoke(app, args + ["--dims", "x0,x1"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["params"]["covariates"] == ["x0", "x1"]
+    assert payload["did"]["searched"]["dims"] == ["x0", "x1"]
+
+
+def test_issue_35_covariates_with_plan_exits_2(tmp_path):
+    """--covariates/--dims cannot combine with --plan (the plan's prep plan
+    defines the scan space); rejected loudly BEFORE the plan file is read."""
+    result = CliRunner().invoke(
+        app, ["discover", "--plan", str(tmp_path / "never_written.json"),
+              "--covariates", "x0"],
+    )
+    assert result.exit_code == 2
+    assert "--plan" in result.output
+    assert "prep plan" in result.output or "intake" in result.output
+
+
+def test_issue_34_vacuous_placebo_records_null_not_true(tmp_path):
+    """Issue #34: when the only covariate is the forcing column, the placebo
+    battery is vacuous — results.json must record ``placebo_passed: null``
+    plus an explicit ``placebo_note`` (never ``true`` with an empty Holm dict,
+    field-level indistinguishable from a real pass), and the CLI echo must not
+    claim the battery passed."""
+    rng = np.random.default_rng(0)
+    n = 300
+    z = rng.normal(size=n)
+    df = pd.DataFrame({
+        "z": z,
+        "T": (z >= 0).astype(float),
+        "y": 1.0 + 0.5 * z + 2.0 * (z >= 0) + rng.normal(scale=0.5, size=n),
+    })
+    csv = tmp_path / "sharp.csv"
+    df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--forcing", "z", "--k", "25", "--q", "9", "--seed", "0",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    validation = json.loads((tmp_path / "out" / "results.json").read_text())["validation"]
+    assert validation["placebo_passed"] is None
+    assert validation["placebo_holm"] == {}
+    assert "vacuous" in validation["placebo_note"]
+    assert "placebo passed: True" not in result.output
+    assert "no non-forcing covariate was testable" in result.output
+
+
 def test_issue_28_discover_rdd_homogeneous_neighborhoods_exit_1(tmp_path):
     """Issue #28: two well-separated treatment-homogeneous clusters make the
     audit-item-21 fast path skip every center (discoveries=[]); the CLI must
@@ -289,6 +380,35 @@ def test_issue_10_discover_did_binary_treatment_default_model(tmp_path):
     payload = json.loads((tmp_path / "out" / "results.json").read_text())
     assert payload["did"]["searched"]["model"] == "normal"
     assert payload["params"]["model"] == "normal"  # what actually ran
+
+
+def test_issue_37_did_nan_randomization_p_prints_refusal(tmp_path):
+    """Issue #37: on a few-profile panel the tau randomization test correctly
+    refuses (p = NaN, < 5 usable placebos), but the CLI printed a bare
+    'dd tau=... p=nan' with no hint. The echo must name the refusal and the
+    manual placebo-in-space remedy, and results.json must record the reason.
+
+    DGP: d=1, V=4 with a single planted profile leaves a pool of 3 placebo
+    profiles < 5 minimum, so the refusal is structural (seed 0 pinned; the
+    scan recovers the planted subset and effects are finite)."""
+    ds, _ = make_did_synthetic(n=200, d=1, V=4, zeta=8.0, s_dims=1, s_values=1,
+                               rng=np.random.default_rng(0))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert "p=nan" not in result.output
+    assert "randomization test refused" in result.output
+    assert "usable placebos" in result.output
+    assert "run a manual placebo-in-space battery" in result.output
+    dd = json.loads((tmp_path / "out" / "results.json").read_text())["did"]["effects"]["dd"]
+    assert dd["p"] is None  # NaN -> JSON null (house rule), never a fake number
+    assert "only 3 usable placebos" in dd["p_refusal"]
 
 
 def test_discover_did_requires_time(tmp_path):

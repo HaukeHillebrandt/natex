@@ -131,3 +131,49 @@ def test_issue_9_local_residual_variance_rejects_zero_residuals():
     idx = knn_indices(z, 4)
     with pytest.raises(ValueError, match="zero residual variance"):
         local_residual_variance(np.zeros(12), idx)
+
+
+# ---------------------------------------------------------------------------
+# issue #40: Discovery's indexing contract must be documented at the source
+
+
+def test_issue_40_discovery_docstring_states_indexing_contract():
+    """Issue #40: ``group1`` is a boolean mask ALIGNED WITH ``members``
+    (length k), not global row indices — semantics that previously lived only
+    in internal planning docs. The contract must be readable on the dataclass
+    itself, correct idiom included."""
+    from natex.rdd.lord3 import Discovery
+
+    doc = Discovery.__doc__
+    assert doc is not None
+    flat = " ".join(doc.split())
+    assert "members[d.group1]" in flat  # the correct global-indexing idiom
+    assert "global" in flat.lower()  # members = global dataset row indices
+    assert "mask" in flat.lower()  # group1 = boolean mask over members
+
+
+def test_issue_40_readme_python_api_shows_the_indexing_idiom():
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert "top.members[top.group1]" in readme
+
+
+def test_issue_40_documented_idiom_holds_on_a_real_scan():
+    """The documented semantics, executed: members are global int row indices
+    (length k), group1 a length-k bool over them (center on the group-1 side),
+    and ``d.members[d.group1]`` / ``d.members[~d.group1]`` partition the
+    neighborhood into dataset-indexable sides. Naive ``X[d.group1]`` is the
+    dogfooded IndexError."""
+    rng = np.random.default_rng(4)
+    ds, _ = make_synthetic(n=400, zeta=3.0, kind="binary", rng=rng)
+    d = lord3_scan(ds, k=50, rng=np.random.default_rng(5)).discoveries[0]
+    assert d.members.dtype.kind == "i" and d.members.shape == (50,)
+    assert d.group1.dtype == bool and d.group1.shape == (50,)
+    side1 = d.members[d.group1]
+    side0 = d.members[~d.group1]
+    assert 0 < side1.size < 50 and side0.size == 50 - side1.size
+    assert d.center_index in side1  # center always in group 1 (audit item 23)
+    assert len(ds.df.iloc[side1]) + len(ds.df.iloc[side0]) == 50
+    with pytest.raises(IndexError):
+        ds.Z_std[d.group1]  # the naive misuse: mask applied to the full array

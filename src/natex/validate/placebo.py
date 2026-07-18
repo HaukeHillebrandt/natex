@@ -36,9 +36,10 @@ def signed_distance(dataset: Dataset, d: Discovery) -> np.ndarray:
 class PlaceboReport:
     p_values: dict
     p_holm: dict
-    passed: bool
+    passed: bool | None  # None = vacuous battery (nothing testable), never True (issue #34)
     m: int = 0  # tests that entered the Holm family (finite p-values)
     skipped: dict = field(default_factory=dict)  # column/level -> reason (issue #3)
+    note: str | None = None  # why the battery is vacuous, when it is
 
 
 def _holm(p_values: dict[str, float]) -> dict[str, float]:
@@ -101,11 +102,19 @@ def placebo_tests(dataset: Dataset, d: Discovery, alpha: float = 0.05) -> Placeb
         p_values[c] = float(2 * stats.t.sf(abs(t), dof)) if np.isfinite(t) else float("nan")
     p_holm = _holm(p_values)
     m = sum(1 for p in p_values.values() if not np.isnan(p))
+    note = None
     if p_values:
         usable = [v for v in p_holm.values() if not np.isnan(v)]
         # NaN entries stay visible in the report but never decide the battery;
         # if EVERY p is NaN there is nothing usable -> fail loudly (F-A1).
         passed = bool(usable) and all(v > alpha for v in usable)
     else:
-        passed = True  # no testable covariate: vacuously passed (documented)
-    return PlaceboReport(p_values=p_values, p_holm=p_holm, passed=passed, m=m, skipped=skipped)
+        # Issue #34: an empty family must never be recorded as a real pass —
+        # passed is None (JSON null downstream) plus an explicit note, so a
+        # vacuous battery is machine-distinguishable from a tested one
+        # (mirrors the did placebo_dimension_tests vacuous-note precedent).
+        passed = None
+        note = "no non-forcing covariate was testable; placebo battery vacuous"
+    return PlaceboReport(
+        p_values=p_values, p_holm=p_holm, passed=passed, m=m, skipped=skipped, note=note
+    )
