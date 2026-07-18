@@ -99,13 +99,15 @@ def test_ed_density_uniform_grid_passes(ed):
 
 def test_ed_placebo_battery_trivially_empty(ed):
     """The covariate set equals the forcing set (months_23 only), so there are
-    no non-forcing covariates to placebo-test: the battery is trivially empty
-    and trivially passes — asserted here rather than silently skipped."""
+    no non-forcing covariates to placebo-test: the battery is vacuous, and per
+    issue #34 a vacuous battery reports passed=None with an explicit note —
+    never a pass — asserted here rather than silently skipped."""
     assert set(ed.spec.covariates) == set(ed.spec.forcing)
     res = lord3_scan(ed, k=25, degree=3, rng=np.random.default_rng(0))
     rep = placebo_tests(ed, res.top(1)[0])
     assert rep.p_values == {}
-    assert rep.passed is True
+    assert rep.passed is None
+    assert rep.note is not None and "vacuous" in rep.note
 
 
 def test_ed_effect_direction(ed):
