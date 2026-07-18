@@ -1,0 +1,368 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\newcommand{\natex}{\texttt{natex}}
+
+\title{Recovering Proposition 99 Blind: Validating the \natex{} Pipeline
+Against the Abadie--Diamond--Hainmueller Benchmark}
+\author{Hauke Hillebrandt\thanks{University College London. Email:
+\texttt{ucjthhi@ucl.ac.uk}. This paper and the underlying \natex{} software were
+prepared with substantial assistance from Anthropic's Claude models; the author
+reviewed the analyses and text and is responsible for all remaining errors.}}
+\date{July 2026 \\ \small run of record re-verified 2026-07-18, \natex{}
+v0.2.0, seeds 0/1/2 (donor path rng-free)}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Run blind on the Abadie--Diamond--Hainmueller (ADH) California
+smoking panel (39 states $\times$ 31 years), the \natex{} pipeline reproduces
+the canonical Proposition 99 benchmark end to end. All three SuDDDS scan
+methods (greedy, wcc, single\_delta; normal model) recover
+(California, $t_0 = 1989$) exactly --- precision $=$ recall $= 1.0$ over the 31
+California records, LLR $13.82$; the Bernoulli-model scan is also exact (LLR
+$13.86$), a y-blindness test proves the scan bitwise independent of the
+outcome, and a Bernoulli($\hat p$)-null Monte Carlo ($Q=99$, seed 1) gives
+$p = 0.010$ (the dependence-preserving AR(1) null is structurally
+conservative on a policy dummy, pinning at $p = 1.0$; documented, not
+claimed as evidence). Deterministic full-pool simplex weights put summed
+weight $0.955$ on ADH's five published donors, and the synthetic-control ATT
+over 1989--2000 is $-19.514$ packs per capita, matching ADH's canonical
+average gap of roughly $-19$. Nulls are reported as nulls: the
+exact in-space RMSPE-ratio placebo ranks California 3/39 ($p = 0.077$;
+ADH's 1/39 requires their poor-pre-fit exclusion, kept opt-in here),
+and under the corrected two-sided studentized placebo statistic the source
+thesis's claim that all three effect estimates are significant at 5\% does
+\emph{not} survive (ranks 13/39, 7/39, 9/39). By construction this exercise
+has zero novelty; its value is credibility transfer --- external-validity
+anchoring for the \natex{} studies on novel data.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+California's Proposition 99, passed in November 1988 and effective January
+1989, raised the state cigarette excise tax by 25 cents per pack and funded a
+large anti-smoking campaign. Taxation and media spending each measurably
+reduced cigarette sales \cite{hu1995}, and the program is associated with
+accelerated declines in consumption and heart-disease mortality
+\cite{fichtenberg2000}. It is
+also the canonical testbed of the synthetic control method: building on the
+comparative case-study estimator of \cite{abadiegardeazabal2003}, Abadie,
+Diamond, and Hainmueller \cite{abadie2010} constructed a ``synthetic
+California'' from a weighted combination of donor states and estimated an
+average gap of roughly $-19$ packs per capita over 1989--2000. That
+example anchors a large methodological literature
+\cite{abadie2015,abadie2021,benmichael2021} and is arguably the
+most-replicated benchmark in comparative case studies.
+
+This paper uses it the other way around: not to learn about Proposition 99,
+but to validate a pipeline. \natex{} \cite{natex} is an automated
+natural-experiment discovery-and-estimation toolkit in the LoRD3 lineage
+\cite{herlands2018,jakubowski2023}; its difference-in-differences arm
+implements SuDDDS (Subset Discovery of Difference-in-Differences) from
+chapter~6 of \cite{herlands2020}, whose printed Table~6.1 evaluates the method
+on this same smoking panel. We run the full pipeline \emph{blind} --- the scan
+is never told the treated unit or the intervention year, and provably never
+reads the outcome --- and ask whether it rediscovers (California, 1989) and
+reproduces the ADH estimate. It does --- exactly, deterministically, and with
+every deviation from the thesis's printed values investigated and reconciled.
+Because the exercise replicates a known benchmark, we write it up short,
+structurally as validation: its only role is to transfer credibility to the
+\natex{} studies on novel data.
+
+\section{Data}\label{sec:data}
+
+The data are the ADH California tobacco panel \cite{abadie2010} as shipped in
+the \natex{} dataset registry (dataset \texttt{prop99}; 1{,}209 rows): annual
+state-level per-capita cigarette sales (packs, from tax revenues) for 39
+states, 1970--2000 --- California plus ADH's 38 donor states --- with
+auxiliary covariates (log income, beer consumption, share aged 15--24,
+retail price). The panel is balanced
+($39 \times 31$, no missing outcome cells). Treatment is the policy dummy:
+California from 1989 onward. (The source thesis \cite{herlands2020} reports
+``30 US states'' and does not document its panel; ours is ADH's 39-state
+pool.)
+
+\section{Design and Methods}\label{sec:methods}
+
+\paragraph{Blind discovery (SuDDDS).} SuDDDS \cite{herlands2020}, as
+implemented and corrected in \natex{} \cite{natex}, scans panel records
+$(x_i, t_i, \theta_i)$ --- covariates, time, treatment --- for a subset of
+units and an intervention time $T_0$ at which $\theta$ jumps, scoring
+candidates by a log-likelihood ratio and never reading the outcome $y$.
+Protocol, fixed before calibration: windows $(5, 8, 10)$, 4 time bins, 8
+restarts, seed 0, and background degree 0 (unit effects only). Degree 0 is
+required, not tuning: $\theta$ is a pure policy dummy whose only time
+variation is the candidate discontinuity, so any global time polynomial can
+only fit the jump itself; with degree 1 the leaked slope manufactures a
+spurious whole-panel optimum (the thesis never reports its background --- an
+unreported-hyperparameter risk). All three scan methods (greedy, wcc,
+single\_delta) are run under the normal model, plus a wcc scan under the
+Bernoulli model, the corrected default for a binary treatment. A y-blindness
+test re-runs the scan with the outcome deleted and requires bitwise-identical
+discoveries.
+
+\paragraph{Calibration.} The top discovery's LLR is calibrated by a
+fitted-null Monte Carlo with $Q = 99$ replicas and a $+1$-rank rule (minimum
+attainable $p = 0.010$), drawing nulls from Bernoulli($\hat p$) --- the
+correct null family for a binary $\theta$. As a diagnostic we also run the
+dependence-preserving AR(1)-unit null, which is \emph{structurally
+conservative} on a deterministic policy dummy: 38 of 39 units have
+identically-zero residuals, so the pooled AR(1) fit absorbs California's step
+as noise and hands it to every replica; its $p$ pins at $1.0$, documented as
+a regression, never claimed as evidence.
+
+\paragraph{Estimation conditioned on the discovery.} Three effect estimators
+are run on the recovered discovery over the full post period 1989--2000:
+two-way difference-in-differences (DD), synthetic control (simplex-weighted
+donor fit on pre-period outcomes, as in \cite{abadie2010}), and GESS (greedy
+control-group expansion, thesis ch.~6). Separately, the \natex{}
+synthetic-control donor path is run on the raw (state, year, cigsale) matrix
+with the full donor pool and with an $n=8$ pre-fit-ranked variant; this path
+is deterministic --- no rng anywhere --- and bitwise-identical across runs.
+
+\paragraph{Honest inference.} Significance is assessed by exact, enumerated
+placebo tests, with the caveats stated plainly. (i)~The in-space RMSPE-ratio
+placebo \cite{abadie2010,abadie2015} refits every one of the 38 control
+states as a pseudo-treated unit (\texttt{exclude\_poor\_fit = None}: all 38
+usable, 0 skipped) and ranks California's post/pre RMSPE ratio among all 39;
+ADH's $p = 1/39$ requires their poor-pre-fit exclusion, kept opt-in in
+\natex{}. (ii)~The corrected effect-level test is a
+two-sided studentized statistic $|\hat\tau / \mathrm{se}|$ with $+1$-rank
+$p$-values over the 38 enumerated placebo states --- under it, genuinely
+non-parallel placebo states (flat post-shifted gaps with tiny standard
+errors) can out-$t$ California's trending gap. (iii)~The
+validation battery's degenerate cases report ``cannot test'' (NaN, failed)
+rather than fabricating passes: composition reduces to a one-row table for a
+single-unit discovery, and anticipation has zero pre-period treatment
+variance.
+
+\section{Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1}
+\caption{(a) California vs.\ synthetic California (deterministic full-pool
+simplex weights), 1970--2000: pre-RMSPE $1.656$, post-period gap averaging
+$-19.514$ packs per capita. (b) In-space placebo: post/pre RMSPE ratios for
+all 39 states (all 38 placebos usable, 0 skipped). California ranks 3/39
+($p = 0.077$); the two out-ranking states, Missouri and Virginia, are
+poor-pre-fit placebos that ADH's exclusion rule would discard.}
+\label{fig:fig1}
+\end{figure}
+
+\paragraph{Blind discovery is exact.} All three SuDDDS scan methods under the
+normal model return (California, $t_0 = 1989.0$) as the top discovery, with
+the discovered subset exactly the 31 California records: precision $=$
+recall $= 1.0$, LLR $13.82$. The Bernoulli-model scan is also exact, LLR
+$13.86$. The y-blindness test passes bitwise (Table~\ref{tab:main},
+panel~A).
+
+\paragraph{The discovery is significant under the correct null.} Against
+Bernoulli($\hat p$) nulls ($Q = 99$, seed 1) the observed max LLR $13.86$
+exceeds the null max $7.95$ (null q90 $4.67$): $p = 0.010$, the $+1$-rank
+floor. The AR(1)-unit diagnostic pins at $p = 1.0$, as expected for a
+deterministic policy dummy (Section~\ref{sec:methods}); recorded as a
+structural limitation of dependence-preserving nulls, not as evidence
+against the discovery (Table~\ref{tab:main}, panel~B).
+
+\paragraph{Effects match ADH; the printed thesis numbers reconcile.} On the
+full 1989--2000 post period, DD gives $\hat\tau = -27.349$ packs (pre-MSE
+$51.23$), synthetic control gives $\hat\tau = -19.514$ (pre-MSE $2.74$), and
+GESS gives $\hat\tau = -26.653$ (control: Montana, pre-MSE $18.35$). Signs
+and the pre-fit ordering match the thesis's Table~6.1 ($-10.94$ / $-8.96$ /
+$-6.67$): synthetic control's pre-MSE is far below DD's, which is exactly
+ADH's argument for it. The magnitudes differ by a factor of $\sim$2--2.5
+because the thesis's printed values correspond to an unreported effective
+post window of about five years, while the gap accumulates over time;
+restricting \natex{} to 1989--1993 gives DD $-18.8$ and synthetic $-12.3$,
+bracketing the printed values (Table~\ref{tab:main}, panel~C).
+
+\paragraph{Donor selection recovers ADH's pool.} The deterministic full-pool
+simplex fit puts nonzero weight on six donors, with summed weight $0.955$ on
+ADH's five published donors, and the four heavyweights are exactly ADH's own
+\{Utah, Montana, Nevada, Connecticut\} (weights in Table~\ref{tab:main},
+panel~D). ATT$_{\text{post}} = -19.514$ packs per capita, with pre-RMSPE
+$1.656$ against post-RMSPE $> 10$ (the ADH-style pre/post contrast); the
+8-donor variant gives ATT $-22.648$, pre-RMSPE $3.671$
+(Figure~\ref{fig:fig1}a).
+
+\paragraph{Honest inference: what survives and what does not.} The exact
+in-space RMSPE-ratio placebo ranks California 3 of 39 in both variants
+(treated ratio $12.440$ full pool, $6.570$ top-8): $p = 3/39 = 0.077$
+(Figure~\ref{fig:fig1}b). ADH's $1/39$ arises only under their poor-pre-fit
+exclusion, which \natex{} keeps opt-in. The corrected two-sided studentized
+$\tau$ placebos over the 38 enumerated states give DD rank 13/39
+($p = 0.333$), synthetic control 7/39 ($p \leq 8/39 = 0.205$), and GESS 9/39
+($p = 0.231$): the thesis's claim that all three are significant at 5\% does
+\emph{not} survive the corrected statistic, and we report that as the finding
+it is (Table~\ref{tab:main}, panel~E).
+
+\paragraph{Run of record and reproducibility.} The entire benchmark is
+executable: running \texttt{uv run pytest -m backtest} with
+\texttt{NATEX\_DATA} set to the data root, on the modules
+\texttt{test\_prop99.py} and \texttt{test\_prop99\_donors.py} under
+\texttt{tests/backtests/}, gives 16 passed, 1 xfailed in 79.74\,s
+(re-verified 2026-07-18). The single xfail is a
+non-blocking instrument-selection stretch goal on a \emph{different} dataset,
+pinned as a documented finding; all 15 Proposition 99 tests pass. All estimates:
+\natex{} v0.2.0 \cite{natex} on the registry copy of the ADH panel (not
+committed). Figure~\ref{fig:fig1} regenerates deterministically from
+\texttt{figures/make\_fig.py} (committed), which asserts the headline
+numbers of record before drawing.
+
+\begin{table}[t]
+\centering
+\scriptsize
+\caption{Proposition 99 backtest: numbers of record (\natex{} v0.2.0; seeds
+0/1/2, donor path rng-free).}
+\label{tab:main}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llll}
+\toprule
+Quantity & Value & Quantity & Value \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel A: blind discovery (SuDDDS; windows (5,8,10), bins 4, restarts 8, degree 0, seed 0)}}\\
+greedy / wcc / single\_delta & (California, 1989.0) & precision, recall & $1.0$, $1.0$ (31 CA records) \\
+normal-model LLR & $13.82$ & Bernoulli wcc & exact; LLR $13.86$ \\
+y-blindness & bitwise identical & & \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel B: discovery calibration ($Q = 99$, $+1$-rank, seed 1)}}\\
+Bernoulli($\hat p$) null & $p = 0.010$ & observed vs null max & $13.86$ vs $7.95$ (q90 $4.67$) \\
+AR(1)-unit null & $p = 1.0$, conservative$^{\dagger}$ & & \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel C: effects on the discovery, post 1989--2000 (thesis Table 6.1: $-10.94/-8.96/-6.67$)}}\\
+DD $\hat\tau$ & $-27.349$ (pre-MSE $51.23$) & synthetic $\hat\tau$ & $-19.514$ (pre-MSE $2.74$) \\
+GESS $\hat\tau$ & $-26.653$ (MT, pre-MSE $18.35$) & 1989--1993 restriction & DD $-18.8$, synthetic $-12.3$ \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel D: synthetic-control donor path (deterministic, bitwise-reproducible)}}\\
+weights & UT $.394$, MT $.232$, NV $.205$ & ADH-five summed weight & $0.955$ \\
+ & CT $.109$, NH $.045$, CO $.015$ & ATT$_{\text{post}}$ & $-19.514$ packs (ADH $\approx -19$) \\
+pre- / post-RMSPE & $1.656$ / $> 10$ & 8-donor variant & ATT $-22.648$, pre $3.671$ \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel E: exact placebo inference (enumerated; no poor-pre-fit exclusion)}}\\
+RMSPE ratio (treated) & $12.440$ full / $6.570$ top-8 & rank, $p$ & 3/39 both; $p = 3/39 = 0.077$ \\
+studentized $\tau$: DD & 13/39 ($p = 0.333$) & synthetic & 7/39 ($p \leq 8/39 = 0.205$) \\
+GESS & 9/39 ($p = 0.231$) & thesis ``all sig.\ at 5\%'' & does \emph{not} survive \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\parbox{0.95\textwidth}{\scriptsize Notes: $^{\dagger}$structural, not
+evidential: a deterministic policy dummy leaves 38 of 39 units with
+identically-zero residuals, so the pooled AR(1) null absorbs the step as
+noise; pinned as a documented regression. Scan $p$-values use a $Q = 99$
+fitted-null Monte Carlo with a $+1$-rank rule; $0.010$ is the minimum
+attainable. The synthetic-control placebo rank carries one rank of slack
+because each placebo refits SLSQP weights.}
+\end{table}
+
+\section{Caveats and Conclusion}\label{sec:conclusion}
+
+Three caveats bound the claims. First, this exercise has zero novelty by
+construction: Proposition 99 on the ADH panel is the most-replicated
+synthetic-control benchmark in economics \cite{abadie2010,abadie2021}, and a
+pipeline that failed it would be disqualified rather than informative; its
+role is external-validity anchoring for the \natex{} studies on novel data,
+and it should be read as methods validation, not as a finding about tobacco
+policy. Second, effect magnitudes here are $\sim$2--2.5$\times$ the source
+thesis's printed Table~6.1 values because \natex{} estimates on the full
+1989--2000 post period while the thesis's numbers match an unreported
+$\sim$5-year effective window; the thesis also never reports its panel (``30
+US states'' vs.\ ADH's 39) or its treatment background. Signs, ordering, and
+pre-fit ranking agree, and the synthetic-control estimate matches ADH's
+canonical $\approx -19$ --- but the reconciliation must be stated, not
+glossed. Third, the honest-inference results are genuinely weaker than the
+textbook telling: without ADH's poor-pre-fit exclusion the in-space placebo
+$p$ is $0.077$, not $1/39 = 0.026$, and under the corrected two-sided
+studentized placebo statistic none of the three effect estimators clears 5\%
+on this panel. These are properties of the inference conventions, faithfully
+surfaced.
+
+Within those bounds, the conclusion is simple: run blind, \natex{}
+rediscovers (California, 1989) exactly by every scan method, calibrates it
+significantly under the correct null, selects ADH's donors with $0.955$ of
+the simplex weight, and reproduces the canonical $\approx -19$
+synthetic-control estimate deterministically. The pipeline earns the benefit
+of the doubt it needs on data where the answer is not known.
+
+\scriptsize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
+
+\bibitem{abadie2021}
+Abadie, A. (2021).
+Using synthetic controls: Feasibility, data requirements, and methodological
+aspects.
+\emph{Journal of Economic Literature}, 59(2), 391--425.
+
+\bibitem{abadie2010}
+Abadie, A., Diamond, A., and Hainmueller, J. (2010).
+Synthetic control methods for comparative case studies: Estimating the effect
+of California's tobacco control program.
+\emph{Journal of the American Statistical Association}, 105(490), 493--505.
+
+\bibitem{abadie2015}
+Abadie, A., Diamond, A., and Hainmueller, J. (2015).
+Comparative politics and the synthetic control method.
+\emph{American Journal of Political Science}, 59(2), 495--510.
+
+\bibitem{abadiegardeazabal2003}
+Abadie, A., and Gardeazabal, J. (2003).
+The economic costs of conflict: A case study of the Basque Country.
+\emph{American Economic Review}, 93(1), 113--132.
+
+\bibitem{benmichael2021}
+Ben-Michael, E., Feller, A., and Rothstein, J. (2021).
+The augmented synthetic control method.
+\emph{Journal of the American Statistical Association}, 116(536), 1789--1803.
+
+\bibitem{fichtenberg2000}
+Fichtenberg, C.~M., and Glantz, S.~A. (2000).
+Association of the California Tobacco Control Program with declines in
+cigarette consumption and mortality from heart disease.
+\emph{New England Journal of Medicine}, 343(24), 1772--1777.
+
+\bibitem{herlands2018}
+Herlands, W., McFowland~III, E., Wilson, A.~G., and Neill, D.~B. (2018).
+Automated local regression discontinuity design discovery.
+In \emph{Proceedings of the 24th ACM SIGKDD International Conference on Knowledge
+Discovery and Data Mining (KDD~'18)}.
+
+\bibitem{herlands2020}
+Herlands, W. (2020).
+\emph{Change Modeling for Understanding Our World and the Counterfactual
+One(s)}.
+PhD thesis, Carnegie Mellon University.
+
+\bibitem{hu1995}
+Hu, T.-W., Sung, H.-Y., and Keeler, T.~E. (1995).
+Reducing cigarette consumption in California: Tobacco taxes vs an
+anti-smoking media campaign.
+\emph{American Journal of Public Health}, 85(9), 1218--1222.
+
+\bibitem{jakubowski2023}
+Jakubowski, B., Somanchi, S., McFowland~III, E., and Neill, D.~B. (2023).
+Exploiting discovered regression discontinuities to debias
+conditioned-on-observable estimators.
+\emph{Journal of Machine Learning Research}, 24(133), 1--57.
+
+\bibitem{natex}
+Hillebrandt, H. (2026).
+\emph{natex: automated natural-experiment discovery and estimation} (version
+0.2.0). Software.
+\url{https://github.com/HaukeHillebrandt/natex}
+
+\end{thebibliography}
+
+\end{document}
