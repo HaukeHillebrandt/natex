@@ -843,6 +843,8 @@ def _run_bunching(
             "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
             "se": rep.se, "window": declared.bunching_window,
             "n_finite": int(np.isfinite(s).sum()),
+            # issue #44 audit trail: side counts and the refusal reason
+            "n_left": rep.n_left, "n_right": rep.n_right, "note": rep.note,
         }
         # Figure payload (task 7): bunching_hist per usable threshold.
         artifacts.setdefault("thresholds", []).append({

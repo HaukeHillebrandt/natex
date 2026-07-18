@@ -323,6 +323,43 @@ def test_density_test_threads_window():
     assert rep.p_value == rep2.p_value and rep.theta == rep2.theta
 
 
+def test_binned_poisson_jump_min_per_side_guard():
+    """Issue #44: 2 observations on one side of the cutoff (the Epoch shape,
+    19/2 at n=21) still returned a finite theta from <= 2 informative bins of
+    a 4-parameter GLM (20/1 returned theta = -175). Below ``min_per_side``
+    (default 5) the report must refuse with NaN and say why (n_left, n_right,
+    note) — NaN, never 0."""
+    rng = np.random.default_rng(0)
+    s = np.concatenate([-rng.uniform(0.1, 3.0, 19), rng.uniform(0.0, 3.0, 2)])
+    rep = binned_poisson_jump(s)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+    assert rep.n_left == 19 and rep.n_right == 2
+    assert rep.note is not None and "5" in rep.note
+
+    # 20/1 (the theta = -175 shape) refuses identically
+    s2 = np.concatenate([-rng.uniform(0.1, 3.0, 20), rng.uniform(0.0, 3.0, 1)])
+    rep2 = binned_poisson_jump(s2)
+    assert np.isnan(rep2.theta) and rep2.n_right == 1
+
+    # the boundary runs: 5/5 at the default returns a finite report
+    s3 = np.concatenate([-rng.uniform(0.1, 3.0, 5), rng.uniform(0.0, 3.0, 5)])
+    rep3 = binned_poisson_jump(s3)
+    assert np.isfinite(rep3.p_value) and rep3.n_left == 5 and rep3.n_right == 5
+    assert rep3.note is None
+
+    # explicit override: min_per_side=2 lets the 19/2 shape through, noted or not
+    rep4 = binned_poisson_jump(s, min_per_side=2)
+    assert np.isfinite(rep4.p_value)
+
+    # side convention matches the bin indicator: s >= 0 counts as right, so a
+    # right side made only of exact zeros is counted there (and the support
+    # then fails to straddle the cutoff -> NaN with the counts surfaced)
+    z = np.concatenate([-rng.uniform(0.1, 1.0, 10), np.zeros(6)])
+    repz = binned_poisson_jump(z)
+    assert repz.n_left == 10 and repz.n_right == 6
+    assert np.isnan(repz.p_value)
+
+
 def test_density_report_carries_wald_se():
     """Issue #41: the Wald SE the GLM already computes must be surfaced as
     ``DensityReport.se`` — reverse-engineering it as theta/isf(p/2) breaks

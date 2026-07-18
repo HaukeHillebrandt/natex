@@ -196,6 +196,25 @@ def test_bunching_declared_threshold(tmp_path):
     assert "information-free" in " ".join(by.diagnostics["caveats"])
 
 
+def test_bunching_small_side_refusal_surfaces_counts(tmp_path):
+    """Issue #44: a declared threshold with almost all mass on one side
+    (67/3, above the family's 60-row applicability floor) must refuse with
+    NaN — surfaced per threshold as n_left/n_right and a note — and the
+    family lands on the degenerate-fit null, never a fabricated verdict from
+    a 4-parameter GLM on <= 2 informative bins."""
+    rng = np.random.default_rng(2)
+    x = np.concatenate([rng.uniform(20.0, 24.9, 67), rng.uniform(25.0, 26.0, 3)])
+    res = survey(pd.DataFrame({"v": x}), rng=np.random.default_rng(0),
+                 out_dir=tmp_path / "small", thresholds={"v": 25.0})
+    b = res.families["bunching"]
+    assert b.status == "null"
+    assert "degenerate" in b.reason
+    detail = b.diagnostics["per_threshold"]["v"]
+    assert detail["p_value"] is None  # NaN -> None via jsonable
+    assert detail["n_left"] == 67 and detail["n_right"] == 3
+    assert "side" in detail["note"]
+
+
 def test_bunching_window_threads_through_survey(tmp_path):
     """Issue #42: ``bunching_window`` restricts every declared-threshold
     density fit to |x - threshold| <= window (the EU-AI-Act shape: a wide
