@@ -324,7 +324,11 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
         ),
         "llr": top.llr,
         "p_value": rand.p_value,
+        # Issue #34: passed is None (JSON null) for a vacuous battery, with
+        # the note saying why — never a bare True a consumer could read as a
+        # real pass.
         "placebo_passed": placebo.passed,
+        "placebo_note": placebo.note,
         "placebo_holm": placebo.p_holm,
         "density_p": dens.p_value,
         "density_se": dens.se,
@@ -335,8 +339,8 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
     # a flag only: effects below are computed regardless.
     hooks.interpret(summary)
     hooks.audit({"p_value": rand.p_value, "placebo_passed": placebo.passed,
-                 "placebo_holm": placebo.p_holm, "density_p": dens.p_value,
-                 "density_se": dens.se}, summary)
+                 "placebo_note": placebo.note, "placebo_holm": placebo.p_holm,
+                 "density_p": dens.p_value, "density_se": dens.se}, summary)
     effects: dict = {}
     if ds.y is not None:
         for est in (local_2sls(ds, top), wald_estimate(ds, top)):

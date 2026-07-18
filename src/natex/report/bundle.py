@@ -166,6 +166,7 @@ def _scan_payload_config(payload: dict) -> dict | None:
             "normal": top.get("normal"),
             "forcing_influence": influence,
             "placebo_passed": validation.get("placebo_passed"),
+            "placebo_note": validation.get("placebo_note"),
             "placebo_holm": validation.get("placebo_holm"),
             "density_p": validation.get("density_p"),
             "effects": payload.get("effects") or {},

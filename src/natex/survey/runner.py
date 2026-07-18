@@ -309,8 +309,10 @@ def _run_rdd(
         status, reason = "null", "scan p-value unavailable — no credible discovery"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
-    elif not s.get("placebo_passed"):
+    elif s.get("placebo_passed") is False:
         # audit 3 phrasing: a failed placebo battery demotes the discovery.
+        # Issue #34: None means the battery was VACUOUS (nothing testable) —
+        # only an actual False is a failure.
         status, reason = "null", "descriptive only — placebo battery failed"
     elif not _finite(density_p):
         status, reason = "null", "density diagnostic unavailable — manipulation check inconclusive"
@@ -318,8 +320,13 @@ def _run_rdd(
         status, reason = "null", f"density test rejects (p={density_p:.3f}) — manipulation risk"
     else:
         status = "credible"
+        placebo_txt = (
+            "placebo battery vacuous (no covariate was testable)"
+            if s.get("placebo_passed") is None
+            else "placebo battery passed"
+        )
         reason = (
-            f"scan p={p:.3f} at or below {ALPHA}, placebo battery passed, "
+            f"scan p={p:.3f} at or below {ALPHA}, {placebo_txt}, "
             f"density p={density_p:.2f}"
         )
     # placebo_holm in the scan summary is a per-covariate dict; key_numbers is

@@ -273,6 +273,46 @@ def test_dee_gate_no_gp_extra(monkeypatch, tmp_path):
     assert dee.applicability["heuristic"]["status"] == "inapplicable"
 
 
+def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
+    """Issue #34: ``placebo_passed`` is None (not True) for a vacuous battery;
+    the rdd gate must not misread that null as a FAILED battery — a scan that
+    clears every other gate stays credible, with the vacuity named in the
+    reason instead of the old unconditional 'placebo battery passed'."""
+    from types import SimpleNamespace
+
+    from natex.survey import runner as runner_mod
+
+    rng = np.random.default_rng(0)
+    n = 120
+    z = rng.normal(size=n)
+    df = pd.DataFrame({"z": z, "T": (z >= 0).astype(float), "y": rng.normal(size=n)})
+    intake = SimpleNamespace(
+        search_plan=SimpleNamespace(ranked=lambda: [], budget={}),
+        prep_plan=SimpleNamespace(apply=lambda frame: (frame, []), column_roles={}),
+        profile=SimpleNamespace(treatment_candidates=["T"], forcing_candidates=["z"]),
+        understanding=SimpleNamespace(outcomes=[SimpleNamespace(column="y")]),
+    )
+    summary = {
+        "placebo_passed": None,
+        "placebo_note": "no non-forcing covariate was testable; placebo battery vacuous",
+        "placebo_holm": {},
+        "density_p": 0.5,
+        "effects": {},
+    }
+    best = SimpleNamespace(
+        summary=summary, p_value=0.01, llr=5.0,
+        candidate=SimpleNamespace(model_dump=lambda: {"design": "rdd"}),
+    )
+    rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best)
+    monkeypatch.setattr(runner_mod, "discover", lambda *a, **k: rep)
+    res = runner_mod._run_rdd(
+        df, intake, None, None, None, np.random.default_rng(0), tmp_path, {},
+    )
+    assert res.status == "credible", res.reason
+    assert "placebo battery failed" not in res.reason
+    assert "vacuous" in res.reason
+
+
 def test_dee_skipped_without_credible_rdd(monkeypatch, tmp_path):
     """Runtime gate on top of applicability: rdd forced to 'null' => dee is
     skipped with the exact no-validated-discovery reason (cheap unit — no

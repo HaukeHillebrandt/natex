@@ -240,6 +240,37 @@ def test_issue_29_did_params_record_roles(tmp_path):
     assert params["time"] == "t"
 
 
+def test_issue_34_vacuous_placebo_records_null_not_true(tmp_path):
+    """Issue #34: when the only covariate is the forcing column, the placebo
+    battery is vacuous — results.json must record ``placebo_passed: null``
+    plus an explicit ``placebo_note`` (never ``true`` with an empty Holm dict,
+    field-level indistinguishable from a real pass), and the CLI echo must not
+    claim the battery passed."""
+    rng = np.random.default_rng(0)
+    n = 300
+    z = rng.normal(size=n)
+    df = pd.DataFrame({
+        "z": z,
+        "T": (z >= 0).astype(float),
+        "y": 1.0 + 0.5 * z + 2.0 * (z >= 0) + rng.normal(scale=0.5, size=n),
+    })
+    csv = tmp_path / "sharp.csv"
+    df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+         "--forcing", "z", "--k", "25", "--q", "9", "--seed", "0",
+         "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    validation = json.loads((tmp_path / "out" / "results.json").read_text())["validation"]
+    assert validation["placebo_passed"] is None
+    assert validation["placebo_holm"] == {}
+    assert "vacuous" in validation["placebo_note"]
+    assert "placebo passed: True" not in result.output
+    assert "no non-forcing covariate was testable" in result.output
+
+
 def test_issue_28_discover_rdd_homogeneous_neighborhoods_exit_1(tmp_path):
     """Issue #28: two well-separated treatment-homogeneous clusters make the
     audit-item-21 fast path skip every center (discoveries=[]); the CLI must

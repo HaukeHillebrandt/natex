@@ -217,8 +217,13 @@ def balance_filter(dataset: Dataset, result: VKNNResult, alpha: float = 0.05) ->
     surviving experiments keep their aligned ``accepted`` ranks, and
     ``rejected`` still records support-test rejections only.
     """
+    # Issue #34: ``passed`` is None for a VACUOUS battery (nothing testable);
+    # only an actual False — a covariate that jumps — drops the experiment
+    # (``dtype=bool`` would silently coerce None to False).
     keep = np.asarray(
-        [placebo_tests(dataset, e, alpha=alpha).passed for e in result.experiments], dtype=bool
+        [placebo_tests(dataset, e, alpha=alpha).passed is not False
+         for e in result.experiments],
+        dtype=bool,
     )
     return VKNNResult(
         experiments=[e for e, ok in zip(result.experiments, keep, strict=True) if ok],

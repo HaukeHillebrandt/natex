@@ -566,7 +566,10 @@ def discover(
                 for d in res.top(20)
             ],
             "validation": {
+                # Issue #34: a vacuous battery records null + a note, never
+                # true with an empty Holm dict.
                 "placebo_holm": placebo.p_holm, "placebo_passed": placebo.passed,
+                "placebo_note": placebo.note,
                 "density_p": dens.p_value, "density_se": dens.se,
             },
             "effects": effects,
@@ -582,7 +585,12 @@ def discover(
             f"(n_coarse={n_coarse}, top_m={coarse_block['top_m']})"
         )
     typer.echo(f"top center (raw z): {ds.Z[top.center_index]}")
-    typer.echo(f"placebo passed: {placebo.passed}   density p: {dens.p_value:.3f}")
+    placebo_txt = (
+        "— (no non-forcing covariate was testable; battery vacuous)"
+        if placebo.passed is None
+        else str(placebo.passed)
+    )
+    typer.echo(f"placebo passed: {placebo_txt}   density p: {dens.p_value:.3f}")
     if effects:
         e = effects["2sls"]
         typer.echo(f"2SLS tau={e['tau']:.3f} CI=({e['ci'][0]:.3f},{e['ci'][1]:.3f}) weak_iv={e['weak_instrument']}")
