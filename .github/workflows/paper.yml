@@ -1,0 +1,64 @@
+name: paper
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "paper/**"
+      - ".github/workflows/paper.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tectonic (release binary)
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://drop-sh.fullyjustified.net | sh
+          sudo mv tectonic /usr/local/bin/tectonic
+          tectonic --version
+
+      - name: Install LaTeXML (the arXiv HTML renderer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y latexml
+          latexmlc --VERSION
+
+      - name: Build PDF
+        run: make -C paper pdf
+
+      - name: Build HTML
+        run: make -C paper html
+
+      - name: Assemble Pages site
+        run: |
+          mkdir -p site
+          cp -r paper/html/. site/
+          cp paper/main.pdf site/main.pdf
+          ls -R site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
