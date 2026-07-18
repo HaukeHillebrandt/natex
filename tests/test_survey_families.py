@@ -28,9 +28,9 @@ Stochastic calibration (>= 5 seeds each during implementation; one pinned):
   null — the n=96 honest split halves to 48 rows). Pinned pair (DGP 100,
   survey 0): F = 24.0. The mu2=0 pure-noise pool refused selection on 3/3
   survey seeds.
-- bunching reuses the task-4 calibration (tests/test_validation.py): seed-0
-  tripled-mass p = 0.0, untouched-uniform p = 0.979 (rng-free given the
-  draw).
+- bunching reuses the task-4 calibration (tests/test_validation.py,
+  recalibrated for issue #42's mean-initialized IRLS): seed-0 tripled-mass
+  p < 1e-7, untouched-uniform p > 0.4 (rng-free given the draw).
 """
 
 from __future__ import annotations
@@ -194,6 +194,30 @@ def test_bunching_declared_threshold(tmp_path):
     by = resy.families["bunching"]
     assert by.status in {"credible", "null"}
     assert "information-free" in " ".join(by.diagnostics["caveats"])
+
+
+def test_bunching_window_threads_through_survey(tmp_path):
+    """Issue #42: ``bunching_window`` restricts every declared-threshold
+    density fit to |x - threshold| <= window (the EU-AI-Act shape: a wide
+    support dilutes a local sub-threshold excess). The per-threshold detail
+    must match a direct windowed binned_poisson_jump call bitwise and record
+    the window used."""
+    from natex.validate.density import binned_poisson_jump
+
+    rng = np.random.default_rng(3)
+    x = 25.0 + np.concatenate(
+        [rng.uniform(-10.0, 10.0, 4000), rng.uniform(-0.4, 0.0, 300)]
+    )
+    res = survey(pd.DataFrame({"log10_flops": x}), rng=np.random.default_rng(0),
+                 out_dir=tmp_path / "win", thresholds={"log10_flops": 25.0},
+                 bunching_window=1.0)
+    b = res.families["bunching"]
+    assert b.status == "credible", b.reason
+    detail = b.diagnostics["per_threshold"]["log10_flops"]
+    assert detail["window"] == 1.0
+    direct = binned_poisson_jump(x - 25.0, window=1.0)
+    assert detail["p_value"] == direct.p_value  # bitwise
+    assert detail["theta"] == direct.theta
 
 
 # ---------------------------------------------------------------- sc

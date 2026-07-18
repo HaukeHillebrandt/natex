@@ -28,6 +28,7 @@ class DeclaredInputs:
     thresholds: dict[str, float] = field(default_factory=dict)  # col -> threshold value
     treated_unit: str | None = None  # sc hint (guidance/config only)
     t0: float | None = None  # sc hint
+    bunching_window: float | None = None  # bunching: restrict fits to |x - threshold| <= window
 
 
 @dataclass(frozen=True)

@@ -184,14 +184,12 @@ def test_binned_poisson_jump_detects_gap():
     """Tripling the mass on [0, 0.1] of 2000 uniform[-1, 1] draws must yield a
     tiny p; the untouched symmetric sample must not.
 
-    Calibrated across seeds 0-4: gap p = 0.0 on every seed; null p was
-    {0: 0.979, 1: 0.0093, 2: 0.24, 3: 0.0, 4: 0.056}. On this shape (20 bins
-    of ~100 counts) the frozen IRLS (100 iterations, tol 1e-10 — pure
-    refactor, not retuned here) exits before full convergence, so the null p
-    is seed-noisy; on real discovery signed distances it converges to
-    machine precision (see test_binned_poisson_jump_matches_density_test).
-    Seed 0 pinned per plan: gap p = 0.0 < 0.01, null p = 0.979 > 0.05 —
-    wide margin on both gates, and the draw is deterministic.
+    Recalibrated for issue #42 (mean-initialized IRLS, converges in ~4-5
+    iterations; the old zero start exited the cap on this shape and the null
+    p was seed-noisy): across seeds 0-4 the gap p is < 1e-7 on every seed
+    and the null p is in [0.42, 0.89]. Seed 0 pinned per plan: gap
+    p ~ 9.3e-10 < 0.01, null p ~ 0.89 > 0.05 — wide margin on both gates,
+    and the draw is deterministic.
     """
     rng = np.random.default_rng(0)
     s = rng.uniform(-1.0, 1.0, 2000)
@@ -212,6 +210,62 @@ def test_binned_poisson_jump_degenerate():
     rep_nan = binned_poisson_jump(np.array([np.nan, np.inf, -np.inf, 1.0]))
     assert np.isnan(rep_nan.p_value) and np.isnan(rep_nan.theta)
     assert np.isnan(rep_nan.se)
+
+
+def test_binned_poisson_jump_smooth_null_calibrated():
+    """Issue #42: with the zero-initialized IRLS the smooth-null fit exited
+    at the iteration cap on ~100-count bins and reported a fabricated finite
+    p that was seed-noisy (p = 0.0 at seed 3 on a plain uniform!). With the
+    mean-initialized IRLS the fit converges in ~4 iterations and no smooth
+    null rejects. Calibrated (n=2000 uniform[-1,1], seeds {0..4, 42}):
+    p in [0.14, 0.89] — every seed clears the 0.01 gate by >= 14x."""
+    for seed in (1, 3, 42):
+        rng = np.random.default_rng(seed)
+        rep = binned_poisson_jump(rng.uniform(-1.0, 1.0, 2000))
+        assert rep.p_value > 0.01, f"seed {seed}: smooth null rejected (p={rep.p_value})"
+
+
+def test_binned_poisson_jump_nonconvergence_is_nan():
+    """Issue #42: a fit that exits the IRLS loop without converging must
+    report NaN (p, theta, se) — never a fabricated finite statistic from
+    wherever the iteration cap happened to leave beta (NaN-never-0.0)."""
+    rng = np.random.default_rng(0)
+    s = rng.uniform(-1.0, 1.0, 2000)
+    bump = s[(s >= 0.0) & (s < 0.1)]
+    rep = binned_poisson_jump(np.concatenate([s, bump, bump]), max_iter=1)
+    assert np.isnan(rep.p_value) and np.isnan(rep.theta) and np.isnan(rep.se)
+
+
+def test_binned_poisson_jump_window():
+    """Issue #42: ``window`` restricts the fit to |s| <= window so the GLM
+    tests the LOCAL density jump instead of binning the full data range.
+
+    Far-mass invariance: mass entirely outside the window must not move the
+    statistic — the report on (base + far mass, window=w) equals the report
+    on the base sample alone, bitwise. Localization (seed 3, calibrated):
+    4000 uniform[-10,10] plus 300 planted on [-0.4, 0): the windowed fit
+    concentrates the statistic (|theta| 2.11 vs 0.42 diluted, p 3e-35 vs
+    2e-12). The <2-distinct-values guard applies AFTER subsetting: a window
+    that empties the sample yields NaN, never a crash or 0."""
+    rng = np.random.default_rng(7)
+    base = rng.uniform(-0.5, 0.5, 1500)
+    far = rng.uniform(2.0, 3.0, 500)
+    rep_base = binned_poisson_jump(base)
+    rep_win = binned_poisson_jump(np.concatenate([base, far]), window=0.5)
+    assert rep_win.p_value == rep_base.p_value  # bitwise
+    assert rep_win.theta == rep_base.theta
+    assert rep_win.se == rep_base.se
+
+    rng = np.random.default_rng(3)
+    sb = np.concatenate([rng.uniform(-10.0, 10.0, 4000), rng.uniform(-0.4, 0.0, 300)])
+    rep_full = binned_poisson_jump(sb)
+    rep_local = binned_poisson_jump(sb, window=1.0)
+    assert abs(rep_local.theta) > abs(rep_full.theta)
+    assert rep_local.p_value < 1e-20
+
+    rep_empty = binned_poisson_jump(np.array([5.0, 6.0, 7.0]), window=1.0)
+    assert np.isnan(rep_empty.p_value) and np.isnan(rep_empty.theta)
+    assert np.isnan(rep_empty.se)
 
 
 def test_density_report_carries_wald_se():

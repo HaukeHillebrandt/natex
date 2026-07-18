@@ -835,11 +835,13 @@ def _run_bunching(
             continue
         t = float(thr)
         s = df[col].to_numpy(dtype=float) - t
-        rep = binned_poisson_jump(s)  # drops non-finite s itself
+        # drops non-finite s itself; issue #42: an analyst-declared window
+        # restricts the fit to |s| <= window (local jump, not full support)
+        rep = binned_poisson_jump(s, window=declared.bunching_window)
         p_values[col] = rep.p_value
         per_threshold[col] = {
             "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
-            "se": rep.se,
+            "se": rep.se, "window": declared.bunching_window,
             "n_finite": int(np.isfinite(s).sum()),
         }
         # Figure payload (task 7): bunching_hist per usable threshold.
@@ -994,6 +996,7 @@ def survey(
     cutoffs: dict[str, float] | None = None,
     instruments: list[str] | None = None,
     thresholds: dict[str, float] | None = None,
+    bunching_window: float | None = None,  # issue #42: |x - threshold| <= window
     seed: int | None = None,  # metadata only; rng governs randomness
 ) -> SurveyResult:
     """Run every applicable method family against one dataset; see module docstring."""
@@ -1009,7 +1012,7 @@ def survey(
     declared = DeclaredInputs(
         time=time, unit=unit,
         cutoffs=dict(cutoffs or {}), instruments=list(instruments or []),
-        thresholds=dict(thresholds or {}),
+        thresholds=dict(thresholds or {}), bunching_window=bunching_window,
     )
 
     # ONE upfront spawn in registry order, BEFORE any other rng use: a skipped
