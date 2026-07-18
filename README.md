@@ -20,20 +20,29 @@ touches the outcome `y` (it enters only in estimation and outcome placebos), eve
 stochastic step consumes one explicit `numpy.random.Generator` (same seed ⇒ same result),
 and failed computations return `NaN`, never `0.0`.
 
-## Paper
+## Papers
 
-**Three Kinks and a Null: Formal Trend-Break Tests on the Public Record of AI Progress**
-— natex's kink/DiK estimators applied to Epoch AI's public datasets, with the full
-falsification battery (and a graveyard of rejected designs).
+**Collection index (all papers, HTML + PDF):
+<https://haukehillebrandt.github.io/natex/>**
 
-- **HTML (latest): <https://haukehillebrandt.github.io/natex/>** ·
+Flagship: **Three Kinks and a Null: Formal Trend-Break Tests on the Public Record of AI
+Progress** — natex's kink/DiK estimators applied to Epoch AI's public datasets, with the
+full falsification battery (and a graveyard of rejected designs).
+
+- **HTML: <https://haukehillebrandt.github.io/natex/paper/>** ·
   **PDF: <https://haukehillebrandt.github.io/natex/main.pdf>**
 - Source: [`paper/`](paper/) (LaTeX + deterministic figure pipeline); numbers of record:
   [docs/case_studies/epoch-kinks.md](docs/case_studies/epoch-kinks.md)
 
+Alongside it, ten mini-papers — one natural-experiment study each, from the US AI-chip
+export controls on China's compute to bunching below the EU AI Act's 1e25-FLOP line —
+plus a capstone survey, one directory per paper under [`papers/`](papers/) (layout and
+shared build: [papers/README.md](papers/README.md)). All are listed on the collection
+index above.
+
 The HTML is rendered by [LaTeXML](https://math.nist.gov/~BMiller/LaTeXML/) — the same
-stack arXiv uses — by CI on every push to `paper/**`, so the link above always shows the
-latest version.
+stack arXiv uses — by CI on every push touching `paper/**` or `papers/**`, so the links
+above always show the latest versions.
 
 ## Install
 
