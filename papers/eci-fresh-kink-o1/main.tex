@@ -1,0 +1,358 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+\setlength{\emergencystretch}{1.2em}
+
+\newcommand{\natex}{\texttt{natex}}
+
+\title{Still No Kink at o1: A Precision-Weighted Rerun of the Epoch
+Capabilities Index on a Fresh Vintage}
+\author{Hauke Hillebrandt\thanks{University College London. Email:
+\texttt{ucjthhi@ucl.ac.uk}. This paper and the underlying \natex{} software were
+prepared with substantial assistance from Anthropic's Claude models; the author
+reviewed the analyses and text and is responsible for all remaining errors.}}
+\date{July 2026 \\ \small analysis pass of record: 2026-07, \natex{} v0.2.0, seed 0}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent The aggregate AI capabilities trend did not bend at o1. On a fresh
+vintage of the Epoch Capabilities Index (ECI; 211 models, February 2023 --
+July 2026, twelve more months than the prior analysis pass), a sharp
+regression kink design in calendar time at the o1-preview release (12
+September 2024) estimates an all-models slope change of $+0.0065$ ECI
+points/day (HC1 se $0.0131$, $t=0.50$, $p=0.618$, 95\% CI
+$[-0.019, +0.032]$; slopes $\approx22.3$ pre vs.\ $\approx24.7$ points/yr
+post), null in 17 of 18 specification cells --- while the same specification
+rejects at 4 of 8 placebo cutoffs away from the release, so the design has
+power and the dial reads zero. A per-model precision-weighted rerun (weights
+$1/\sigma_i^2$ from the published confidence intervals) returns a nominally
+significant \emph{negative} kink ($-0.0190$, se $0.0079$, $t=-2.41$,
+$p=0.016$; 18/18 cells), but triage identifies it as an artifact of smooth
+post-2024 concavity rather than an o1-localized break: placebo cutoffs at
+$+90$/$+180$/$+270$ days give same-sign, larger-or-comparable kinks
+($-0.0399$, $p=0.0064$; $-0.0297$, $p=5.5\times10^{-6}$; $-0.0154$,
+$p=0.021$), and a local-quadratic fit absorbs it ($p=0.140$ at bandwidth
+540). The clean frontier-records series (24 records, only 4 pre-cutoff
+points in the estimation cell) remains a non-estimable design: its nominal
+$t=2.28$ dies under a 30-day donut ($t=0.07$), flips sign under a 45-day
+donut and at bandwidth 730, and its placebo grid rejects 5/8. A
+high-confidence subset (excluding 26 Unverified/Speculative models)
+reproduces every conclusion, and there is no release-density kink at the
+cutoff ($t=-0.42$). The prior-vintage null replicates and is upgraded; per
+the collection's ranking specification this result folds into the flagship
+paper's ECI section as an appendix rather than standing as an independent
+finding.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+OpenAI released o1-preview on 12 September 2024, the first widely deployed
+``reasoning model'' trained with large-scale reinforcement learning to spend
+inference-time compute on a chain of thought \cite{openai2024}. The release
+is a natural candidate for a regime change in AI capabilities: contemporaneous
+research argued that scaling test-time compute can beat scaling parameters
+\cite{snell2024}, and the reasoning-model recipe was adopted across frontier
+labs within months. If the recipe changed the \emph{rate} of capability
+progress, an aggregate capability index should show a slope change --- a kink
+--- in calendar time at or shortly after the release.
+
+Measuring that requires a scale on which models years apart are comparable.
+The Epoch Capabilities Index (ECI) stitches dozens of benchmarks onto a single
+latent-ability scale via an item-response-theory model, precisely to support
+longitudinal comparisons of this kind \cite{ho2025}. This paper asks a narrow
+question: does the ECI trend kink at o1?
+
+The estimand --- a change in trend slope at a known date --- is the regression
+kink design (RKD) of \cite{card2015}, applied here with calendar time as the
+running variable; \cite{bockerman2025} formalize the closely related
+difference-in-kinks design that the same toolkit implements. Two strands of
+methodological literature discipline the exercise. First, regression
+discontinuity (and kink) designs in \emph{time} lack the randomization logic
+of cross-sectional designs: units near the cutoff are not quasi-randomly
+assigned, and serial dependence and smooth trends generate spurious breaks
+\cite{hausman2018}. Second, kink estimates on smooth series are known to
+produce spuriously significant slope changes, which is why placebo
+distributions at non-event dates are the appropriate yardstick
+\cite{ganong2018}. Both concerns are operationalized below through a
+mandatory placebo-cutoff battery and curvature checks, estimated with the
+\natex{} toolkit \cite{natex}.
+
+This note is a robustness upgrade of a prior null: an earlier analysis pass on
+a 2025 vintage of the index found no kink at o1. The fresh vintage adds
+twelve months of post-cutoff data and per-model confidence intervals, which
+enable a precision-weighted re-estimate --- the natural next test, since noisy
+early-2023 models could in principle mask a true kink in the unweighted fit.
+
+\section{Data}\label{sec:data}
+
+The outcome is the fresh vintage of Epoch AI's \texttt{eci\_scores.csv}
+(fetched July 2026): 211 aggregated models with release dates from 2023-02-24
+to 2026-07-09 and no missing score or date, spanning ECI $\approx55$ to
+$161.77$. The vintage adds roughly twelve months of data relative to the
+prior analysis pass. Each model carries a 95\% confidence interval; the
+per-model precision weight is $w_i = 1/\sigma_i^2$ with
+$\sigma_i = (\mathrm{ci}_{\mathrm{high},i} - \mathrm{ci}_{\mathrm{low},i})/3.92$.
+Two models (Claude 3.5 Sonnet and GPT-5, the scale's two anchor models) have
+no published CI; their $\sigma_i$ is imputed at the sample median ($2.005$)
+for the weighted runs only.
+
+A version-level Confidence flag is attached by a two-pass name join against
+Epoch's per-version index file; 189 of 211 models match (the 22 unmatched are
+treated as not-flagged), and 26 models (12.3\%) are flagged
+Unverified/Speculative --- including the current \#1, GPT-5.6 Sol (ECI
+$161.77$), and GPT-5. A high-confidence subset excludes these 26 models
+($n=185$).
+
+Two series are analyzed. The \emph{all-models} series uses all 211 releases.
+The \emph{clean frontier-records} series keeps strict running-maximum records
+of the score (computed over non-missing scores only, in date order, with a
+stable same-day tie-break): 24 records, 7 pre-cutoff and 17 post-cutoff ---
+and only 4 pre-cutoff points inside bandwidth 540 days, 3 after a 45-day
+donut, which already flags it as a marginal design.
+
+\section{Design and Methods}\label{sec:methods}
+
+\paragraph{Sharp RKD in calendar time.} The running variable is days since
+the o1-preview release (cutoff $= 0$ at 2024-09-12). The estimand is the
+change in the slope of ECI in points/day at the cutoff, estimated by local
+linear regression on each side within the bandwidth, triangular kernel, HC1
+standard errors (\natex{} v0.2.0 \cite{natex}, \texttt{natex kink} with a
+unit policy-kink change; \cite{card2015,bockerman2025}). The primary
+specification uses bandwidth 540 days, donut 0 ($n=179$; 85 left, 94 right).
+A specification grid varies bandwidth $\in\{365,540,730\}$ days $\times$
+kernel $\in\{\text{triangular},\text{uniform}\}$ $\times$ donut
+$\in\{0,30,45\}$ days
+(18 cells per series--weighting pair). The CI-weighted estimator is a local
+WLS that mirrors \natex{} exactly (same selection, kernel, block design, HC1)
+with weights kernel$\,\times\,1/\sigma_i^2$; with unit weights it reproduces
+\texttt{natex regression\_kink} in all 68 evaluable grid cells (tolerance
+$10^{-8}$ on points, $10^{-6}$ on SEs) and matches the NaN reasons in the
+rest, and the CLI headline cells match the grid to all printed digits. The
+design is deterministic; seed 0 is declared and no stochastic step exists.
+
+\paragraph{Honest-inference caveats, stated as run.} This is a calendar-time
+RKD: model releases are not randomized around the cutoff, so the
+cross-sectional RD identification logic does not apply and smooth trends can
+masquerade as kinks \cite{hausman2018}. HC1 treats observations as
+independent, ignoring same-day multi-releases and lab-level clustering. The
+placebo-cutoff grid --- the same specification re-estimated at $\pm90$,
+$\pm180$, $\pm270$, $\pm360$ days, in the spirit of \cite{ganong2018} --- is
+therefore the operative guard, and below it is what both establishes power
+for the null and disqualifies the weighted ``significant'' cell. A
+local-quadratic (degree-2) refit checks whether any kink survives allowing
+smooth curvature; a release-density kink test (binned 30-day release counts)
+checks for composition churn at the cutoff.
+
+\section{Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1}
+\caption{(a) The 211 fresh-vintage ECI scores against days since the
+o1-preview release (vertical line), with per-side local-linear fits
+(bandwidth 540 days, triangular kernel): unweighted (blue) and CI-weighted
+(orange). The unweighted slopes are statistically indistinguishable across
+the cutoff; the CI-weighted fit bends down. (b) Kink estimates with 95\% HC1
+confidence intervals at the o1 cutoff and at eight placebo cutoffs, both
+weightings (points offset horizontally for legibility); filled markers are
+nominally significant at the 5\% level. The unweighted design rejects at 4/8
+placebo cutoffs while reading zero at o1; the CI-weighted negative kink at
+o1 is matched by same-sign, larger placebos at $+90$ and $+180$ days.}
+\label{fig:fig1}
+\end{figure}
+
+\paragraph{The unweighted null, now with more power.} The all-models headline
+kink (Table~\ref{tab:kink}, first row) is $+0.00653$ ECI points/day (se
+$0.01308$, $t=0.50$, $p=0.618$, 95\% CI $[-0.0191, +0.0322]$): the trend runs
+$0.0611$ points/day before o1 and $0.0677$ after ($\approx22.3$ vs.\
+$\approx24.7$ points/yr). Of the 18 grid cells, 17 are null; the single
+nominal rejection (bandwidth 365, triangular, donut 30: $-0.0547$, se
+$0.0269$, $t=-2.03$, $p=0.042$) is the grid's smallest cell and negative.
+The placebo grid shows the null is not for lack of power: at bandwidth 540
+the same specification rejects at 4 of 8 non-event cutoffs ($-180$ days:
+$+0.0401$, $p=0.023$; $+180$: $-0.0323$, $p=7.1\times10^{-4}$; $+270$:
+$-0.0288$, $p=1.0\times10^{-4}$; $+360$: $-0.0247$, $p=0.0034$) while the
+true cutoff is null in all cells --- the instrument moves elsewhere and reads
+zero at o1. The prior-vintage null replicates on twelve more months of data.
+
+\paragraph{The CI-weighted ``kink'' is a curvature artifact.} Precision
+weighting flips the headline to a nominally significant \emph{negative} kink:
+$-0.01903$ (se $0.00788$, $t=-2.41$, $p=0.0158$), significant in 18 of 18
+grid cells ($|t|$ from $2.12$ to $3.32$), with slopes $0.0522$ pre vs.\
+$0.0331$ post ($\approx19.0$ vs.\ $\approx12.1$ points/yr). Two facts
+disqualify an o1-localized reading. First, the placebo grid rejects with the
+\emph{same sign and larger or comparable magnitude} away from the release:
+$-0.0399$ ($p=0.0064$) at $+90$ days, $-0.0297$ ($p=5.5\times10^{-6}$) at
+$+180$, $-0.0154$ ($p=0.021$) at $+270$ (empirical size 3/8 at
+$\alpha=0.05$). Second, a local-quadratic fit absorbs it: degree-2 kinks are
+$-0.0392$ ($t=-1.48$, $p=0.140$) at bandwidth 540 and $-0.0381$ ($t=-1.74$,
+$p=0.081$) at bandwidth 730. The precision-weighted index decelerates
+smoothly through 2025 --- a concavity, not a kink at o1.
+
+\paragraph{The frontier-records series is still not a design.} With only 4
+left-cell points at bandwidths $\leq540$ (3 after donut 45), the records
+series produces a nominal positive kink at the headline specification
+($+0.01313$, se $0.00576$, $t=2.28$, $p=0.023$) that no perturbation
+survives: a 30-day donut kills it ($t=0.07$, $p=0.943$), a 45-day donut flips
+it to significantly \emph{negative} ($-0.02817$, $t=-2.52$, $p=0.012$),
+bandwidth 730 flips the sign ($-0.00429$, $t=-0.27$), and the placebo grid
+rejects 5/8 --- with the $-360$/$-270$ cells exploding to $-1.14$
+($p=3\times10^{-4}$) on $n=11$. The CI-weighted records headline is null
+($+0.00794$, $t=1.31$, $p=0.191$). The fresh vintage does not clear the
+left-cell bar: the series remains non-estimable, exactly as in the prior
+pass.
+
+\paragraph{Robustness and diagnostics.} Excluding the 26
+Unverified\slash Speculative models ($n=185$) changes nothing: unweighted
+$+0.01248$ ($t=0.88$, $p=0.379$, null), CI-weighted $-0.02109$ ($t=-2.32$,
+$p=0.020$) with the same placebo failure (weighted empirical size 4/8,
+unweighted 6/8). The release-density check finds no composition-churn kink
+at the cutoff: binned 30-day release counts give $-0.00410$ (se $0.00967$,
+$t=-0.42$, $p=0.672$), an improvement on the prior vintage's marginal
+$t=1.82$.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Sharp RKD in time at o1-preview (2024-09-12), ECI points/day.
+Headline specification: bandwidth 540 days, triangular kernel, donut 0, HC1.}
+\label{tab:kink}
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{llrrrrr}
+\toprule
+Series & Weighting & Kink & se & $t$ & $p$ & $n$ \\
+\midrule
+\multicolumn{7}{l}{\emph{Panel A: headline cells}}\\
+All models (211)            & unweighted  & $+0.00653$ & $0.01308$ & $0.50$  & $0.618$ & 179 \\
+All models                  & CI-weighted & $-0.01903$ & $0.00788$ & $-2.41$ & $0.016$ & 179 \\
+Frontier records (24)       & unweighted  & $+0.01313$ & $0.00576$ & $2.28$  & $0.023$ & 18 \\
+Frontier records            & CI-weighted & $+0.00794$ & $0.00608$ & $1.31$  & $0.191$ & 18 \\
+High-confidence (185)       & unweighted  & $+0.01248$ & $0.01420$ & $0.88$  & $0.379$ & 162 \\
+High-confidence             & CI-weighted & $-0.02109$ & $0.00908$ & $-2.32$ & $0.020$ & 162 \\
+Release density (30-d bins) & ---         & $-0.00410$ & $0.00967$ & $-0.42$ & $0.672$ & 36 \\
+\midrule
+\multicolumn{7}{l}{\emph{Panel B: triage of the nominally significant cells}}\\
+All models, CI-w., placebo $+90$ d  & CI-weighted & $-0.03986$ & $0.01462$ & $-2.73$ & $0.0064$ & 181 \\
+All models, CI-w., placebo $+180$ d & CI-weighted & $-0.02966$ & $0.00653$ & $-4.54$ & $5.5\times10^{-6}$ & 174 \\
+All models, CI-w., degree 2, bw 540 & CI-weighted & $-0.03922$ & $0.02659$ & $-1.48$ & $0.140$ & 179 \\
+Frontier records, donut 30          & unweighted  & $+0.00048$ & $0.00667$ & $0.07$  & $0.943$ & 16 \\
+Frontier records, donut 45          & unweighted  & $-0.02817$ & $0.01118$ & $-2.52$ & $0.012$ & 15 \\
+Frontier records, bw 730            & unweighted  & $-0.00429$ & $0.01592$ & $-0.27$ & $0.788$ & 24 \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\parbox{0.95\textwidth}{\footnotesize Notes: kinks in ECI points/day; HC1
+standard errors against standard normal critical values. CI weights
+$1/\sigma_i^2$, $\sigma_i = (\mathrm{ci}_{\mathrm{high}} -
+\mathrm{ci}_{\mathrm{low}})/3.92$. Placebo-cutoff grids (8 cutoffs at
+$\pm90/180/270/360$ days, bandwidth 540, triangular): all-models unweighted
+rejects 4/8 (true cutoff null in all cells); all-models CI-weighted rejects
+3/8, same sign as the headline; frontier records rejects 5/8. Panel B donut
+and bandwidth rows are the perturbations of the frontier-records headline
+cell.}
+\end{table}
+
+\section{Caveats and Conclusion}\label{sec:conclusion}
+
+The caveats of record are these. First, this is a calendar-time RKD: model
+releases are not randomized around the cutoff, and HC1 treats them as
+independent (same-day multi-releases and lab-level clustering are ignored);
+the placebo-cutoff grid is the operative guard, and it is what both
+establishes power for the null and disqualifies the weighted ``significant''
+cell. Second, data quality: 26 of 211 models (12.3\%) carry
+Unverified/Speculative version-level Confidence flags --- including the
+current \#1, GPT-5.6 Sol (161.77), and GPT-5 --- and the confidence join
+matched only 189/211 models (22 unmatched treated as not-flagged); the
+high-confidence robustness subset reproduces every conclusion. Third, two
+models (Claude 3.5 Sonnet and GPT-5) have no published CI and enter the
+weighted runs at the median imputed $\sigma$; and the index itself is a
+modeled latent scale whose vintages revise as benchmarks are added
+\cite{ho2025}, which is why the replication across vintages matters.
+
+The verdict is an upgraded null with power. On twelve more months of data,
+the aggregate ECI trend shows no kink at o1: the unweighted estimate is a
+precise zero at a cutoff where the design demonstrably has power to reject
+(4/8 placebos reject elsewhere), the one new nominally significant result ---
+the CI-weighted negative kink, significant in 18/18 cells --- is correctly
+identified by triage as a smooth post-2024 deceleration of the
+precision-weighted index (same-sign larger placebos at $+90$/$+180$,
+absorbed by a local quadratic) rather than an o1-localized break, and the
+genuine frontier-records series remains a four-left-point non-design.
+Whatever the reasoning-model recipe did to AI capabilities, it did not bend
+the aggregate index's calendar-time trend at the release date. Per the
+collection's ranking specification, this result folds into the flagship
+paper's ECI section as an appendix rather than standing as an independent
+mini-paper.
+
+\paragraph{Reproducibility.} All estimates were produced with \natex{} v0.2.0
+\cite{natex}; estimation is deterministic (local weighted least squares),
+seed 0 was declared, and no stochastic step exists in the design. The
+underlying \texttt{eci\_scores.csv} vintage is not committed to the
+repository; the run of record retains the derived panels, the 144-cell grid,
+the placebo grids, and the validation counts. Figure~\ref{fig:fig1}
+regenerates deterministically from the committed
+\texttt{figures/make\_fig.py}, which asserts the headline estimates, the
+recomputed fit slopes, and the placebo rejection counts against the numbers
+of record before drawing.
+
+\footnotesize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}
+
+\bibitem{bockerman2025}
+B\"ockerman, P., Jysm\"a, S., and Kanninen, O. (2025).
+\emph{Difference-in-Kinks Design}.
+IZA Discussion Paper No.~18313.
+\url{https://docs.iza.org/dp18313.pdf}
+
+\bibitem{card2015}
+Card, D., Lee, D.~S., Pei, Z., and Weber, A. (2015).
+Inference on causal effects in a generalized regression kink design.
+\emph{Econometrica}, 83(6), 2453--2483.
+
+\bibitem{ganong2018}
+Ganong, P., and J\"ager, S. (2018).
+A permutation test for the regression kink design.
+\emph{Journal of the American Statistical Association}, 113(522), 494--504.
+
+\bibitem{hausman2018}
+Hausman, C., and Rapson, D.~S. (2018).
+Regression discontinuity in time: Considerations for empirical applications.
+\emph{Annual Review of Resource Economics}, 10, 533--552.
+
+\bibitem{ho2025}
+Ho, A., Denain, J.-S., Atanasov, D., Albanie, S., and Shah, R. (2025).
+A Rosetta Stone for AI benchmarks.
+arXiv:2512.00193.
+
+\bibitem{natex}
+Hillebrandt, H. (2026).
+\emph{natex: automated natural-experiment discovery and estimation} (version
+0.2.0). Software.
+\url{https://github.com/HaukeHillebrandt/natex}
+
+\bibitem{openai2024}
+OpenAI (2024).
+OpenAI o1 System Card.
+arXiv:2412.16720.
+
+\bibitem{snell2024}
+Snell, C., Lee, J., Xu, K., and Kumar, A. (2024).
+Scaling LLM test-time compute optimally can be more effective than scaling
+model parameters.
+arXiv:2408.03314.
+
+\end{thebibliography}
+
+\end{document}
