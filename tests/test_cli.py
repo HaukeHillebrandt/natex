@@ -322,6 +322,35 @@ def test_issue_10_discover_did_binary_treatment_default_model(tmp_path):
     assert payload["params"]["model"] == "normal"  # what actually ran
 
 
+def test_issue_37_did_nan_randomization_p_prints_refusal(tmp_path):
+    """Issue #37: on a few-profile panel the tau randomization test correctly
+    refuses (p = NaN, < 5 usable placebos), but the CLI printed a bare
+    'dd tau=... p=nan' with no hint. The echo must name the refusal and the
+    manual placebo-in-space remedy, and results.json must record the reason.
+
+    DGP: d=1, V=4 with a single planted profile leaves a pool of 3 placebo
+    profiles < 5 minimum, so the refusal is structural (seed 0 pinned; the
+    scan recovers the planted subset and effects are finite)."""
+    ds, _ = make_did_synthetic(n=200, d=1, V=4, zeta=8.0, s_dims=1, s_values=1,
+                               rng=np.random.default_rng(0))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    result = CliRunner().invoke(
+        app,
+        ["discover", str(csv), "--design", "did", "--treatment", "theta",
+         "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+         "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert "p=nan" not in result.output
+    assert "randomization test refused" in result.output
+    assert "usable placebos" in result.output
+    assert "run a manual placebo-in-space battery" in result.output
+    dd = json.loads((tmp_path / "out" / "results.json").read_text())["did"]["effects"]["dd"]
+    assert dd["p"] is None  # NaN -> JSON null (house rule), never a fake number
+    assert "only 3 usable placebos" in dd["p_refusal"]
+
+
 def test_discover_did_requires_time(tmp_path):
     """--design did without --time: nonzero exit, message names --time."""
     ds, _ = make_did_synthetic(n=50, d=2, V=3, zeta=8.0, rng=np.random.default_rng(0))

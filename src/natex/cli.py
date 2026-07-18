@@ -1223,6 +1223,10 @@ def _discover_did(
             effects[control] = {
                 "tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
                 "pre_mse": eff.pre_mse, "dose": eff.dose,
+                # Issue #37: when the randomization test refuses (p = NaN,
+                # e.g. a few-unit panel), record WHY in the payload.
+                **({"p_refusal": tau_rand.extras["refusal"]}
+                   if "refusal" in tau_rand.extras else {}),
             }
     payload = _clean(
         {
@@ -1268,8 +1272,18 @@ def _discover_did(
     typer.echo(f"composition passed: {comp.passed}   anticipation passed: {antic.passed}")
     if effects:
         e = effects["dd"]
+        # Issue #37: a bare 'p=nan' hid the randomization-test refusal; name
+        # the reason and the manual remedy instead (diagnosis: PR #46).
+        if np.isnan(e["p"]):
+            p_txt = (
+                "— (randomization test refused: "
+                f"{e.get('p_refusal', 'see results.json')} — "
+                "run a manual placebo-in-space battery)"
+            )
+        else:
+            p_txt = f"{e['p']:.3f}"
         typer.echo(
-            f"dd tau={e['tau']:.3f} p={e['p']:.3f} "
+            f"dd tau={e['tau']:.3f} p={p_txt} "
             f"(synthetic tau={effects['synthetic']['tau']:.3f}, "
             f"gess tau={effects['gess']['tau']:.3f})"
         )

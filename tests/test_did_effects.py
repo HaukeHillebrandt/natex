@@ -391,6 +391,7 @@ def test_nan_placebos_dropped_and_counted():
     assert rep.extras["n_failed"] == 6
     assert rep.q == 5  # usable placebos
     assert np.isfinite(rep.p_value)
+    assert "refusal" not in rep.extras  # the test ran; no refusal reason
 
 
 def test_fewer_than_five_usable_placebos_gives_nan_p():
@@ -398,6 +399,10 @@ def test_fewer_than_five_usable_placebos_gives_nan_p():
     rep = tau_randomization_test(panel, disc, control="dd")
     assert rep.q == 4
     assert np.isnan(rep.p_value)  # never a fake 1.0
+    # Issue #37: the refusal must carry its reason so the CLI/report can say
+    # WHY p is NaN instead of surfacing a bare nan.
+    assert "only 4 usable placebos" in rep.extras["refusal"]
+    assert ">= 5 required" in rep.extras["refusal"]
 
 
 def test_gess_placebos_match_observed_free_dims():
