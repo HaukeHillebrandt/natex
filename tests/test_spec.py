@@ -43,6 +43,39 @@ def test_nonnumeric_forcing_rejected():
         Dataset(toy_df(), spec)
 
 
+def test_issue_39_spec_auto_unions_forcing_into_covariates():
+    """Issue #39: forcing not repeated in covariates used to raise at Dataset()
+    construction — a Python-API-only contract the CLI never surfaced. The spec
+    now auto-unions silently, matching ``Dataset.from_csv`` semantics."""
+    spec = DatasetSpec(treatment="T", outcome="y", forcing=["age"], covariates=[])
+    assert spec.covariates == ["age"]
+
+
+def test_issue_39_auto_union_is_order_preserving_and_duplicate_free():
+    spec = DatasetSpec(
+        treatment="T", outcome="y", forcing=["score", "age"], covariates=["age", "group"]
+    )
+    # Existing covariate order kept; only missing forcing appended, in forcing order.
+    assert spec.covariates == ["age", "group", "score"]
+
+
+def test_issue_39_spec_with_forcing_already_covered_is_unchanged():
+    spec = DatasetSpec(
+        treatment="T", outcome="y", forcing=["age"], covariates=["age", "score", "group"]
+    )
+    assert spec.covariates == ["age", "score", "group"]
+
+
+def test_issue_39_dataset_accepts_forcing_missing_from_covariates():
+    # End to end through Dataset: the auto-unioned spec binds and the forcing
+    # column reaches the covariate matrix X (group one-hot 2 + age = 3).
+    spec = DatasetSpec(treatment="T", outcome="y", forcing=["age"], covariates=["group"])
+    ds = Dataset(toy_df(), spec)
+    assert ds.spec.covariates == ["group", "age"]
+    assert ds.Z.shape == (4, 1)
+    assert ds.X.shape == (4, 3)
+
+
 def test_standardize_bitwise_consistent_with_Z_std():
     spec = DatasetSpec(
         treatment="T", outcome="y", forcing=["age", "score"], covariates=["age", "score", "group"]
