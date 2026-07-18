@@ -240,6 +240,66 @@ def test_issue_29_did_params_record_roles(tmp_path):
     assert params["time"] == "t"
 
 
+def test_issue_35_covariates_flag_restricts_rdd_scan_space(tmp_path):
+    """Issue #35: dims default to ALL non-reserved columns, so an extra
+    NaN-bearing metric listwise-deletes rows (here: every row) with no CLI way
+    to exclude it. ``--covariates`` restricts the scan space; the resolved
+    covariates are recorded in params (issue-29 pattern)."""
+    ds, _ = make_synthetic(n=300, zeta=4.0, kind="real", rng=np.random.default_rng(0))
+    df = ds.df.copy()
+    df["label"] = [f"q{i % 4}" for i in range(len(df))]  # string decoy
+    df["extra_metric"] = np.nan  # would listwise-delete EVERY row
+    csv = tmp_path / "d.csv"
+    df.to_csv(csv, index=False)
+    args = ["discover", str(csv), "--treatment", "T", "--outcome", "y",
+            "--k", "25", "--q", "9", "--seed", "0", "--out", str(tmp_path / "out")]
+    # without the flag the NaN column silently deletes every scan row
+    assert CliRunner().invoke(app, args).exit_code != 0
+    result = CliRunner().invoke(app, args + ["--covariates", "x0,x1"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["params"]["covariates"] == ["x0", "x1"]
+    assert payload["params"]["forcing"] == ["x0", "x1"]
+    assert len(payload["discoveries"]) > 0
+    assert set(payload["discoveries"][0]["forcing_influence"]) == {"x0", "x1"}
+
+
+def test_issue_35_dims_flag_restricts_did_panel_dims(tmp_path):
+    """Issue #35, did shape: a string quarter label silently enters the SuDDDS
+    subset-search space; ``--dims`` (alias of ``--covariates``) restricts the
+    panel dims."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    df = ds.df.copy()
+    df["quarter_label"] = [f"Q{i % 4 + 1}" for i in range(len(df))]  # string decoy
+    csv = tmp_path / "did.csv"
+    df.to_csv(csv, index=False)
+    args = ["discover", str(csv), "--design", "did", "--treatment", "theta",
+            "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+            "--windows", "4", "--seed", "0", "--out", str(tmp_path / "out")]
+    # without the flag the decoy becomes a scan dim — the reported silent entry
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    searched = json.loads((tmp_path / "out" / "results.json").read_text())["did"]["searched"]
+    assert "quarter_label" in searched["dims"]
+    result = CliRunner().invoke(app, args + ["--dims", "x0,x1"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert payload["params"]["covariates"] == ["x0", "x1"]
+    assert payload["did"]["searched"]["dims"] == ["x0", "x1"]
+
+
+def test_issue_35_covariates_with_plan_exits_2(tmp_path):
+    """--covariates/--dims cannot combine with --plan (the plan's prep plan
+    defines the scan space); rejected loudly BEFORE the plan file is read."""
+    result = CliRunner().invoke(
+        app, ["discover", "--plan", str(tmp_path / "never_written.json"),
+              "--covariates", "x0"],
+    )
+    assert result.exit_code == 2
+    assert "--plan" in result.output
+    assert "prep plan" in result.output or "intake" in result.output
+
+
 def test_issue_34_vacuous_placebo_records_null_not_true(tmp_path):
     """Issue #34: when the only covariate is the forcing column, the placebo
     battery is vacuous — results.json must record ``placebo_passed: null``

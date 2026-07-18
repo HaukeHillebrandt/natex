@@ -419,6 +419,13 @@ def discover(
         None, help="outcome column (discovery never reads it; needed for effect estimates)"
     ),
     forcing: str = typer.Option(None, help="comma-separated; default: all numeric"),
+    covariates: str = typer.Option(
+        None, "--covariates", "--dims",
+        help="comma-separated columns admitted to the scan space (rdd "
+             "covariate/forcing pool; did panel dims); default: ALL "
+             "non-reserved columns — an extra string or NaN-bearing column "
+             "silently enters the scan (or listwise-deletes rows) otherwise",
+    ),
     k: int = typer.Option(50, help="scan neighborhood size"),
     q: int = typer.Option(99, help="randomization replicas"),
     seed: int = typer.Option(0, help="RNG seed (converted once to the run's single numpy Generator)"),
@@ -470,6 +477,15 @@ def discover(
     Writes OUT/results.json; plan mode also writes OUT/discover_report.json.
     """
     if plan is not None:
+        if covariates is not None:
+            # Issue #35: never silently ignored — with --plan the scan space
+            # comes from the intake report, not this flag.
+            typer.echo(
+                "--covariates/--dims applies to the direct CSV mode; with "
+                "--plan the scan space comes from the intake report — edit "
+                "its prep plan (--prep-plan) or search plan instead"
+            )
+            raise typer.Exit(code=2)
         _discover_plan(
             ctx, csv=csv, plan=plan, prep_plan=prep_plan, backend=backend,
             model=model, workdir=workdir, max_configs=max_configs, design=design,
@@ -493,7 +509,8 @@ def discover(
         raise typer.Exit(code=2)
     if design == "did":
         _discover_did(
-            csv, treatment=treatment, outcome=outcome, forcing=forcing, q=q,
+            csv, treatment=treatment, outcome=outcome, forcing=forcing,
+            covariates=covariates, q=q,
             seed=seed, degree=degree, time=time, unit=unit, bins=bins,
             windows=windows, restarts=restarts, method=method, model=model, out=out,
         )
@@ -501,6 +518,9 @@ def discover(
     ds = Dataset.from_csv(
         csv, treatment=treatment, outcome=outcome,
         forcing=forcing.split(",") if forcing else None,
+        # Issue #35: --covariates/--dims restricts the scan space; the spec
+        # still auto-unions any explicit forcing back in (issue #39).
+        covariates=covariates.split(",") if covariates else "auto",
     )
     rng = np.random.default_rng(seed)
     coarse_block, geometry, search = None, None, None
@@ -548,8 +568,10 @@ def discover(
         {
             # Issue #29: record the run's roles (the RESOLVED spec forcing, so
             # the default all-numeric list is persisted) — paper/brief read them.
+            # Issue #35: covariates likewise records the resolved scan space.
             "params": {"treatment": treatment, "outcome": outcome,
                        "forcing": list(ds.spec.forcing),
+                       "covariates": list(ds.spec.covariates),
                        "k": k, "q": q, "seed": seed, "degree": degree,
                        "coarse": coarse, "n_coarse": n_coarse, "csv": str(csv)},
             "scan": {"model": res.model, "p_value": rand.p_value,
@@ -1160,6 +1182,7 @@ def _discover_did(
     treatment: str,
     outcome: str | None,
     forcing: str | None,
+    covariates: str | None,
     q: int,
     seed: int,
     degree: int,
@@ -1189,6 +1212,10 @@ def _discover_did(
     ds = Dataset.from_csv(
         csv, treatment=treatment, outcome=outcome,
         forcing=forcing.split(",") if forcing else [],
+        # Issue #35: --covariates/--dims restricts the panel dims (build_panel
+        # derives dims from spec.covariates minus time/unit), keeping a string
+        # label or NaN-bearing extra metric out of the subset-search space.
+        covariates=covariates.split(",") if covariates else "auto",
         time=time, unit=unit,
     )
     window_grid = tuple(float(w) for w in windows.split(",")) if windows else None
@@ -1231,8 +1258,10 @@ def _discover_did(
     payload = _clean(
         {
             # Issue #29: roles recorded alongside time/unit — paper/brief read them.
+            # Issue #35: covariates records the resolved scan space.
             "params": {"design": "did", "treatment": treatment, "outcome": outcome,
                        "forcing": list(ds.spec.forcing),
+                       "covariates": list(ds.spec.covariates),
                        "q": q, "seed": seed, "degree": degree,
                        "time": time, "unit": unit, "bins": bins, "windows": windows,
                        "restarts": restarts, "method": method, "model": model,

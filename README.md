@@ -84,6 +84,10 @@ uv run natex discover data.csv \
 
 - `--forcing` — comma-separated candidate forcing (running) variables; defaults to all
   numeric non-treatment/outcome columns.
+- `--covariates` (alias `--dims`) — comma-separated columns admitted to the scan space
+  (rdd covariate/forcing pool; `--design did` panel dims). Defaults to ALL non-reserved
+  columns, so an extra string label or NaN-bearing metric silently enters the scan (or
+  listwise-deletes rows) unless excluded here.
 - `--k` — neighborhood size for the local scan; `--q` — number of null replicas for the
   randomization test; `--seed` — RNG seed.
 - `--degree` — background polynomial degree of the treatment model (default 1).
