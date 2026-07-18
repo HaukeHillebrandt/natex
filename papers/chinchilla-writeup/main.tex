@@ -1,0 +1,358 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\newcommand{\natex}{\texttt{natex}}
+
+\title{An Honest Miss: Chinchilla as an Adoption Ramp in a Discontinuity Scan
+of Tokens per Parameter}
+\author{Hauke Hillebrandt\thanks{University College London. Email:
+\texttt{ucjthhi@ucl.ac.uk}. This paper and the underlying \natex{} software were
+prepared with substantial assistance from Anthropic's Claude models; the author
+reviewed the analyses and text and is responsible for all remaining errors.}}
+\date{July 2026 \\ \small analysis pass of record: 2026-07, \natex{} v0.2.0, seed 0}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent A LoRD3 continuous-treatment discontinuity scan of $\log_{10}$
+training tokens per parameter over calendar time, run blind on 549 language
+models (2019--2024) from Epoch AI's notable-models panel, produces a single
+significant top discovery: a break centered on 2022-09-22 (LLR $8.687$, scan
+$p \leq 0.01$, robust to background degree and to neighborhood size
+$k \geq 50$). The known truth --- the Chinchilla compute-optimal scaling
+result, posted 2022-03-29, after which the global median tokens-per-parameter
+ratio rose from $1.7$ to $29.2$ --- is \emph{not} localized: the best
+candidate near the announcement ranks 158 of 547 (LLR $1.39$). The discovered
+break is six months late and points the wrong way: a downward local contrast
+of $1.63$ $\log_{10}$ units ($\times 43$) at the Sep/Oct 2022 boundary, where
+the downstream edge of the Chinchilla adoption wave collides with a
+measurement artifact --- fine-tuned releases whose recorded token counts
+cover only the fine-tuning run over full base parameters. Nulls are reported
+as nulls: the placebo test is vacuous (no non-forcing covariates), the
+density test fails ($p=0.0041$) but is uninformative for a calendar-time
+forcing, post-selection 2SLS is weak-instrument, and an independent kink
+audit rejects a slope-change reading. The verdict is an artifact --- an
+honest miss,
+correctly diagnosed --- with two transportable lessons: diffusion-style
+treatments need a ramp/slope statistic, not only a level-break statistic, and
+fine-tune rows must be filtered from tokens-per-parameter panels before any
+scan.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+On 29 March 2022, Hoffmann et al.\ posted the ``Chinchilla'' result: for
+compute-optimal training, model size and training tokens should scale in
+equal proportion, implying that the then-standard practice --- descended from
+the earlier scaling-law fits of \cite{kaplan2020} --- left frontier models
+substantially undertrained on data \cite{hoffmann2022}. Release practice
+responded within months, and by 2023 the industry had moved past
+compute-optimality into deliberate over-training of small models for
+inference economy, exemplified by LLaMA's trillion-token training runs
+\cite{touvron2023} and rationalized by inference-adjusted scaling laws
+\cite{sardana2024}.
+Chinchilla itself has since been re-examined: \cite{besiroglu2024} replicate
+its parametric fit and find inconsistencies in the reported estimates, while
+the broader quantitative history of training-run inputs is documented by
+\cite{sevilla2022} and maintained in Epoch AI's notable-models dataset
+\cite{epoch2024}.
+
+This gives a rare, clean testbed for \emph{automated natural-experiment
+discovery}: a panel where the event, its date, its sign, and its approximate
+magnitude are known ex ante. This paper runs the \natex{} toolkit's LoRD3
+scan \cite{natex,herlands2018} on tokens per parameter over calendar time,
+blind to the event date, and asks: does the scanner find Chinchilla? The
+answer is no --- and the anatomy of the miss is the contribution.
+Event-dated diffusion processes enter publication data as ramps, and a local
+level-break statistic rewards sharp edges, not ramps; dating the cause is an
+interrupted-time-series problem \cite{bernal2017}, not a discontinuity-scan
+problem.
+
+\section{Data}\label{sec:data}
+
+The panel is a frozen extract of Epoch AI's notable-models database
+\cite{epoch2024}: 549 language models released 2019-01 through 2024-12 with
+non-missing parameter and training-token counts. Columns: release date (the
+forcing variable, as days since 2019-01-01), $\log_{10}$ tokens per
+parameter (the treatment), $\log_{10}$ parameters (the outcome), $\log_{10}$
+training compute (21\% missing) and an open-weights flag (3.6\% missing),
+both excluded from the scan to avoid listwise deletion. The known truth:
+Chinchilla was posted 2022-03-29 (day $\approx 1183$); across that date the
+global median tokens per parameter moves from $1.69$ to $29.17$ ($n = 185$
+pre, $364$ post), a median-based shift of $+1.24$ $\log_{10}$ units
+($+1.12$ on group means, $2.2 \to 29$; Mann--Whitney
+$p = 1.6 \times 10^{-7}$ on an earlier extract, medians $2.2 \to 29.1$,
+$n = 133/307$). At monthly resolution the shift is a ramp, not a step:
+window medians run $1.7$ (pre-April 2022) $\to 5.7$ (mid-April to mid-May)
+$\to$ ${\approx}28$ (mid-May to mid-July 2022).
+
+\section{Design and Methods}\label{sec:methods}
+
+\paragraph{LoRD3 continuous-treatment scan.} Following \cite{herlands2018} as
+implemented in \natex{} v0.2.0 \cite{natex}, the scan fits a background model
+of the treatment on the forcing variable (OLS, degree 1; degree 2 as
+robustness), then scores every $k$-nearest-neighbor neighborhood ($k = 50$)
+of every data point for the best split of its members into two half-spaces,
+using a normal likelihood ratio on background residuals with locally
+estimated variances. The top discovery is the neighborhood-split with the
+maximum LLR; its $p$-value comes from a fitted-null Monte Carlo with $q = 99$
+replicas and a $+1$-rank rule, so the minimum attainable $p$ is $0.010$ ---
+reported throughout as $p \leq 0.01$, never as an exact value. The
+specification is treatment $= \log_{10}$ tokens per parameter, forcing $=$
+days since 2019-01-01 (forcing influence $1.0$), outcome $= \log_{10}$
+parameters, no covariates; pipeline \texttt{natex study} $\to$
+\texttt{natex discover --k 50 --q 99 --seed 0}, with localization detail and
+robustness via the Python API, seed 0 throughout.
+
+\paragraph{Validation battery, stated as run.} The battery's nulls and
+refusals are reported, not patched over. (i)~Randomization: $p = 0.010$ at
+both background degrees --- the $q=99$ floor. (ii)~Placebo covariates:
+\texttt{placebo\_passed = True} but \emph{vacuous} ---
+\texttt{placebo\_holm = \{\}}, because the design has no non-forcing
+covariates to test. (iii)~Density: $p = 0.0041$, a \emph{fail}; this is
+expected and uninformative here, because the forcing is calendar time with
+strongly nonstationary publication intensity, and McCrary-style manipulation
+logic \cite{mccrary2008} does not apply to a time forcing --- the test is
+retained as a falsification check only. (iv)~Post-selection effects on
+$\log_{10}$ parameters (2SLS and Wald at the discovered cutoff) are
+\emph{advisory}: estimated on the discovery sample with no honest split and
+instrumented by a partly artifactual break, they must not be read as causal
+scaling-law parameters. (v)~An independent kink-design audit of the same
+panel (a difference-in-slopes design \cite{bockerman2025}) cross-checks any
+slope-change reading.
+
+\section{Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1}
+\caption{(a) $\log_{10}$ tokens per parameter for all 549 models, with the
+monthly median (line), the Chinchilla posting date (dashed), the scan's top
+discovery (solid), and the seven verified fine-tune token-counting artifact
+rows (open triangles; Table~\ref{tab:main}, panel~C). (b) LoRD3 scan profile:
+each candidate neighborhood's LLR at its center date ($k=50$, degree 1,
+$n=547$ candidates). The top discovery (filled marker, 2022-09-22, LLR
+$8.69$, $p \leq 0.01$) sits at the Sep/Oct 2022 artifact edge; the best
+candidate within $\pm 45$ days of the truth (open marker, 2022-04-15) scores
+LLR $1.39$, rank 158/547. The 2023-06/07 cluster is the onset of the
+deliberately over-trained era.}
+\label{fig:fig1}
+\end{figure}
+
+\paragraph{The discovery.} The scan's top discovery (Table~\ref{tab:main},
+panel A; Figure~\ref{fig:fig1}b) is centered on day 1360 $=$ 2022-09-22
+(split normal $-1$ along the forcing axis): LLR $= 8.687$ ($8.687416$
+unrounded in the run report), scan $p = 0.010$ --- the
+$q=99$ Monte Carlo floor, i.e.\ $p \leq 0.01$ --- over $547$ candidate
+neighborhoods from $n = 549$ rows. A degree-2 background reproduces the same
+top center with LLR $8.836$ (randomization $p = 0.01$; null max LLRs
+$1.8$--$7.6$ against observed $8.69$/$8.84$), and $k = 60$ moves it only to
+2022-08-15; but $k = 30$/$40$ latch onto a 2020-10 composition boundary
+instead (Table~\ref{tab:main}, panel B), so localization is stable only for
+$k \geq 50$.
+
+\paragraph{The known truth is not localized.} Within $\pm 45$ days of
+2022-03-29 the best candidate neighborhood is centered 2022-04-15 with LLR
+$1.39$ --- rank 158 of 547. The reason is visible in
+Figure~\ref{fig:fig1}a: at daily resolution the Chinchilla shift enters the
+published record as a 2--3 month adoption ramp, and a local level-break
+statistic rewards sharp edges, not ramps.
+
+\paragraph{What the discovered break actually is.} The top neighborhood
+splits exactly at the Sep/Oct 2022 boundary into group A (2022-06-21 to
+2022-09-22, $n=25$, median tokens/param $13.6$ --- the post-Chinchilla
+adoption wave) versus group B (2022-10-03 to 2022-12-22, $n=25$, median
+$0.4$): a \emph{downward} local group-mean contrast of $1.63$ $\log_{10}$
+units ($\times 43$), against the known \emph{upward} global shift of $+1.12$
+$\log_{10}$ ($+1.24$ median-based). Local-linear first-stage fits jump
+$-1.7$ to $-2.0$ $\log_{10}$ at bandwidths of 120--240 days. Group B is
+dominated by fine-tuned and continued-pretraining releases whose Epoch token
+field records only fine-tuning tokens over full base parameters
+(Table~\ref{tab:main}, panel C) plus small academic models. The top
+discovery is therefore the adoption wave's downstream edge colliding with a
+token-accounting artifact, ${\approx}6$ months after the event and with the
+opposite sign. The secondary discovered cluster (2023-06-13 to 2023-07-06,
+LLR $6.7$--$8.5$) is the onset of the deliberately over-trained era
+\cite{touvron2023,sardana2024}; the December-2022 monthly median is already
+$148$ tokens/param, and the median of the top-25 centers is day 1371 $=$
+2022-10-03.
+
+\paragraph{Effects and cross-checks, all null or advisory.} Post-selection
+effects on $\log_{10}$ parameters at the discovered cutoff
+(Table~\ref{tab:main}, panel D): the 2SLS estimate is weak-instrument
+(first-stage $t = 1.89$; CI $[-0.747, 2.781]$); the Wald estimate is
+$0.557$ (CI $[0.053, 1.062]$, first-stage $t = 4.01$). Both are
+discovery-sample estimates with no honest split, instrumented by a partly
+artifactual break --- diagnostics, not causal scaling-law parameters. The
+independent kink audit \emph{rejects} a Chinchilla regime change read as a
+slope change: a sign-unstable null with $t$ from $-0.91$ to $+1.48$ across
+bandwidths.
+
+\begin{table}[t]
+\centering
+\scriptsize
+\caption{Chinchilla scan: numbers of record (\natex{} v0.2.0, seed 0).}
+\label{tab:main}
+\begin{tabular}{llll}
+\toprule
+Quantity & Value & Quantity & Value \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel A: top discovery ($k=50$, $q=99$, degree 1; $n=549$, 547 candidates)}}\\
+center & 2022-09-22 (day 1360) & LLR & $8.687$ \\
+scan $p$ & $0.010$ = floor; $p \leq 0.01$ & local contrast & $-1.63\ \log_{10}$ ($\times 43$, down) \\
+degree-2 center & 2022-09-22, LLR $8.836$ & first stage & $-1.7$ to $-2.0\ \log_{10}$ (bw 120--240d) \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel B: $k$-sensitivity and truth localization}}\\
+$k=30$ & 2020-09-29 (LLR $7.2$) & $k=40$ & 2020-10-21 (LLR $9.0$) \\
+$k=50$ & 2022-09-22 (LLR $8.7$) & $k=60$ & 2022-08-15 (LLR $9.8$) \\
+truth $\pm 45$d best & 2022-04-15, LLR $1.39$ & truth rank & 158 / 547 \\
+global shift (true) & $+1.12\ \log_{10}$ ($2.2 \to 29$, up) & medians & $1.69 \to 29.17$ ($n=185/364$) \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel C: verified fine-tune artifact rows (tokens/param; group B median $0.4$ vs.\ A $13.6$)}}\\
+Flan-PaLM 540B & $0.0026$ & U-PaLM & $0.0024$ \\
+LMSI-PaLM & $3.6 \times 10^{-6}$ & OPT-IML 175B & $0.011$ \\
+Tk-Instruct & $0.095$ & BLOOMZ-176B & $0.114$ \\
+mT0-13B & $1.54$ & & \\
+\midrule
+\multicolumn{4}{l}{\emph{Panel D: diagnostics and post-selection effects (advisory)}}\\
+randomization & $p = 0.010$ (deg.\ 1 and 2) & placebo & passed, \emph{vacuous} (no covariates) \\
+density & $p = 0.0041$, fails$^{\dagger}$ & kink audit & rejected; $t \in [-0.91, +1.48]$ \\
+2SLS $\hat\tau$ & $1.017$ (se $0.900$), weak & CI & $[-0.747, 2.781]$, 1st-st.\ $t=1.89$ \\
+Wald $\hat\tau$ & $0.557$ (se $0.257$) & CI & $[0.053, 1.062]$, 1st-st.\ $t=4.01$ \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\parbox{0.95\textwidth}{\scriptsize Notes: $^{\dagger}$expected and
+uninformative for a calendar-time forcing with nonstationary publication
+intensity (McCrary manipulation logic does not apply). Scan $p$-values from a
+$q=99$ fitted-null Monte Carlo with a $+1$-rank rule; $0.010$ is the minimum
+attainable. Effects are estimated on the discovery sample with no honest
+split. Artifact rows verified in the source panel: the token field records
+fine-tuning tokens only, over full base parameters.}
+\end{table}
+
+\section{Caveats and Conclusion}\label{sec:conclusion}
+
+Five caveats bound the claims. First, the value of this exercise is purely
+methodological and diagnostic: no causal adoption claim is licensed; the scan
+is a regime-edge detector, and dating the cause of a diffusion process needs
+an interrupted-time-series or difference-in-differences framing
+\cite{bernal2017} plus publication-lag domain knowledge. Second, the scan
+$p = 0.010$ is the minimum attainable with $q = 99$ replicas and must be
+reported as $p \leq 0.01$, not as an exact value. Third, the density test
+fails ($p = 0.0041$) but is uninformative for a calendar-time forcing with
+nonstationary publication intensity, and the placebo pass is vacuous
+(\texttt{placebo\_holm = \{\}}; no non-forcing covariates to test). Fourth,
+the post-selection 2SLS/Wald effects are estimated on the discovery sample
+with no honest split and are instrumented by a partly artifactual break; they
+must not be read as causal scaling-law parameters. Fifth, ``robust to $k$''
+holds only for $k \geq 50$: at $k = 30$/$40$ the scan latches onto a 2020-10
+composition boundary (tiny academic LMs against BERT-era corpus models), so
+the robustness claim must be stated conditionally.
+
+The verdict is an artifact --- an honest miss, correctly diagnosed: the scan
+found real, significant structure whose two regimes bracket the truth, but it
+dated the adoption wave's sharp downstream \emph{edge}, not the event, which
+entered the record as a ramp. Two lessons transport beyond this dataset. For
+method builders: scan batteries aimed at event-dated diffusion treatments
+need a ramp/slope statistic --- a kink-style scan in the sense of
+\cite{bockerman2025} --- alongside the level-break statistic, or
+announcements will systematically lose to their own adoption edges. For
+users of the Epoch panel \cite{epoch2024}: fine-tuned and
+continued-pretraining rows manufacture a spurious low-tokens-per-parameter
+cluster in late 2022 and must be filtered before tokens-per-parameter data
+are used for scaling-law or event-study claims
+\cite{hoffmann2022,besiroglu2024}.
+
+\paragraph{Reproducibility.} All estimates: \natex{} v0.2.0 \cite{natex},
+seed 0, on a frozen extract of the Epoch panel \cite{epoch2024} (not
+committed). Figure~\ref{fig:fig1} regenerates deterministically from
+\texttt{figures/make\_fig.py} (committed), which asserts the headline
+numbers of record before drawing.
+
+\scriptsize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}
+
+\bibitem{bernal2017}
+Lopez Bernal, J., Cummins, S., and Gasparrini, A. (2017).
+Interrupted time series regression for the evaluation of public health
+interventions: a tutorial.
+\emph{International Journal of Epidemiology}, 46(1), 348--355.
+
+\bibitem{besiroglu2024}
+Besiroglu, T., Erdil, E., Barnett, M., and You, J. (2024).
+Chinchilla scaling: A replication attempt.
+arXiv:2404.10102.
+
+\bibitem{bockerman2025}
+B\"ockerman, P., Jysm\"a, S., and Kanninen, O. (2025).
+\emph{Difference-in-Kinks Design}.
+IZA Discussion Paper No.~18313.
+\url{https://docs.iza.org/dp18313.pdf}
+
+\bibitem{epoch2024}
+Epoch AI (2024).
+Data on notable AI models.
+\url{https://epoch.ai/data/notable-ai-models}
+
+\bibitem{herlands2018}
+Herlands, W., McFowland~III, E., Wilson, A.~G., and Neill, D.~B. (2018).
+Automated local regression discontinuity design discovery.
+In \emph{Proceedings of the 24th ACM SIGKDD International Conference on
+Knowledge Discovery and Data Mining (KDD~'18)}.
+
+\bibitem{hoffmann2022}
+Hoffmann, J., Borgeaud, S., Mensch, A., et al. (2022).
+Training compute-optimal large language models.
+In \emph{Advances in Neural Information Processing Systems}, 35 (NeurIPS 2022).
+arXiv:2203.15556, posted 29 March 2022.
+
+\bibitem{kaplan2020}
+Kaplan, J., McCandlish, S., Henighan, T., et al. (2020).
+Scaling laws for neural language models.
+arXiv:2001.08361.
+
+\bibitem{mccrary2008}
+McCrary, J. (2008).
+Manipulation of the running variable in the regression discontinuity design:
+A density test.
+\emph{Journal of Econometrics}, 142(2), 698--714.
+
+\bibitem{natex}
+Hillebrandt, H. (2026).
+\emph{natex: automated natural-experiment discovery and estimation} (version
+0.2.0). Software.
+\url{https://github.com/HaukeHillebrandt/natex}
+
+\bibitem{sardana2024}
+Sardana, N., Portes, J., Doubov, S., and Frankle, J. (2024).
+Beyond Chinchilla-optimal: Accounting for inference in language model scaling
+laws.
+In \emph{Proceedings of the 41st International Conference on Machine Learning
+(ICML)}, PMLR 235, 43445--43460.
+
+\bibitem{sevilla2022}
+Sevilla, J., Heim, L., Ho, A., Besiroglu, T., Hobbhahn, M., and Villalobos, P.
+(2022).
+Compute trends across three eras of machine learning.
+In \emph{2022 International Joint Conference on Neural Networks (IJCNN)}.
+
+\bibitem{touvron2023}
+Touvron, H., et al. (2023).
+LLaMA: Open and efficient foundation language models. arXiv:2302.13971.
+
+\end{thebibliography}
+
+\end{document}
