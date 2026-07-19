@@ -1,0 +1,379 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\newcommand{\natex}{\texttt{natex}}
+
+\title{A Break Made of Growth: The 2025Q1 Datacenter Surge as Smooth
+Exponential Expansion, Not a Stargate Regime Change}
+\author{Hauke Hillebrandt\thanks{University College London. Email:
+\texttt{ucjthhi@ucl.ac.uk}. This paper and the underlying \natex{} software were
+prepared with substantial assistance from Anthropic's Claude models; the author
+reviewed the analyses and text and is responsible for all remaining errors.}}
+\date{July 2026 \\ \small analysis pass of record: 2026-07-19, seeded
+(\texttt{--seed 0}), \natex{} v0.2.0 at commit \texttt{cce6186}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent In Epoch AI's Frontier Data Centers panel (73 sites, 2023Q4--2026Q2),
+tracked quarterly IT-power additions rise roughly fivefold after 2025Q1 --- the
+quarter of the Stargate announcement and DeepSeek-R1 --- from a 296.8~MW/q
+pre-period mean to 1{,}516.9~MW/q, with complete pre/post separation (minimum
+post quarter 537~MW $>$ maximum pre quarter 448~MW). We show this
+``Stargate-quarter industry break'' is a correctly-identified artifact, and
+that attribution to ``neocloud'' operators is a clean null. On a placebo
+break-date grid (all 6 feasible dates), 2025Q1 is \emph{never} the best break
+date --- rank 3--6 of 6 on all three statistics, with 2025Q4 the argmax on two
+--- and log tracked capacity grows near-linearly with mildly
+\emph{decelerating} growth ($0.40 \to 0.33$ log/q); the log-level kink is
+negative at every candidate date. The levels ``break'' is what smooth
+$\sim$40\%-per-quarter exponential growth looks like. A seeded \natex{} SuDDDS
+scan does return $t_0 = 2025$Q1 \emph{exactly} with scan $p=0.010$, but
+discovery reads only the design columns $(x, t, \theta)$, never the outcome:
+the hit mechanically recovers the constructed 21-of-73-site treatment coding
+and contributes no outcome evidence --- a role-assignment triage that corrects
+the scout pass's interpretation. Attribution fails directly: a two-way
+fixed-effects contrast of neocloud versus other sites gives
+$\tau = +0.098$ asinh-MW ($t=0.699$) with a 199-draw label-permutation
+$p=0.56$. The surge is instead broad-based and hyperscaler-led: the neocloud
+group carries 23.7\% of post-2025Q1 additions, and the top site is the
+Anthropic--Amazon New Carlisle campus at 10.0\%. All conclusions survive
+panel-end truncation and an incumbent-only variant, and the panel is provably
+invariant to the projection-snapshot filter.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+January 2025 was the most crowded month in the short history of AI
+infrastructure policy: the US diffusion rule was published on 13~January,
+DeepSeek-R1 was released on 20~January \cite{deepseekr1}, and the \$500-billion
+Stargate project was announced on 21~January \cite{openai2025}. A natural
+reading of subsequent buildout data is that 2025Q1 marks a regime change ---
+the quarter the industry shifted from ordinary expansion to a land rush --- and
+that the shift is concentrated in the ``neocloud'' operators (CoreWeave,
+xAI/Colossus, the Stargate sites, and peers) whose business is AI compute
+rather than general cloud. This paper tests both claims at the site level and
+rejects both, in an instructive way: the industry-wide ``break'' is real in
+levels but is not a break, and the neocloud attribution is a clean null.
+
+The buildout itself is well documented. Data centers are the engine rooms of
+AI: industrial facilities whose construction, power, and cooling determine
+where frontier compute can exist \cite{pilzheim2023}. The leading AI
+supercomputers have doubled in performance roughly every nine months, with
+hardware cost and power needs doubling yearly \cite{pilz2025}, and the
+International Energy Agency projects global data-centre electricity demand to
+more than double by 2030, driven chiefly by AI \cite{iea2025}. What has been
+missing is site-level measurement: Epoch AI's Frontier Data Centers hub
+\cite{epochdc} now tracks individual campuses from satellite imagery, permits,
+and disclosures, making the timing question empirically addressable.
+
+Methodologically, the exercise sits where two cautionary literatures meet.
+Breaks located in \emph{time} lack the cross-sectional randomization logic of
+standard quasi-experimental designs, and naive inference on a single temporal
+cutoff is fragile \cite{hausmanrapson2018}; when identification comes from one
+calendar event hitting one group, asymptotic cluster inference is unreliable
+and permutation-style inference over placebo assignments is the appropriate
+discipline \cite{conleytaber2011}. We add a third, automation-specific
+caution: when a discovery algorithm is handed a panel whose treatment coding
+was \emph{constructed} from the hypothesis under test, an exact recovery of
+the hypothesized date is confirmation of the coding, not of the outcome. The
+scout pass that preceded this study made exactly that misreading; the
+role-assignment triage below corrects it.
+
+\section{Data}\label{sec:data}
+
+The input is Epoch AI's Frontier Data Centers hub timelines \cite{epochdc}:
+411 dated site snapshots covering 73 sites (2018-12-18 to 2030-01-01),
+extracted 2026-07-19. The 73 rows dated on or after 2026-07-25 are stated
+projections and are excluded; Section~\ref{sec:results} shows this filter is
+provably a no-op for the analysis panel. Each site's ``IT power (MW)'' is
+carried forward (LOCF) as a step function evaluated at quarter ends 2023Q4 to
+2026Q2, with a site at 0~MW before its first snapshot; quarterly
+\emph{additions} are first differences with negative revisions floored at 0;
+the site-level outcome is $\operatorname{asinh}(\text{additions}/10)$. Time is
+indexed $t = 4\,\text{year} + (\text{quarter}-1)$, so $2025\text{Q1} = 8100$.
+The neocloud group comprises 21 sites with hypothesized treatment onset
+2025Q1: Colossus~1/2, seven CoreWeave sites, Fluidstack Lake Mariner, eight
+OpenAI Stargate sites, Oracle Batam, Start Campus Sines, and VNET Bayin
+Ulanqab. The known-treatment comparison panel codes Colossus~1 alone as
+treated. Baseline panels are bitwise identical to the scout pass's.
+
+\section{Design and Methods}\label{sec:methods}
+
+\paragraph{Seeded discovery scans.} Two \natex{} \cite{natex} SuDDDS
+difference-in-differences scans (Bernoulli model, within-cluster-copula
+inference, $q=99$ permutations, seed 0) search the panels for the
+best-supported treatment date $t_0$ and window $W$: one on the neocloud
+coding, one on the Colossus known-treatment coding. Crucially, SuDDDS
+discovery reads only the design columns --- unit, time, and the treatment
+indicator $\theta$ --- and never the outcome. Both panels \emph{construct}
+$\theta = \text{group} \times \mathbf{1}[t \geq t_0]$, so an exact recovery of
+$t_0$ certifies that the constructed assignment is scannable, not that MW
+additions break there. Outcome evidence must come from the two designs below.
+
+\paragraph{Aggregate break-date placebos.} On total tracked additions we
+compute, at every feasible break date $c$ (six dates with at least three
+quarters per side), three statistics: S1, the post$-$pre shift in mean log
+additions; S2, the slope change (kink) in the MW-level series at $c$; and S3,
+the kink in \emph{log} capacity at $c$, i.e.\ growth acceleration. S2 and S3
+are single-series analogues of the kink contrasts formalized in the
+difference-in-kinks literature \cite{bockerman2025} and implemented in
+\natex{} \cite{natex}. If 2025Q1 is a genuine regime break it should be the
+argmax of the grid; its rank across placebo dates is the test, in the spirit
+of randomization inference over assignments \cite{conleytaber2011}, sized for
+a coarse grid (placebo-$p$ floor $1/6$).
+
+\paragraph{Neocloud attribution.} A two-way fixed-effects (TWFE) regression of
+$\operatorname{asinh}(\text{additions}/10)$ on
+$\text{neocloud} \times \mathbf{1}[t \geq 2025\text{Q1}]$ with site and
+quarter fixed effects (73 sites $\times$ 11 quarters) estimates the
+neocloud-specific post-2025Q1 shift $\tau$. Because the contrast is a single
+calendar event hitting one group, inference is by label permutation
+\cite{conleytaber2011}: 199 draws (seed 0) reassigning the 21-site label among
+all 73 sites, plus a chip-protocol variant reassigning among the 52 controls.
+CR1 cluster-by-site standard errors are reported alongside and agree.
+
+\paragraph{Decomposition and sensitivity.} Post-2025Q1 additions are
+decomposed by site and group. Sensitivity variants truncate the panel end at
+2026Q1 and 2025Q4, and an incumbent-only variant keeps the 59 sites first
+tracked on or before 2024-12-31 (12 treated) to separate real expansion from
+satellite-coverage entry \cite{epochdc,hausmanrapson2018}.
+
+\section{Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1}
+\caption{(a) Tracked quarterly IT-power additions, stacked by group: the
+post-2025Q1 rise is roughly fivefold and occurs in \emph{both} groups; the
+largest single quarters are 2025Q4 and 2026Q2, not 2025Q1. (b) Log total
+tracked capacity is near-linear ($\sim$0.4 log points per quarter) with mildly
+decelerating growth --- the levels ``break'' is smooth exponential growth
+read in levels. (c) Placebo break-date grid for S1, the post$-$pre shift in
+mean log additions: 2025Q1 (vermilion) ranks 3 of 6; the argmax is 2025Q4.
+(d) Top-10 site contributions to post-2025Q1 additions: broad-based and
+hyperscaler-led, with the neocloud group (orange) carrying 23.7\% overall.}
+\label{fig:fig1}
+\end{figure}
+
+\paragraph{The surge is real in levels.} Tracked additions average 296.8~MW/q
+over 2023Q4--2024Q4 and 1{,}516.9~MW/q over 2025Q1--2026Q2 --- a ratio of
+5.11 --- with complete separation: the smallest post-2025Q1 quarter (537~MW)
+exceeds the largest pre-quarter (448~MW). Nothing below disputes this; the
+question is whether it is a \emph{localized break at 2025Q1}.
+
+\paragraph{But 2025Q1 is never the best break date.} On the six-date placebo
+grid (Table~\ref{tab:main}, Panel~A), 2025Q1 is the argmax of none of the
+three statistics. The S1 log-additions shift at 2025Q1 is 1.488, rank 3 of 6
+(placebo $p=0.50$); the argmax is 2025Q4 at 1.665. The S2 level kink at
+2025Q1 is 1{,}354~MW/q, dead last --- rank 6 of 6 ($p=1.00$), argmax 2025Q4
+at 2{,}119. The S3 log-level kink is $-0.100$ at 2025Q1 and \emph{negative at
+all six candidate dates}: quarterly log growth of tracked capacity
+decelerates from 0.404 to 0.327 log/q. A series growing smoothly at
+$\sim$40\% per quarter mechanically makes every later quarter's additions
+exceed every earlier one's; the ``break'' is the exponential, not a regime
+change. The largest single jumps are 2025Q4 ($+1{,}936$~MW) and 2026Q2
+($+3{,}610$~MW). Across all sensitivity variants, 2025Q1 is the argmax in 1
+of 12 variant-statistic cells (the 2025Q4-truncated S3, placebo $p=0.25$ on a
+four-date grid).
+
+\paragraph{The SuDDDS 2025Q1 hit is mechanical.} The seeded neocloud scan
+returns max LLR $=24.114$, $t_0 = 8100 = 2025$Q1 \emph{exactly}, $W=3$, scan
+$p=0.010$ (the $q=99$ permutation floor), and passes composition validation.
+This is the scout pass's headline --- and it is a recovery of the constructed
+treatment coding, not outcome evidence: discovery never reads the outcome
+(Section~\ref{sec:methods}), and the scan's in-scan effect estimators refused
+in both runs (0 usable placebo units of the required 5), so the scans
+contribute no outcome estimate. The Colossus known-treatment scan illustrates
+the power ceiling with 1 treated site of 73: LLR $=2.537$, $t_0=2024$Q3,
+$W=5$, scan $p=0.230$, deterministic on re-run (the scout logged $p=0.28$
+from a marginally earlier code state with identical LLR/$t_0$/$W$).
+
+\paragraph{Neocloud attribution is a clean null.} The TWFE contrast gives
+$\tau = +0.0976$ asinh-MW (CR1 SE $=0.1396$, $t=0.699$). The 199-draw label
+permutation puts the observed $\tau$ well inside the null: $p=0.560$
+relabeling among all 73 sites, $p=0.555$ under the chip protocol, with a
+permutation $\tau$ SD of 0.150 --- the estimate is $\sim$0.65 null SDs from
+zero. Truncating the panel at 2026Q1 or 2025Q4 leaves the null intact
+($p=0.605$, $p=0.505$). The incumbent-only variant is larger but still not
+significant: $\tau=+0.258$, $t=1.49$, permutation $p=0.155$.
+
+\paragraph{Broad-based and hyperscaler-led.} Post-2025Q1 additions total
+9{,}101~MW, of which the 21-site neocloud group carries 2{,}158~MW ---
+23.7\%. Concentration is moderate: the top 5 sites carry 33.9\% and the top
+10 carry 49.1\%. The leaders are the Anthropic--Amazon New Carlisle campus at
+910~MW (10.0\%), Microsoft Fairwater Atlanta (636), Meta Prometheus (631),
+Colossus~2 (490, neocloud), and OpenAI Stargate Abilene (421, neocloud).
+Inside the scan window 2025Q1--2025Q3 (2{,}245~MW) the largest contributors
+are New Carlisle (398~MW, 17.7\%) and Amazon Madison (284~MW, 12.7\%) ---
+hyperscaler campuses, not neoclouds.
+
+\paragraph{Sensitivity and the projection filter.} Excluding stated
+projections is provably a no-op: all 73 projection rows are dated on or after
+2026-07-25, later than the last quarter-end 2026-06-30, and every site has a
+real snapshot on or before 2026-06-30, so the 2023Q4--2026Q2 panel is bitwise
+invariant to any snapshot-filter date from 2026-06-30 on (including no
+filter). The incumbent variant shows the surge is not satellite-coverage
+entry: the 59 sites first tracked by 2024-12-31 carry 3{,}074 of the
+3{,}610~MW of 2026Q2 additions ($\sim$85\%).
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\caption{Headline estimates. Panel A: aggregate break-date placebo grid (six
+feasible dates, $\geq 3$ quarters per side); the test is 2025Q1's rank.
+Panel B: seeded \natex{} SuDDDS scans (Bernoulli/WCC, $q=99$, seed 0).
+Panel C: TWFE neocloud attribution with 199-draw label-permutation inference
+(seed 0).}
+\label{tab:main}
+\begin{tabular}{lrrrl}
+\toprule
+Quantity & Estimate & Rank / $t$ & $p$ & notes \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel A: is 2025Q1 the best break date? (placebo grid, $n=6$ dates)}}\\
+S1 shift in mean log additions & $1.488$ & 3/6 & $0.50$ & argmax 2025Q4 ($1.665$) \\
+S2 level kink (MW/q)           & $1{,}354$ & 6/6 & $1.00$ & argmax 2025Q4 ($2{,}119$) \\
+S3 log-level kink (log/q)      & $-0.100$ & 4/6 & $0.67$ & negative at all 6 dates \\
+post/pre mean additions ratio  & $5.11$ & --- & --- & min post $537 >$ max pre $448$ \\
+log growth, pre $\to$ post     & $0.404 \to 0.327$ & --- & --- & deceleration \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel B: SuDDDS scans (discovery reads $(x,t,\theta)$ only --- never the outcome)}}\\
+neocloud scan, max LLR    & $24.114$ & $t_0=2025$Q1, $W=3$ & $0.010$ & recovers the coding \\
+Colossus scan, max LLR    & $2.537$  & $t_0=2024$Q3, $W=5$ & $0.230$ & 1 treated of 73 \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel C: neocloud attribution, TWFE $\tau$ (asinh-MW), site+quarter FE}}\\
+baseline (21/73 treated)  & $+0.098$ & $t=0.699$ & $0.560$ & $\tau$ SD $0.150$; chip $p=0.555$ \\
+truncate 2026Q1 / 2025Q4  & $0.088/0.112$ & --- & $0.605/0.505$ & conclusions unchanged \\
+incumbent-only (12/59 treated) & $+0.258$ & $t=1.49$ & $0.155$ & larger, still n.s. \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\parbox{0.92\textwidth}{\footnotesize Notes: Panel A placebo $p$ is the rank
+of 2025Q1 divided by the grid size (floor $1/6$). Panel B scan $p$-values are
+$q=99$ within-cluster-copula permutation floors; the neocloud scan's exact
+$t_0$ recovery certifies the constructed 21/73-site assignment is scannable,
+not that the outcome breaks there (in-scan effect estimators refused: 0
+usable placebos of $\geq 5$ required). Panel C $p$-values are 199-draw label
+permutations, seed 0; CR1 cluster-by-site $t$-statistics agree with the
+permutation verdicts.}
+\end{table}
+
+\section{Caveats and Conclusion}\label{sec:conclusion}
+
+Six caveats bound the claims. First, \emph{LOCF timing}: snapshots are sparse
+(median 4 per site), so carried-forward power smears true addition dates by
+up to one inter-snapshot gap; quarter-level timing is approximate, and
+non-monotone estimate revisions are floored at 0. Second,
+\emph{tracked-universe growth}: the hub's coverage grows from 4 to 54 sites
+with nonzero power over the panel, so aggregate levels lower-bound industry
+capacity and early growth rates are inflated by coverage catch-up --- a bias
+\emph{toward} finding late acceleration, which strengthens the
+no-2025Q1-break reading, though absolute MW shares remain conditional on
+Epoch's tracking choices \cite{epochdc}. Third, \emph{coarse placebo grids}:
+with 4--6 feasible dates the placebo $p$ has a floor of $1/6$--$1/4$;
+statements are about rank, not tight $p$-values. Fourth, a \emph{crowded
+quarter}: Stargate (21~January), DeepSeek-R1 (20~January), and the diffusion
+rule (13~January) all land in 2025Q1 \cite{openai2025,deepseekr1}, so even a
+real 2025Q1 break could not separate these candidate causes. Fifth,
+\emph{calendar-time inference}: the neocloud contrast is one calendar event
+hitting one group; we therefore rest on permutation-in-space inference
+\cite{conleytaber2011}, and the asymptotic CR1 statistics happen to agree.
+Sixth, \emph{scale}: $\operatorname{asinh}(\text{additions}/10)$ compresses
+large sites, and $\tau$ lives on that scale.
+
+The conclusion is a double negative with positive content. The post-2025Q1
+surge in tracked datacenter additions is real, large, and completely
+separated in levels --- but it is what smooth $\sim$40\%-per-quarter
+exponential growth of tracked capacity looks like, with 2025Q1 never the best
+break date on any statistic, growth mildly decelerating, and the largest
+jumps arriving in 2025Q4 and 2026Q2. The one seemingly sharp result --- a
+seeded discovery scan returning 2025Q1 exactly at $p=0.010$ --- is a
+mechanical recovery of the constructed treatment coding, a failure mode worth
+naming for any pipeline that scans panels whose design columns encode the
+hypothesis. And the group story fails directly: neocloud attribution is a
+clean permutation null, with the buildout led by hyperscaler campuses ---
+first among them the Anthropic--Amazon New Carlisle site at 10\% of all
+post-2025Q1 additions. The Stargate quarter did not change the growth regime;
+the regime was already exponential \cite{pilz2025,iea2025}.
+
+\paragraph{Reproducibility.} All estimates derive from the public Epoch AI
+Frontier Data Centers hub timelines \cite{epochdc}; no dataset files are
+committed. The only stochastic steps are the seeded scan and permutation
+draws (seed 0 throughout). Figure~\ref{fig:fig1} regenerates from the
+committed \texttt{figures/make\_fig.py}, which asserts the headline estimates
+against the numbers of record before drawing.
+
+\footnotesize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
+
+\bibitem{bockerman2025}
+B\"ockerman, P., Jysm\"a, S., and Kanninen, O. (2025).
+\emph{Difference-in-Kinks Design}.
+IZA Discussion Paper No.~18313.
+\url{https://docs.iza.org/dp18313.pdf}
+
+\bibitem{conleytaber2011}
+Conley, T.~G., and Taber, C.~R. (2011).
+Inference with ``difference in differences'' with a small number of policy
+changes.
+\emph{Review of Economics and Statistics}, 93(1), 113--125.
+
+\bibitem{deepseekr1}
+DeepSeek-AI (2025).
+DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement
+learning.
+arXiv:2501.12948.
+
+\bibitem{epochdc}
+Epoch AI (2026).
+Frontier Data Centers Hub.
+\url{https://epoch.ai/data/data-centers} (timelines extracted 19 July 2026).
+
+\bibitem{hausmanrapson2018}
+Hausman, C., and Rapson, D.~S. (2018).
+Regression discontinuity in time: Considerations for empirical applications.
+\emph{Annual Review of Resource Economics}, 10, 533--552.
+
+\bibitem{natex}
+Hillebrandt, H. (2026).
+\emph{natex: automated natural-experiment discovery and estimation}.
+Software, version 0.2.0.
+\url{https://github.com/HaukeHillebrandt/natex}
+
+\bibitem{iea2025}
+International Energy Agency (2025).
+\emph{Energy and AI}.
+IEA, Paris. \url{https://www.iea.org/reports/energy-and-ai}
+
+\bibitem{openai2025}
+OpenAI (2025).
+Announcing The Stargate Project.
+Company announcement, 21 January 2025.
+\url{https://openai.com/index/announcing-the-stargate-project/}
+
+\bibitem{pilzheim2023}
+Pilz, K., and Heim, L. (2023).
+Compute at scale: A broad investigation into the data center industry.
+arXiv:2311.02651.
+
+\bibitem{pilz2025}
+Pilz, K.~F., Sanders, J., Rahman, R., and Heim, L. (2025).
+Trends in AI supercomputers.
+arXiv:2504.16026.
+
+\end{thebibliography}
+
+\end{document}
