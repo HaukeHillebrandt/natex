@@ -1,0 +1,401 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+\newcommand{\natex}{\texttt{natex}}
+
+\title{A Sharp Bend, Now Gone: The DeepSeek-R1 Adoption Kink Fails Out of
+Sample in the Extended BTOS Panel}
+\author{Hauke Hillebrandt\thanks{University College London. Email:
+\texttt{ucjthhi@ucl.ac.uk}. This paper and the underlying \natex{} software were
+prepared with substantial assistance from Anthropic's Claude models; the author
+reviewed the analyses and text and is responsible for all remaining errors.}}
+\date{July 2026 \\ \small analysis pass of record: 2026-07, \natex{} v0.2.0;
+fully deterministic (the kink CLI has no RNG)}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent The DeepSeek-R1 adoption bend does not survive nine more months of
+data. In the Census Bureau's Business Trends and Outlook Survey (BTOS), a
+companion analysis through October 2025 found a sharp acceleration of measured
+AI use in AI-exposed sectors at the first survey wave after R1's release
+(20 January 2025), with a group difference-in-kinks (DiK) estimate of $+7.3$
+pp/yr (cluster-robust $p=0.042$) --- nominally significant, though already
+failing attribution placebos. Extending the sector panel to June 2026 (71
+waves, spliced across the December-2025 questionnaire rewording at the
+companion measurement-RDD ratio of 1.553), the prior estimate replicates
+exactly at bandwidth 0.5 ($+7.27$ pp/yr, $p=0.042$) --- but its estimation
+window ends in July 2025 and contains zero new data. Every specification that
+sees the extended panel is null to negative at R1: bandwidth 1.0 gives
+$\hat\tau=-0.16$ pp/yr (CR1 se $3.44$, 95\% CI $[-8.57, +8.24]$, $p=0.963$,
+$n=244$); bandwidth 1.5 gives $-2.09$ ($p=0.543$); per-sector splice factors
+give $+1.9$--$2.0$ ($p>0.3$). The placebo battery is now two-sided: non-event
+2024 cutoffs produce positive ``kinks'' as large as the old R1 estimate
+($+11.50$ at $t=2024.30$, $p=0.018$) and non-event 2025H2 cutoffs produce
+significant \emph{negative} ones ($-9.08$ at $t=2025.60$, $p=0.011$; $-4.06$
+at the splice boundary, $p=0.019$), so a generically convex-then-plateauing
+diffusion gap explains every cutoff. Descriptively, the exposed-minus-unexposed
+gap slope \emph{decelerated} across R1, from $+4.4$ to $+2.3$ pp/yr. The lone
+remaining significant R1 estimate (raw outcome plus an additive wording dummy
+at bandwidth 1.5: $+8.04$, $p=0.023$) is a measurement-splice artifact that
+fails its own placebos. The verdict is an honest reversal: the January-2025
+``descriptive acceleration'' was a short-window artifact, and nothing in the
+extended panel distinguishes DeepSeek-R1 from ordinary curvature in a
+diffusion curve.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+When an event-study estimate is nominally significant but its falsification
+battery is ambiguous, the cleanest arbiter is data that did not exist when the
+estimate was made. This paper supplies that arbiter for one specific claim. A
+companion analysis \cite{hillebrandt2026r1} of the Census Bureau's Business
+Trends and Outlook Survey (BTOS) through October 2025 found that measured AI
+use in AI-exposed sectors accelerated sharply at exactly the first survey wave
+after the release of the DeepSeek-R1 reasoning model on 20 January 2025
+\cite{guo2025}: a data-driven scan localized the break at that wave, and a
+group difference-in-kinks (DiK) estimate at the release date was $+7.3$ pp/yr
+(cluster-robust se $2.8$). That paper already graded the finding
+descriptive-only, because placebo cutoffs at non-event 2024 dates produced
+slope breaks as large as the R1 estimate. Nine more months of BTOS data now
+exist. They support a sharper test: if a genuine R1 response bent the adoption
+curve, the kink should persist --- and its precision improve --- as the
+estimation window widens to include the new data; if the ``bend'' was local
+curvature in a steep diffusion path, it should dissolve.
+
+Running that test requires carrying the BTOS series across a measurement
+break. The BTOS has asked US firms since September 2023 whether they used AI
+in the last two weeks \cite{bonney2024}; on 3 December 2025 the Census Bureau
+announced that the AI questions had been reworded --- from AI use ``in
+producing goods or services'' to AI use ``in any of its business functions''
+--- and started a new time series \cite{census2025}. A second companion paper
+\cite{hillebrandt2026rewording} estimates the rewording jump in a known-cutoff
+regression-discontinuity-in-time design and calibrates a splice factor: the
+new-wording national level is 1.553 times the old-wording level at the cutoff.
+This paper divides new-wording values by that ratio (with per-sector and
+covariate-adjusted variants as robustness), which is what makes the extended
+panel usable at all.
+
+Methodologically the paper applies the DiK design of \cite{bockerman2025},
+which builds on the regression kink design of \cite{card2015}, using the
+\natex{} toolkit \cite{natex}. Kink estimates with calendar time as the
+running variable inherit the known pathologies of regression discontinuity in
+time \cite{hausman2018}, and slope breaks in time series are notoriously easy
+to ``find,'' which is why placebo estimates at non-event dates --- the
+permutation logic of \cite{ganong2018} --- are the decision criterion
+throughout, rather than any single cluster-robust $p$-value resting on 6--7
+sector clusters \cite{cameron2015}. The result is a clean reversal: the prior
+estimate replicates exactly on its own window, every extended-window
+specification is null to negative, and the placebo landscape now brackets the
+R1 date with significant breaks of \emph{both} signs at dates where nothing
+happened.
+
+\section{Data}\label{sec:data}
+
+Two BTOS vintages are combined. The old-wording segment is the frozen AI core
+workbook of the companion paper (DRB approval CBDRB-FY25-0425): sector-level
+biweekly estimates and standard errors for Question 7 (``In the last two
+weeks, did this business use Artificial Intelligence (AI) in producing goods
+or services?''), 54 waves 202319--202520, collection periods 2023-09-11
+through 2025-10-05. The new-wording segment is a fresh census.gov sector
+download (fetched 2026-07-19): the reworded question (``\ldots in any of its
+business functions?''), 17 waves 202524--202614, December 2025 through June
+2026. Waves 202521--202523 were never collected (the October--November 2025
+federal government shutdown), leaving a 7-week no-data gap at
+$t \in [2025.78, 2025.92]$ immediately before the rewording. The running
+variable $t$ is the fractional year of each wave's collection-period
+midpoint.
+
+The spliced panel divides new-wording values by 1.553, the national
+new/old measurement-RDD ratio at the 2025-12-03 rewording
+\cite{hillebrandt2026rewording}, and contains 1{,}121 sector-wave cells across
+19 NAICS sectors, $t = 2023.710$--$2026.507$, of which 294 cells are
+new-wording. The exposed group is \{51 information, 52 finance and insurance,
+54 professional/scientific/technical services\}; the comparison group is
+\{11, 21, 23, 72\}, thin as in the companion paper: sectors 11 and 21 have
+only $\sim$3 usable old-wording waves each, so the unexposed side is
+effectively construction (23) and accommodation and food services (72) before
+2025. Two robustness panels vary the measurement handling: (i) per-sector
+splice factors estimated at the rewording boundary (old-side local linear
+trend extrapolated to the first new-wording waves; factors range 1.19--4.08,
+larger in low-adoption sectors, national fallback where fewer than two
+boundary observations exist); and (ii) the raw unspliced outcome with an
+additive new-wording dummy as a covariate.
+
+\section{Design and Methods}\label{sec:methods}
+
+\paragraph{Group difference-in-kinks.} Following \cite{bockerman2025}, the
+DiK estimand is the change in the slope of the outcome in calendar time at a
+known cutoff for the exposed group minus the same slope change for the
+comparison group, estimated by local linear regression on each side of the
+cutoff within each group (\natex{} v0.2.0 \cite{natex}). All specifications
+use a triangular kernel, a one-wave donut (0.0384 yr), and CR1 standard
+errors clustered by sector, with $p$-values from $t(G-1)$ with $G \in
+\{6,7\}$ clusters \cite{cameron2015}. The R1 cutoff is $t_0=2025.055$
+(2025-01-20; first post wave 202503). Bandwidth 0.5 yr reproduces the
+companion paper's primary specification --- its window $[2024.56, 2025.56]$
+ends in July 2025 and therefore contains \emph{zero} post-extension data ---
+while bandwidths 1.0 and 1.5 yr are the out-of-sample test: their windows
+extend to January and July 2026 respectively and see the new waves.
+
+\paragraph{Falsification battery.} The same estimator runs at non-event
+placebo cutoffs (2024.30, 2024.50, 2024.85, 2025.30, 2025.60), at the splice
+boundary itself (2025.845, a pure measurement date), and at OpenAI's o1
+release (2024-09-12, $t=2024.6967$) --- 36 deterministic \natex{} kink runs
+in total across the three measurement panels (the kink CLI has no RNG). In
+the spirit of \cite{ganong2018}, the placebo grid, not any single $p$-value,
+is the decision criterion: with calendar time as the running variable, any
+macro or sector-specific shock aliases as a kink \cite{hausman2018}, so an R1
+effect must stand out \emph{against} the placebo landscape, not merely reject
+zero.
+
+\paragraph{Measurement handling, stated in advance.} A national splice ratio
+applied to all sectors is wrong in detail whenever the rewording effect is
+sector-heterogeneous --- and it is (boundary factors 1.19--4.08). The
+per-sector-splice panel addresses this directly. The covariate variant (raw
+outcome plus an additive new-wording dummy) is included for completeness but
+is structurally misspecified: the rewording is a multiplicative rescale
+($\sim$1.55$\times$ nationally), and a single additive dummy common to both
+groups cannot absorb a shift that lifts the exposed group ($\sim$24 pp raw)
+far more than the unexposed ($\sim$5 pp). The symptom to watch for is the
+covariate spec ``finding'' significant kinks at placebo cutoffs; it does
+(Section~\ref{sec:results}), so its R1 estimates are discounted.
+
+\section{Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1}
+\caption{(a) Spliced BTOS AI-use share by exposure group across all 71 waves
+(new-wording waves divided by 1.553); vertical lines mark o1, DeepSeek-R1,
+and the rewording splice (dotted), with the shaded band the 7-week shutdown
+no-data gap. (b) Group DiK estimates with 95\% CR1 confidence intervals at
+the R1 cutoff (vermillion: the bandwidth-0.5 replication, whose window ends
+in July 2025, and the extended bandwidth-1.0/1.5 estimates, which see the new
+data) and at placebo cutoffs (gray, bandwidth 1.0); filled markers are
+significant at the 5\% level. The extended R1 estimates are null while
+non-event cutoffs on both sides are significantly positive (2024) and
+negative (2025H2).}
+\label{fig:fig1}
+\end{figure}
+
+\paragraph{The replication is exact; the extension is null.} At bandwidth 0.5
+the R1 DiK is $\hat\tau = +7.27$ pp/yr (se $2.81$, 95\% CI $[0.38, 14.16]$,
+$p=0.042$, $n=123$) --- to the digit the companion paper's primary estimate,
+as it must be: the spliced panel is byte-identical to the old panel on that
+window. The moment the window widens to include any of the nine new months,
+the estimate collapses: bandwidth 1.0 gives $\hat\tau = -0.16$ pp/yr (se
+$3.44$, 95\% CI $[-8.57, +8.24]$, $p=0.963$, $n=244$, 7 clusters) and
+bandwidth 1.5 gives $-2.09$ (se $3.24$, 95\% CI $[-10.03, +5.85]$, $p=0.543$,
+$n=373$). This is not bandwidth dilution of a real kink --- a persistent
+slope change measured with more data on both sides would gain, not lose,
+precision-weighted magnitude; it is the signature of local curvature that a
+short window mistook for a bend.
+
+\paragraph{Robust to how the splice is done.} With per-sector splice factors
+the extended-window R1 estimates are $+1.93$ (se $2.82$, $p=0.520$) at
+bandwidth 1.0 and $+2.05$ (se $1.90$, $p=0.324$) at bandwidth 1.5 ---
+positive but small and nowhere near significant. The covariate variant gives
+$+4.73$ (se $3.15$, $p=0.185$) at bandwidth 1.0 and $+8.04$ (se $2.64$,
+$p=0.023$) at bandwidth 1.5 --- the only significant extended R1 estimate in
+the grid, and it is discounted for the reason stated in advance: the same
+specification ``finds'' significant positive kinks at non-event placebo
+cutoffs ($+8.52$, $p=0.014$ at $t_0=2025.30$; $+5.35$, $p=0.009$ at
+$t_0=2025.60$), because an additive dummy cannot absorb a multiplicative
+$\sim$1.55$\times$ measurement rescale. A specification that fails its own
+placebo battery cannot rescue the effect it was built to test.
+
+\paragraph{The placebo landscape is now two-sided.} On the extended national-splice
+panel, non-event cutoffs in 2024 still produce positive DiKs as large as the
+old R1 estimate --- $+11.50$ (se $3.58$, $p=0.018$) at $t_0=2024.30$
+bandwidth 0.5, $+4.23$ ($p=0.003$) at bandwidth 1.0; $+3.98$ (se $0.90$,
+$p=0.007$) and $+3.57$ ($p=0.002$) at $t_0=2024.50$ --- and non-event cutoffs
+in 2025H2 produce significant \emph{negative} DiKs: $-11.77$ ($p=0.007$) at
+$t_0=2025.30$ bandwidth 0.25, $-16.70$ ($p=0.019$) and $-9.08$ (se $2.49$,
+$p=0.011$) at $t_0=2025.60$, and $-4.06$ ($p=0.019$) at the splice boundary
+itself (Table~\ref{tab:dik}; Figure~\ref{fig:fig1}b). A gap curve that is
+convex through 2024 and plateauing from mid-2025 generates exactly this
+pattern at \emph{any} cutoff; R1 is nowhere special on it. The o1 contrast
+remains bandwidth-aliased, as in the companion paper: $-5.91$ ($p=0.099$) at
+bandwidth 0.5, $+3.82$ ($p=0.036$) at 1.0, $+2.73$ ($p=0.192$) at 1.5.
+
+\paragraph{Descriptively, the gap decelerated.} The SE-weighted
+exposed-minus-unexposed gap slope is $+4.38$ pp/yr in the year \emph{before}
+R1 and $+2.27$ pp/yr in the year \emph{after} --- a deceleration, not an
+acceleration. The spliced gap rises from 8.0 pp at the panel start
+(September 2023) to roughly 18 pp by mid-2026 and is approximately flat over
+February--June 2026 (Figure~\ref{fig:fig1}a). The companion paper's
+``descriptive acceleration'' --- a gap slope tripling measured over $\pm$13
+waves --- was a short-window artifact of this convex-then-plateauing path.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Group difference-in-kinks estimates on the extended panel, BTOS
+AI-use share (pp/yr).}
+\label{tab:dik}
+\begin{tabular}{lrrrc}
+\toprule
+Specification & $\hat\tau$ & se & $p$ & sig.\ 5\% \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel A: DeepSeek-R1 cutoff ($t_0=2025.055$), national splice}}\\
+bw 0.5 (replication; window ends 2025.56) & $+7.27$ & $2.81$ & $0.042$ & $\ast$ \\
+bw 1.0 (extended)                         & $-0.16$ & $3.44$ & $0.963$ &  \\
+bw 1.5 (extended)                         & $-2.09$ & $3.24$ & $0.543$ &  \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel B: R1 cutoff, alternative measurement handling}}\\
+per-sector splice, bw 1.0            & $+1.93$ & $2.82$ & $0.520$ &  \\
+per-sector splice, bw 1.5            & $+2.05$ & $1.90$ & $0.324$ &  \\
+raw $+$ wording dummy, bw 1.0        & $+4.73$ & $3.15$ & $0.185$ &  \\
+raw $+$ wording dummy, bw 1.5        & $+8.04$ & $2.64$ & $0.023$ & ($\ast$) \\
+\midrule
+\multicolumn{5}{l}{\emph{Panel C: placebo and secondary cutoffs, national splice}}\\
+$t_0=2024.30$ (no event), bw 0.5     & $+11.50$ & $3.58$ & $0.018$ & $\ast$ \\
+$t_0=2024.30$ (no event), bw 1.0     & $+4.23$ & $0.87$ & $0.003$ & $\ast$ \\
+$t_0=2024.50$ (no event), bw 0.5     & $+3.98$ & $0.90$ & $0.007$ & $\ast$ \\
+$t_0=2024.50$ (no event), bw 1.0     & $+3.57$ & $0.65$ & $0.002$ & $\ast$ \\
+$t_0=2025.30$ (no event), bw 0.25    & $-11.77$ & $2.68$ & $0.007$ & $\ast$ \\
+$t_0=2025.60$ (no event), bw 0.5     & $-16.70$ & $5.27$ & $0.019$ & $\ast$ \\
+$t_0=2025.60$ (no event), bw 1.0     & $-9.08$ & $2.49$ & $0.011$ & $\ast$ \\
+splice boundary $t_0=2025.845$, bw 1.0 & $-4.06$ & $1.28$ & $0.019$ & $\ast$ \\
+o1, $t_0=2024.6967$, bw 0.5          & $-5.91$ & $2.92$ & $0.099$ &  \\
+o1, $t_0=2024.6967$, bw 1.0          & $+3.82$ & $1.42$ & $0.036$ & $\ast$ \\
+o1, $t_0=2024.6967$, bw 1.5          & $+2.73$ & $1.85$ & $0.192$ &  \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\parbox{0.92\textwidth}{\footnotesize Notes: CR1 standard errors clustered by
+sector; $p$-values against $t(G-1)$ with $G \in \{6,7\}$ clusters (5--7 at
+bandwidth 0.25). Triangular kernel, one-wave donut, bandwidths in years.
+New-wording waves divided by 1.553 (national splice), by boundary-estimated
+per-sector factors (Panel B rows 1--2), or entered raw with an additive
+new-wording dummy (Panel B rows 3--4; discounted --- see text: this
+specification also finds $+8.52$, $p=0.014$ and $+5.35$, $p=0.009$ at the
+2025.30 and 2025.60 placebo cutoffs). Outcome: sector-level share answering
+Yes to the BTOS AI-use question, percentage points.}
+\end{table}
+
+\section{Caveats and Conclusion}\label{sec:conclusion}
+
+Five caveats bound the reversal, none of which rescues R1. First, the
+national splice ratio applied to every sector is wrong in detail --- the
+boundary-estimated per-sector factors range from 1.19 to 4.08, larger in
+low-adoption sectors --- but the R1 conclusions are robust to using those
+factors, which are themselves noisy boundary extrapolations across the 7-week
+shutdown gap. Second, the covariate variant is structurally misspecified
+(additive dummy against a multiplicative shift); its lone significant R1
+estimate fails its own placebos and should not be cited as evidence. Third,
+CR1 inference with 6--7 clusters is fragile \cite{cameron2015} --- but the
+headline here is a null, and the significant placebos argue \emph{against}
+the effect, so any over-rejection makes the case against R1 stronger, not
+weaker. Fourth, the significant negative kink at the splice boundary mixes a
+genuine gap plateau with possible splice fragility; slopes after $t=2025.9$
+should be treated as measurement-provisional either way. Fifth, BTOS measures
+extensive-margin adoption (``used AI in the last two weeks''); a null here
+does not rule out intensive-margin or within-firm R1 effects that an
+any-use share cannot see.
+
+The verdict is an honest reversal, and a clean one. The companion paper's R1
+kink replicates exactly on its own window --- nothing about the old
+computation was wrong --- and fails completely out of sample: every
+specification that sees the nine new months of data is null to negative at
+R1, under two independent splice treatments; the placebo battery now brackets
+the R1 date with significant breaks of both signs at non-event dates; and the
+descriptive gap slope decelerated across the release. What looked like an
+adoption response to DeepSeek-R1 was the local curvature of a diffusion gap
+that grew convexly through 2024 and plateaued in late 2025 --- a pattern that
+manufactures ``significant'' kinks at almost any cutoff a researcher might
+try. The companion paper withheld causal attribution; the extended panel
+withdraws even the descriptive acceleration.
+
+\paragraph{Reproducibility.} All estimates were produced with \natex{} v0.2.0
+\cite{natex} from the frozen BTOS workbooks (published at
+\url{https://www.census.gov/hfp/btos}; not committed to the repository); the
+36 kink runs are fully deterministic (the CLI has no RNG), and the spliced
+kink panel is byte-identical to the scout build of record.
+Figure~\ref{fig:fig1} regenerates deterministically from the committed
+\texttt{figures/make\_fig.py}, which asserts the headline estimates against
+the numbers of record before drawing.
+
+\footnotesize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{2pt}\setlength{\parskip}{0pt}
+
+\bibitem{bockerman2025}
+B\"ockerman, P., Jysm\"a, S., and Kanninen, O. (2025).
+\emph{Difference-in-Kinks Design}.
+IZA Discussion Paper No.~18313.
+\url{https://docs.iza.org/dp18313.pdf}
+
+\bibitem{bonney2024}
+Bonney, K., Breaux, C., Buffington, C., Dinlersoz, E., Foster, L., Goldschlag,
+N., Haltiwanger, J., Kroff, Z., and Savage, K. (2024).
+Tracking firm use of AI in real time: A snapshot from the Business Trends and
+Outlook Survey.
+NBER Working Paper No.~32319.
+
+\bibitem{cameron2015}
+Cameron, A.~C., and Miller, D.~L. (2015).
+A practitioner's guide to cluster-robust inference.
+\emph{Journal of Human Resources}, 50(2), 317--372.
+
+\bibitem{card2015}
+Card, D., Lee, D.~S., Pei, Z., and Weber, A. (2015).
+Inference on causal effects in a generalized regression kink design.
+\emph{Econometrica}, 83(6), 2453--2483.
+
+\bibitem{ganong2018}
+Ganong, P., and J\"ager, S. (2018).
+A permutation test for the regression kink design.
+\emph{Journal of the American Statistical Association}, 113(522), 494--504.
+
+\bibitem{guo2025}
+Guo, D., Yang, D., Zhang, H., et al. (2025).
+DeepSeek-R1 incentivizes reasoning in LLMs through reinforcement learning.
+\emph{Nature}, 645(8081), 633--638.
+
+\bibitem{hausman2018}
+Hausman, C., and Rapson, D.~S. (2018).
+Regression discontinuity in time: Considerations for empirical applications.
+\emph{Annual Review of Resource Economics}, 10, 533--552.
+
+\bibitem{hillebrandt2026r1}
+Hillebrandt, H. (2026).
+A sharp bend, no verdict: Difference-in-kinks tests of US business AI
+adoption at DeepSeek-R1.
+Companion paper, natex paper collection.
+\url{https://haukehillebrandt.github.io/natex/btos-sector-did-r1/}
+
+\bibitem{hillebrandt2026rewording}
+Hillebrandt, H. (2026).
+The question is the treatment: A known-cutoff regression discontinuity at the
+BTOS AI-question rewording.
+Companion paper, natex paper collection.
+\url{https://haukehillebrandt.github.io/natex/btos-rewording-rdd/}
+
+\bibitem{natex}
+Hillebrandt, H. (2026).
+\emph{natex: automated natural-experiment discovery and estimation} (version
+0.2.0). Software.
+\url{https://github.com/HaukeHillebrandt/natex}
+
+\bibitem{census2025}
+U.S. Census Bureau (2025).
+\emph{Business Trends and Outlook Survey: AI core question updates}.
+3 December 2025.
+\url{https://www.census.gov/hfp/btos/downloads/AI\%20Question\%20Wording\%20Updates.pdf}
+
+\end{thebibliography}
+
+\end{document}
