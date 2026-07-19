@@ -25,6 +25,12 @@ ORDER = [
     ("10. Semiconductor event studies", "papers/semis-event-studies-writeup/main.pdf"),
     ("11. Chinchilla: an honest miss", "papers/chinchilla-writeup/main.pdf"),
     ("12. Prop 99 blind validation", "papers/prop99-validation-writeup/main.pdf"),
+    ("13. Chip-level export controls (SuDDDS)", "papers/chip-suddds-exportcontrols/main.pdf"),
+    ("14. BTOS spliced panel: R1 kink out of sample", "papers/btos-spliced-r1-extension/main.pdf"),
+    ("15. Benchmark contamination (public vs held-out)", "papers/benchmark-contamination-dee/main.pdf"),
+    ("16. Datacenter sites at 2025Q1", "papers/datacenter-sites-2025q1/main.pdf"),
+    ("17. State AI-exposure gradient at R1", "papers/aei-btos-state-gradient/main.pdf"),
+    ("18. CVE publications: no kink at R1", "papers/cve-monthly-kink-r1/main.pdf"),
 ]
 
 

@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/euact-bunching-writeup/) · [PDF](https://haukehillebrandt.github.io/natex/euact-bunching-writeup.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/euact-bunching-writeup/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

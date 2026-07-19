@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/export-controls-three-leg/) · [PDF](https://haukehillebrandt.github.io/natex/export-controls-three-leg.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/export-controls-three-leg/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

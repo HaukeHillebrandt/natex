@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — the typeset versions are canonical: [HTML](https://haukehillebrandt.github.io/natex/capex-dik-chatgpt/) · [PDF](https://haukehillebrandt.github.io/natex/capex-dik-chatgpt.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/capex-dik-chatgpt/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

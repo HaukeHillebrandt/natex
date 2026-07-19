@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — the typeset versions are canonical: [HTML](https://haukehillebrandt.github.io/natex/btos-sector-did-r1/) · [PDF](https://haukehillebrandt.github.io/natex/btos-sector-did-r1.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/btos-sector-did-r1/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

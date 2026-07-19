@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/lmarena-sycophancy-aba/) · [PDF](https://haukehillebrandt.github.io/natex/lmarena-sycophancy-aba.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/lmarena-sycophancy-aba/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

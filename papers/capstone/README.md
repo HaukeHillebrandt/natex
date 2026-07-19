@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/capstone/) · [PDF](https://haukehillebrandt.github.io/natex/capstone.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/capstone/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 

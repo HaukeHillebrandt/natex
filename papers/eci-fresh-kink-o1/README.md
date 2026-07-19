@@ -1,4 +1,4 @@
-> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/eci-fresh-kink-o1/) · [PDF](https://haukehillebrandt.github.io/natex/eci-fresh-kink-o1.pdf) · [PDF in this repo](./main.pdf)
+> **Markdown render for GitHub browsing** — typeset versions: [HTML](https://haukehillebrandt.github.io/natex/eci-fresh-kink-o1/) · [PDF in this repo](./main.pdf)
 
 # Introduction
 
