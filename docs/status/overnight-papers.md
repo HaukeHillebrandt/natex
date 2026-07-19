@@ -63,3 +63,56 @@ Filed during tonight's paper pass (from the analyses' caveats):
 Filed earlier the same day from the analysis pass: [#48](https://github.com/HaukeHillebrandt/natex/issues/48) (repeated `--cutoff` flags silently collapse), [#49](https://github.com/HaukeHillebrandt/natex/issues/49) (did/survey intake ignores declared `--time`, can pick a string date column), [#50](https://github.com/HaukeHillebrandt/natex/issues/50) (sc runner: multi-unit treated indicator; single-ticker panel error message).
 
 The string-dim `.item()` DiD crash re-hit in panel construction was already fixed (`ea0c7ac`); the workaround notes in the study READMEs predate the fix.
+
+## Wave 2 (2026-07-19)
+
+Six new mini-papers from the wave-2 scout/analysis pass, one commit per paper,
+wired into the collection (`papers/README.md` rows 13–18, cover contents,
+`ALL_PAPERS.pdf` rebuilt to 116 pages / 19 bookmarks) in `dc69db0`. Same rules
+of record: seeded runs, figure scripts hard-assert the numbers of record,
+refusals stated as run.
+
+### The ranked wave-2 studies
+
+| # | Study | Paper | Verdict | Headline |
+|---|-------|-------|---------|----------|
+| 13 | Chip-level export controls (SuDDDS rematch) | [chip-suddds-exportcontrols](https://haukehillebrandt.github.io/natex/chip-suddds-exportcontrols/) | date-localization positive (Oct-23) / unattributable magnitude (H20) | all 6 known-treatment scans put max-LLR at the declared quarter exactly; Oct-2023 A800/H800 ban significant (Bernoulli p=0.030, shipments to literal zero in one quarter); H20 tau ≈ −2.8 asinh (CR1 t=−4.23) but lifecycle churn generates same-size placebos — donor pool contaminated (3/6 Chinese substitutes) or too small (3 clean, p=0.75) |
+| 14 | BTOS spliced panel: R1 kink out of sample | [btos-spliced-r1-extension](https://haukehillebrandt.github.io/natex/btos-spliced-r1-extension/) | honest reversal | prior +7.3 pp/yr group DiK replicates exactly on its old window but uses zero new data; every spec seeing the extended panel is null-to-negative at R1 (bw 1.0: −0.16, p=0.96); two-sided placebo battery (positive kinks at 2024 non-events, negative at 2025H2 + splice boundary) — convex-then-plateau diffusion gap explains all cutoffs; gap slope decelerated +4.4 → +2.3 pp/yr |
+| 15 | Benchmark contamination, public vs held-out (DEE) | [benchmark-contamination-dee](https://haukehillebrandt.github.io/natex/benchmark-contamination-dee/) | suggestive-sign null | +0.127 z post × public premium fails WCB p=0.145 / exact RI p=0.213, collapses under IRT-difficulty controls (+0.04) and model FE (+0.03), and fails placebo-cutoff localization (−0.5 yr placebo +0.267 > true cutoff); held-out post shortfall −0.19 z sign-matches the story; DiK secondary is a correctly-identified artifact |
+| 16 | Datacenter sites at 2025Q1 (Stargate quarter) | [datacenter-sites-2025q1](https://haukehillebrandt.github.io/natex/datacenter-sites-2025q1/) | identified artifact + clean null | fivefold additions "break" is smooth ~40%/q exponential growth (2025Q1 never best on the 6-date placebo grid, rank 3–6; log-kink negative everywhere); scan's t0=2025Q1 p=0.010 mechanically recovers the constructed 21/73-site coding (role-assignment triage); neocloud attribution null: tau=+0.098 asinh-MW, t=0.699, permutation p=0.56 |
+| 17 | State AI-exposure gradient at R1 (AEI × BTOS) | [aei-btos-state-gradient](https://haukehillebrandt.github.io/natex/aei-btos-state-gradient/) | identified artifact ("manufactured gradients") | +1.635 pp/yr per AEI unit, permutation p=0.257; placebo cutoffs bracket it (+1.56, +2.24) and the same-day RTO remote-work placebo outcome matches it (+1.97, weighted version nominally significant p=0.045); TWFE level effect (+0.527 pp, p=0.011) is a pre-trend that flips sign under state trends; long-window negative gradients are a rewording-splice artifact (ratio misprices high-AEI states, corr +0.676) |
+| 18 | CVE publications at R1 | [cve-monthly-kink-r1](https://haukehillebrandt.github.io/natex/cve-monthly-kink-r1/) | calibrated null + localized late-2025 surge | R1 kink +0.038 ln/yr (z=0.30); scout's +0.18 is a uniform-kernel far-from-cutoff artifact (placebo-calibrated p=0.80, empirical size 0.14 = issue #51); blind LoRD3 ranks Nov/Dec-2025 (scan p=0.02/0.01) and Feb–Apr-2026 first, R1 in no top-20; surge arrives 10–17 months post-release — NVD backlog catch-up + CNA expansion, not AI attribution |
+
+### Considered and rejected in wave 2 (reasons of record)
+
+- DCM inference-price kink at DeepSeek-V3 (extension leg) — verified infeasible:
+  every price table on disk ends 2025-01/02 (same terminal date as the processed
+  series); no post-V3 slope data without a fresh Artificial-Analysis-class scrape.
+- FLOP-disclosure-collapse kink at GPT-4 (disclosure-as-outcome) — disclosure
+  share is a gradual ramp (0.85 → 0.42, 2022Q3–2024Q4); the only sharp break
+  (2025Q4) is a right-edge Epoch estimation-lag artifact — would repeat the
+  Chinchilla failure mode.
+- AEI occupation/task time-series panel — current schema covers only Apr–May
+  2026 (2 months); earlier releases (v1–v6) methodologically incompatible; only
+  the cross-sectional exposure use survives (study 17).
+- Bunching at 1e26 FLOP (US EO line) — still only 3 models ever above the line.
+- BTOS state Bartik with ACS/BLS external weights — superseded by the
+  AEI-exposure version (study 17); doesn't fix suppressed small-state cells.
+- LMArena leaderboard RKD / style-premium DiD at spec updates — no new data;
+  cumulative-series precedent (placebo empirical size 1.0) and judge validation
+  unaddressed.
+- Chinchilla hygiene rematch (drop fine-tune rows, rescan) — diagnosis
+  confirmation for a published honest miss, not a new finding; low novelty
+  under the study cap.
+- Sales-panel Oct-2023 unsupervised-discovery effect leg as standalone — naive
+  placebo-in-space fails (p=0.73); folded into study 13 instead.
+
+### natex gotchas filed from this batch (same-day rule)
+
+- [#55](https://github.com/HaukeHillebrandt/natex/issues/55) enhancement —
+  effect-leg placebo inference refuses ("only 0 usable placebos; >= 5
+  required") on unbalanced/short/single-binary panels with no built-in
+  fallback; 4 of 6 wave-2 studies hand-rolled shadow TWFE/permutation/WCB legs.
+- Already on file, re-hit this wave (no dupes filed): #51 (HC1/CR1 oversized on
+  smooth serially correlated aggregates — cve, aei-btos, chip placebo flavors),
+  #53 (group-DiK aliasing hack — btos-spliced-r1-extension reuses it).
