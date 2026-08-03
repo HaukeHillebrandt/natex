@@ -142,6 +142,7 @@ def _reduced_form(
     clusters,
     hac_lags: int | None,
     weights,
+    hc: str,
     alpha: float,
 ) -> KinkEstimate:
     """Outcome kink contrast with a unit denominator (sharp reduced form)."""
@@ -159,6 +160,7 @@ def _reduced_form(
             clusters=clusters,
             hac_lags=hac_lags,
             weights=weights,
+            hc=hc,
             alpha=alpha,
         )
     return difference_in_kinks(
@@ -175,6 +177,7 @@ def _reduced_form(
         clusters=clusters,
         hac_lags=hac_lags,
         weights=weights,
+        hc=hc,
         alpha=alpha,
     )
 
@@ -196,6 +199,7 @@ def sensitivity_grid(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> list[KinkEstimate]:
     """Re-estimate the design over a bandwidth-by-donut grid (paper Fig. A3 A-B).
@@ -240,6 +244,7 @@ def sensitivity_grid(
                         clusters=clusters,
                         hac_lags=hac_lags,
                         weights=weights,
+                        hc=hc,
                         alpha=alpha,
                     )
                 )
@@ -260,6 +265,7 @@ def sensitivity_grid(
                         clusters=clusters,
                         hac_lags=hac_lags,
                         weights=weights,
+                        hc=hc,
                         alpha=alpha,
                     )
                 )
@@ -280,6 +286,7 @@ def placebo_kinks(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> PlaceboKinkGrid:
     """Reduced-form kink contrasts at shifted placebo cutoffs (paper Fig. A3 C).
@@ -311,6 +318,7 @@ def placebo_kinks(
             clusters=clusters,
             hac_lags=hac_lags,
             weights=weights,
+            hc=hc,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)
@@ -351,6 +359,7 @@ def covariate_kinks(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> list[CovariateKink]:
     """Predetermined covariates as placebo outcomes (paper Fig. A4 B-D, Table A3).
@@ -377,6 +386,7 @@ def covariate_kinks(
             clusters=clusters,
             hac_lags=hac_lags,
             weights=weights,
+            hc=hc,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)
@@ -408,6 +418,7 @@ def event_study_kinks(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> KinkEventStudy:
     """Per-period kink contrasts relative to a base period (paper Fig. A2 D).
@@ -452,6 +463,7 @@ def event_study_kinks(
             clusters=None if clusters_all is None else clusters_all[mask],
             hac_lags=hac_lags,
             weights=None if weights_all is None else weights_all[mask],
+            hc=hc,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)

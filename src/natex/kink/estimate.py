@@ -23,6 +23,8 @@ _WEAK_F_THRESHOLD = 10.0
 _RELATIVE_ROUNDOFF_TOL = 1_000.0 * np.finfo(float).eps
 _AUTOCORR_WARN_THRESHOLD = 0.25
 _AUTOCORR_MIN_SERIES = 5
+_HC_VARIANTS = ("hc1", "hc2", "hc3")
+_LEVERAGE_TOL = 1e-8
 
 
 @dataclass
@@ -58,6 +60,7 @@ class _Prepared:
     cell_labels: tuple[str, ...]
     clusters: np.ndarray | None
     hac: tuple[np.ndarray, int, int] | None
+    hc: str
     n_input: int
     n_dropped_nonfinite: int
     n_outside_bandwidth: int
@@ -133,6 +136,15 @@ def _validate_hac(hac_lags: int | None, clusters) -> None:
         raise ValueError("supply at most one of clusters (CR1) and hac_lags (HAC)")
 
 
+def _validate_hc_variant(hc: str, clusters, hac_lags: int | None) -> None:
+    if hc not in _HC_VARIANTS:
+        raise ValueError(f"hc must be one of {_HC_VARIANTS}, got {hc!r}")
+    if hc != "hc1" and (clusters is not None or hac_lags is not None):
+        raise ValueError(
+            "hc applies only to the plain HC path; drop clusters/hac_lags or use hc='hc1'"
+        )
+
+
 def _validate_first_stage(treatment, policy_kink: float | None, name: str) -> None:
     if (treatment is None) == (policy_kink is None):
         raise ValueError(
@@ -199,6 +211,7 @@ def _prepare(
     sample_weights=None,
     cell_prefixes: tuple[str, str] = ("pre", "post"),
     indicator_name: str = "post",
+    hc: str = "hc1",
 ) -> _Prepared:
     y_all = _as_vector("y", y)
     n = y_all.size
@@ -333,6 +346,7 @@ def _prepare(
         cell_labels=cell_labels,
         clusters=cluster_fit,
         hac=hac,
+        hc=hc,
         n_input=n,
         n_dropped_nonfinite=n_dropped_nonfinite,
         n_outside_bandwidth=outside_bandwidth,
@@ -351,7 +365,26 @@ def _score_meat(
     residual_b: np.ndarray,
     clusters: np.ndarray | None,
     hac: tuple[np.ndarray, int, int] | None = None,
+    hc: str = "hc1",
 ) -> tuple[np.ndarray, float, int | None]:
+    if hc != "hc1" and clusters is None and hac is None:
+        # MacKinnon-White leverage corrections for the weighted fit: the hat
+        # diagonal is h_i = w_i x_i' (X'WX)^{-1} x_i; HC2 divides squared
+        # residuals by (1-h), HC3 by (1-h)^2, with unit small-sample factor.
+        xtwx_inv = np.linalg.inv(design.T @ (design * weights[:, None]))
+        leverage = np.einsum("ij,jk,ik->i", design, xtwx_inv, design) * weights
+        saturated = int(np.sum(leverage >= 1.0 - _LEVERAGE_TOL))
+        if saturated:
+            raise ValueError(
+                f"hc={hc!r} is undefined: {saturated} observation(s) have leverage ~ 1 "
+                "(a cell is saturated in practice); the fit cannot see their residuals"
+            )
+        denominator = np.sqrt(1.0 - leverage) if hc == "hc2" else 1.0 - leverage
+        residual_a = residual_a / denominator
+        residual_b = residual_b / denominator
+        score_a = design * (weights * residual_a)[:, None]
+        score_b = design * (weights * residual_b)[:, None]
+        return score_a.T @ score_b, 1.0, None
     score_a = design * (weights * residual_a)[:, None]
     score_b = design * (weights * residual_b)[:, None]
     n, p = design.shape
@@ -420,7 +453,8 @@ def _fit(prepared: _Prepared, values: np.ndarray) -> _Fit:
     if scaled_sse <= _RELATIVE_ROUNDOFF_TOL**2 * scaled_value_ss:
         residual = np.zeros_like(residual)
     meat, factor, _ = _score_meat(
-        design, weights, residual, residual, prepared.clusters, prepared.hac
+        design, weights, residual, residual, prepared.clusters, prepared.hac,
+        prepared.hc,
     )
     cov = bread @ meat @ bread * factor
     return _Fit(
@@ -441,6 +475,7 @@ def _cross_cov(prepared: _Prepared, fit_a: _Fit, fit_b: _Fit) -> np.ndarray:
         fit_b.residual,
         prepared.clusters,
         prepared.hac,
+        prepared.hc,
     )
     return fit_a.bread @ meat @ fit_b.bread * factor
 
@@ -657,6 +692,7 @@ def _estimate(
     alpha: float,
     cell_prefixes: tuple[str, str] = ("pre", "post"),
     indicator_name: str = "post",
+    hc: str = "hc1",
 ) -> KinkEstimate:
     sharp = policy_kink is not None
     design_name = "dik" if post is not None else "rkd"
@@ -677,6 +713,7 @@ def _estimate(
         sample_weights=weights,
         cell_prefixes=cell_prefixes,
         indicator_name=indicator_name,
+        hc=hc,
     )
     n, p = prepared.design.shape
     n_clusters = None
@@ -699,7 +736,7 @@ def _estimate(
     elif prepared.clusters is not None:
         inference = "CR1"
     else:
-        inference = "HC1"
+        inference = hc.upper()
     extras = {
         "cutoff": cutoff,
         "bandwidth": bandwidth,
@@ -772,6 +809,16 @@ def _estimate(
                 f"cluster-robust inference needs at least two clusters in every cell: {unsupported}",
                 extras,
             )
+    small_cells = [
+        label for label, count in prepared.n_by_cell.items() if count <= degree + 2
+    ]
+    if small_cells:
+        extras["small_cell_warning"] = (
+            f"cells {small_cells} have <= degree+2 points: the HC1 z statistic is "
+            "not calibrated in tiny cells (leverage near 1 shrinks residuals; "
+            "issue #56) - prefer hc='hc3' and treat a fixed-cutoff parametric "
+            "Monte Carlo as the inference of record (see the method card)"
+        )
     if (
         prepared.hac is not None
         and n_time_points is not None
@@ -942,6 +989,7 @@ def regression_kink(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy regression kink at a known cutoff.
@@ -969,6 +1017,7 @@ def regression_kink(
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
     _validate_hac(hac_lags, clusters)
+    _validate_hc_variant(hc, clusters, hac_lags)
     _validate_first_stage(treatment, policy_kink, "policy_kink")
     return _estimate(
         y,
@@ -986,6 +1035,7 @@ def regression_kink(
         hac_lags=hac_lags,
         weights=weights,
         alpha=alpha,
+        hc=hc,
     )
 
 
@@ -1006,6 +1056,7 @@ def difference_in_kinks(
     clusters=None,
     hac_lags: int | None = None,
     weights=None,
+    hc: str = "hc1",
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy difference-in-kinks design.
@@ -1036,6 +1087,7 @@ def difference_in_kinks(
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
     _validate_hac(hac_lags, clusters)
+    _validate_hc_variant(hc, clusters, hac_lags)
     _validate_first_stage(treatment, policy_kink_change, "policy_kink_change")
     if (post is None) == (group is None):
         raise ValueError(
@@ -1062,4 +1114,5 @@ def difference_in_kinks(
         alpha=alpha,
         cell_prefixes=cell_prefixes,
         indicator_name=indicator_name,
+        hc=hc,
     )

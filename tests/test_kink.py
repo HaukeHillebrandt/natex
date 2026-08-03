@@ -1227,3 +1227,113 @@ def test_group_dik_input_validation():
         difference_in_kinks(
             y, t, group=np.ones_like(group), policy_kink_change=1.0, bandwidth=12.0
         )
+
+
+def _hc_oracle(x, y, weights, hc):
+    """Hand-computed leverage-corrected sandwich (MacKinnon-White HC2/HC3)
+    for the side-specific local-linear kink contrast on weighted data."""
+    right = x >= 0.0
+    design = np.column_stack(
+        [(~right).astype(float), (~right) * x, right.astype(float), right * x]
+    )
+    bread = np.linalg.inv(design.T @ (design * weights[:, None]))
+    beta = bread @ (design.T @ (weights * y))
+    residual = y - design @ beta
+    leverage = np.einsum("ij,jk,ik->i", design, bread, design) * weights
+    if hc == "hc2":
+        adjusted = residual / np.sqrt(1.0 - leverage)
+        factor = 1.0
+    elif hc == "hc3":
+        adjusted = residual / (1.0 - leverage)
+        factor = 1.0
+    else:
+        n, p = design.shape
+        adjusted = residual
+        factor = n / (n - p)
+    scores = design * (weights * adjusted)[:, None]
+    cov = bread @ (scores.T @ scores) @ bread * factor
+    contrast = np.array([0.0, -1.0, 0.0, 1.0])
+    return float(contrast @ beta), float(np.sqrt(contrast @ cov @ contrast))
+
+
+@pytest.mark.parametrize("hc", ["hc2", "hc3"])
+def test_hc2_hc3_match_the_leverage_corrected_oracle(hc):
+    rng = np.random.default_rng(19)
+    x = np.r_[np.linspace(-1.0, -0.05, 9), np.linspace(0.05, 1.0, 3)]
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + 0.3 * rng.standard_normal(x.size)
+    bandwidth = 1.2
+    kernel_w = 1.0 - np.abs(x) / bandwidth
+    kink, se = _hc_oracle(x, y, kernel_w, hc)
+
+    est = regression_kink(
+        y, x, policy_kink=0.9, bandwidth=bandwidth, kernel="triangular", hc=hc
+    )
+
+    assert est.extras["inference"] == hc.upper()
+    assert est.reduced_form == pytest.approx(kink, rel=1e-10)
+    assert est.reduced_form_se == pytest.approx(se, rel=1e-10)
+
+
+def test_hc3_widens_tiny_cell_intervals_the_issue_56_shape():
+    """12-point series with a 3-point right cell: HC1 nominal precision is
+    overstated ~30-50%, so HC3 must widen the SE substantially."""
+    rng = np.random.default_rng(29)
+    x = np.r_[np.linspace(-1.6, -0.1, 9), np.linspace(0.15, 0.55, 3)]
+    y = 2.0 * x + 17.5 * np.maximum(x, 0.0) + 1.5 * rng.standard_normal(x.size)
+
+    hc1 = regression_kink(y, x, policy_kink=1.0, bandwidth=1.6)
+    hc3 = regression_kink(y, x, policy_kink=1.0, bandwidth=1.6, hc="hc3")
+
+    assert hc3.tau == pytest.approx(hc1.tau, rel=1e-12)
+    assert hc3.se > 1.3 * hc1.se
+    assert "small_cell_warning" in hc1.extras
+    assert "not calibrated" in hc1.extras["small_cell_warning"]
+    assert "parametric" in hc1.extras["small_cell_warning"]
+
+
+def test_small_cell_warning_absent_for_comfortable_cells():
+    x = _grid(30)
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + 0.01 * np.sin(9.0 * x)
+    est = regression_kink(y, x, policy_kink=0.9, bandwidth=1.0, kernel="uniform")
+    assert "small_cell_warning" not in est.extras
+
+
+def test_hc_validation_and_leverage_one_refusal():
+    x = _grid(10)
+    y = 0.2 * x + np.maximum(x, 0.0)
+    with pytest.raises(ValueError, match="hc"):
+        regression_kink(y, x, policy_kink=1.0, bandwidth=1.0, hc="hc9")
+    with pytest.raises(ValueError, match="hc"):
+        regression_kink(
+            y, x, policy_kink=1.0, bandwidth=1.0, hc="hc3",
+            clusters=np.arange(x.size) % 4,
+        )
+    with pytest.raises(ValueError, match="hc"):
+        regression_kink(y, x, policy_kink=1.0, bandwidth=1.0, hc="hc2", hac_lags=2)
+
+    # a saturated-in-practice point refuses instead of fabricating an
+    # infinite variance: a near-coincident pair plus one isolated point in
+    # the right cell drives the isolated point's leverage to ~1
+    x_tiny = np.r_[np.linspace(-1.0, -0.1, 6), 0.1, 0.1 + 1e-9, 0.9]
+    y_tiny = 0.3 * x_tiny + np.maximum(x_tiny, 0.0) + 0.01 * np.sin(5.0 * x_tiny)
+    est = regression_kink(
+        y_tiny, x_tiny, policy_kink=1.0, bandwidth=1.0, kernel="uniform", hc="hc3"
+    )
+    assert np.isnan(est.tau)
+    assert "leverage" in est.extras["reason"]
+
+
+def test_fuzzy_hc3_flows_through_first_stage_and_combined_fit():
+    rng = np.random.default_rng(23)
+    x = np.r_[np.linspace(-1.0, -0.05, 10), np.linspace(0.05, 1.0, 4)]
+    policy = 0.5 * x + 1.4 * np.maximum(x, 0.0) + 0.05 * rng.standard_normal(x.size)
+    y = 2.0 * policy + 0.3 * x + 0.1 * rng.standard_normal(x.size)
+
+    plain = regression_kink(y, x, treatment=policy, bandwidth=1.0, kernel="uniform")
+    est = regression_kink(
+        y, x, treatment=policy, bandwidth=1.0, kernel="uniform", hc="hc3"
+    )
+
+    assert est.tau == pytest.approx(plain.tau, rel=1e-12)
+    assert np.isfinite(est.se) and est.se > plain.se
+    assert est.fieller_kind is not None

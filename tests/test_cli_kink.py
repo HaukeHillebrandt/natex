@@ -646,3 +646,44 @@ def test_kink_cli_group_column_must_be_binary(tmp_path):
     assert result.exit_code == 2
     assert "0/1" in result.output
     assert "Traceback" not in result.output
+
+
+def test_kink_cli_hc3_flag_widens_tiny_cell_se_and_echoes_warning(tmp_path):
+    rng = np.random.default_rng(56)
+    x = np.r_[np.linspace(-1.6, -0.1, 9), np.linspace(0.15, 0.55, 3)]
+    y = 2.0 * x + 17.5 * np.maximum(x, 0.0) + 1.5 * rng.standard_normal(x.size)
+    df = pd.DataFrame({"x": x, "y": y})
+    csv = tmp_path / "tiny.csv"
+    df.to_csv(csv, index=False)
+
+    base = [
+        "kink",
+        str(csv),
+        "--design",
+        "rkd",
+        "--outcome",
+        "y",
+        "--running",
+        "x",
+        "--policy-kink",
+        "1.0",
+        "--bandwidth",
+        "1.6",
+    ]
+    hc1 = runner.invoke(app, [*base, "--out", str(tmp_path / "hc1")])
+    hc3 = runner.invoke(app, [*base, "--hc", "hc3", "--out", str(tmp_path / "hc3")])
+
+    assert hc1.exit_code == 0, hc1.output
+    assert hc3.exit_code == 0, hc3.output
+    assert "warning:" in hc1.output and "not calibrated" in hc1.output
+    hc1_payload = _strict_loads((tmp_path / "hc1" / "kink.json").read_text())
+    hc3_payload = _strict_loads((tmp_path / "hc3" / "kink.json").read_text())
+    assert hc3_payload["params"]["hc"] == "hc3"
+    assert hc3_payload["estimate"]["extras"]["inference"] == "HC3"
+    assert hc3_payload["estimate"]["se"] > 1.3 * hc1_payload["estimate"]["se"]
+
+    bad = runner.invoke(
+        app, [*base, "--hc", "hc9", "--out", str(tmp_path / "bad")]
+    )
+    assert bad.exit_code == 2
+    assert "hc9" in bad.output

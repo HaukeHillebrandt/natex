@@ -84,7 +84,10 @@ Report estimates over a defensible bandwidth grid, donut sizes, and shifted plac
 The paper gives point estimators but does not specify its covariance or weak-denominator
 procedure. The following are natex choices:
 
-- HC1 sandwich covariance by default.
+- HC1 sandwich covariance by default; `hc="hc2"|"hc3"` / `--hc` switches to the
+  MacKinnon-White leverage-corrected variants (squared residuals divided by `(1-h)` or
+  `(1-h)^2`, unit small-sample factor) on the plain HC path. An observation with leverage
+  ~1 makes them undefined and refuses with a reason, never an infinite variance.
 - CR1 cluster-robust covariance when `clusters=` / `--cluster` is supplied, with
   `t(G-1)` critical values. Every local side/period cell must contain at least two clusters.
 - HAC (Newey-West/Driscoll-Kraay) covariance when `hac_lags=` / `--hac-lags` is supplied,
@@ -110,6 +113,16 @@ procedure. The following are natex choices:
 The ordinary Wald interval is conventional local-polynomial inference and may retain
 **smoothing bias**. Robust bias correction is not implemented; polynomial and bandwidth
 sensitivity is part of the required analysis.
+
+**Tiny cells overstate HC1 precision** (issue #56). With 2-3 points in a cell,
+leverage near 1 mechanically shrinks squared residuals and HC1's global `n/(n-k)` cannot
+compensate: on a 12-point field series with a 3-point right cell, the HC1 z was overstated
+~30-50% against independent replications, and the DiK z was heavy-tailed under its own
+fitted null (parametric MC `P(|z| >= 3.63) = 0.080` vs the nominal 3.6e-4). Every estimate
+therefore warns via `extras["small_cell_warning"]` when any cell has `<= degree+2` points.
+House guidance for tiny-n designs: estimate with `hc="hc3"`, and treat a **fixed-cutoff
+parametric Monte Carlo** — per-cell fitted linear nulls, re-computing the natex statistic
+per replica — as the inference of record, mirroring the placebo-grid rule below.
 
 **HAC is a mitigation, not a certificate.** On short, strongly persistent windows even a
 correctly specified HAC covariance stays oversized, because the side-specific local fits

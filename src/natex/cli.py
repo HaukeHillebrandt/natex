@@ -690,6 +690,14 @@ def kink(
             "the kernel weights (use 1/sigma^2 for outcomes with published SEs)"
         ),
     ),
+    hc: str = typer.Option(
+        "hc1",
+        "--hc",
+        help=(
+            "hc1|hc2|hc3 sandwich variant; hc3 (leverage-corrected) for tiny "
+            "cells where HC1 z is overstated (issue #56)"
+        ),
+    ),
     cluster: str = typer.Option(None, help="cluster column for CR1 covariance"),
     hac_lags: int = typer.Option(
         None,
@@ -787,6 +795,7 @@ def kink(
             "clusters": cluster_values,
             "weights": weight_values,
             "hac_lags": hac_lags,
+            "hc": hc,
             "alpha": alpha,
         }
         if design == "rkd":
@@ -873,6 +882,7 @@ def kink(
                 "weights": weights,
                 "cluster": cluster,
                 "hac_lags": hac_lags,
+                "hc": hc,
                 "alpha": alpha,
                 "contrast": "right_minus_left",
                 "csv": str(csv),
@@ -894,9 +904,10 @@ def kink(
         f"first-stage F={fs_text} weak={estimate.weak_first_stage}"
     )
     typer.echo(f"results: {path}")
-    autocorrelation_warning = estimate.extras.get("autocorrelation_warning")
-    if autocorrelation_warning is not None:
-        typer.echo(f"warning: {autocorrelation_warning}")
+    for warning_key in ("autocorrelation_warning", "small_cell_warning"):
+        warning = estimate.extras.get(warning_key)
+        if warning is not None:
+            typer.echo(f"warning: {warning}")
     if not np.isfinite(estimate.tau):
         reason = estimate.extras.get(
             "reason", "the estimand is undefined because its denominator is zero or non-finite"
