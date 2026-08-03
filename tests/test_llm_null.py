@@ -383,3 +383,22 @@ def test_method_applicability_echoes_heuristics():
         assert d.config_hints.thresholds == []
         assert d.config_hints.treated_unit is None
         assert d.config_hints.t0 is None
+
+
+def test_outcome_guesses_exclude_monotone_integer_counters():
+    """Issue #52: a monotone int counter (row/run id) is never an auto outcome."""
+    rng = np.random.default_rng(5)
+    n = 80
+    df = pd.DataFrame(
+        {
+            "run": np.arange(n),  # monotone integer counter
+            "cumulative": np.cumsum(np.abs(rng.normal(1.0, 0.1, n))),  # monotone float
+            "hours": rng.normal(40.0, 5.0, n),
+            "state": np.repeat([f"s{i}" for i in range(10)], 8),
+        }
+    )
+    understanding = _understand(df)
+    outcome_columns = [g["column"] for g in understanding["outcomes"]]
+    assert "run" not in outcome_columns
+    assert "hours" in outcome_columns
+    assert "cumulative" in outcome_columns  # monotone FLOAT stays a candidate

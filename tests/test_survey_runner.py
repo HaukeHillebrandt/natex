@@ -187,3 +187,79 @@ def test_declared_time_binds_the_did_family_over_candidate_guesses(tmp_path):
     assert "time column must be numeric" not in did.reason
     assert did.status in ("credible", "null"), (did.status, did.reason, did.error)
     assert did.diagnostics.get("searched") is not None
+
+
+def test_kink_outcome_guess_skips_declared_design_columns_and_counters(tmp_path):
+    """Issue #52: declared unit/time and monotone counters are never auto outcomes."""
+    rng = np.random.default_rng(9)
+    n = 120
+    df = pd.DataFrame({
+        "run": np.arange(n),                                   # monotone int counter
+        "sector": np.repeat(np.arange(11, 31), 6).astype(float),  # declared unit codes
+        "x0": np.linspace(0.0, 1.0, n) + 0.001 * rng.standard_normal(n),
+        "y": rng.normal(10.0, 1.0, n),
+    })
+    csv = tmp_path / "roles.csv"
+    df.to_csv(csv, index=False)
+
+    res = survey(
+        csv, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+        budget=_BUDGET, unit="sector", cutoffs={"x0": 0.5},
+    )
+
+    per_cutoff = res.families["kink"].diagnostics.get("per_cutoff", {})
+    assert per_cutoff, res.families["kink"].reason
+    assert per_cutoff["x0"]["outcome"] == "y"
+
+
+def test_rdd_family_flags_mechanical_time_step_rediscovery(tmp_path):
+    """Issue #52: treatment = deterministic step in a time column is never credible."""
+    rng = np.random.default_rng(2)
+    years = np.repeat(np.arange(2000, 2060), 4).astype(float)
+    df = pd.DataFrame({
+        "year": years,
+        "post": (years >= 2030.0).astype(int),
+        "activity": rng.normal(5.0, 1.0, years.size),
+        "output": rng.normal(0.0, 1.0, years.size),
+    })
+    csv = tmp_path / "mechanical.csv"
+    df.to_csv(csv, index=False)
+
+    res = survey(
+        csv, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+        budget={"q": 39, "k": 25},
+    )
+
+    rdd = res.families["rdd"]
+    assert rdd.status != "credible"
+    mechanical = rdd.diagnostics.get("mechanical_step")
+    assert mechanical, (rdd.status, rdd.reason, rdd.diagnostics.get("caveats"))
+    assert mechanical["treatment"] == "post"
+    assert mechanical["column"] == "year"
+    assert any("deterministic step" in c for c in rdd.diagnostics["caveats"])
+
+
+def test_kink_family_says_when_a_group_contrast_is_not_expressible(tmp_path):
+    """Issue #52: a pooled kink null must say the group (DiK) contrast is out of scope."""
+    rng = np.random.default_rng(11)
+    t = np.tile(np.arange(40, dtype=float) + 0.5, 2)
+    group = np.r_[np.zeros(40), np.ones(40)]
+    df = pd.DataFrame({
+        "t": t,
+        "g": group.astype(int),
+        "y": 0.1 * t + 0.4 * np.maximum(t - 20.0, 0.0) * group
+        + 0.3 * rng.standard_normal(t.size),
+    })
+    csv = tmp_path / "pooled.csv"
+    df.to_csv(csv, index=False)
+
+    res = survey(
+        csv, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+        budget=_BUDGET, cutoffs={"t": 20.0},
+    )
+
+    kink = res.families["kink"]
+    caveats = " ".join(kink.diagnostics["caveats"])
+    assert "cannot express" in caveats and "--design dik" in caveats
+    if kink.status == "null":
+        assert "group" in kink.reason

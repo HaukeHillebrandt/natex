@@ -315,6 +315,17 @@ def _run_rdd(
     if best is None:
         return _scanless_result("rdd", rep, diagnostics)
     s = best.summary
+    mechanical = _mechanical_step_column(df, best.candidate.treatment, declared, intake)
+    if mechanical is not None:
+        diagnostics["mechanical_step"] = {
+            "treatment": best.candidate.treatment, "column": mechanical,
+        }
+        diagnostics["caveats"].append(
+            f"treatment {best.candidate.treatment!r} is a global deterministic step in the "
+            f"time column {mechanical!r}: the scan re-finds the design's own adoption "
+            "boundary (issue #52) — a deterministic step in time is not scan evidence of "
+            "a natural experiment"
+        )
     # Figure payload (task 7): the glue re-scans ds at the same effective
     # k/degree — presentational only, the randomization test is NOT re-run.
     eff_budget = _effective_budget(intake.search_plan, budget)
@@ -336,6 +347,11 @@ def _run_rdd(
         status, reason = "null", "density diagnostic unavailable — manipulation check inconclusive"
     elif density_p <= ALPHA:
         status, reason = "null", f"density test rejects (p={density_p:.3f}) — manipulation risk"
+    elif mechanical is not None:
+        status, reason = "null", (
+            f"mechanical rediscovery — treatment {best.candidate.treatment!r} is a "
+            f"deterministic step in the time column {mechanical!r}, not a natural experiment"
+        )
     else:
         status = "credible"
         placebo_txt = (
@@ -468,15 +484,71 @@ def _time_like_columns(intake: IntakeReport) -> set[str]:
 
 
 def _first_outcome_guess(
-    intake: IntakeReport, df: pd.DataFrame, exclude: set[str]
+    intake: IntakeReport,
+    df: pd.DataFrame,
+    exclude: set[str],
+    declared: DeclaredInputs | None = None,
 ) -> str | None:
-    """First Understanding outcome guess that exists, is numeric, and is not excluded."""
+    """First Understanding outcome guess that exists, is numeric, and is not excluded.
+
+    Issue #52 hygiene: design and bookkeeping columns are never auto-assigned
+    as outcomes — the declared time and unit, profiled panel unit/time
+    columns, proposed did-structure unit/time columns, time-like columns, and
+    monotone integer counters are all banned. An analyst can still study such
+    a column deliberately through the dedicated CLIs; the survey's automatic
+    role assignment must not.
+    """
     numeric = _numeric_columns(intake)
+    banned = set(exclude) | _time_like_columns(intake)
+    if declared is not None:
+        banned |= {c for c in (declared.time, declared.unit) if c is not None}
+    for unit_col, time_col in intake.profile.panel_candidates:
+        banned |= {unit_col, time_col}
+    for structure in intake.understanding.did_structures:
+        banned |= {structure.unit, structure.time}
+    banned |= {
+        c.name
+        for c in intake.profile.columns
+        if c.is_monotone and str(c.dtype).lower().startswith(("int", "uint"))
+    }
     return next(
         (g.column for g in intake.understanding.outcomes
-         if g.column not in exclude and g.column in df.columns and g.column in numeric),
+         if g.column not in banned and g.column in df.columns and g.column in numeric),
         None,
     )
+
+
+def _mechanical_step_column(
+    df: pd.DataFrame, treatment: str, declared: DeclaredInputs, intake: IntakeReport
+) -> str | None:
+    """First time column in which ``treatment`` is a global deterministic
+    monotone 0/1 step, or None (issue #52).
+
+    Such a treatment IS the design's own adoption boundary: any scan
+    "discovery" of it re-finds the construction, not a natural experiment.
+    Staggered (unit-specific) adoption is deliberately NOT flagged — the
+    per-time treated share is then strictly between 0 and 1.
+    """
+    if treatment not in df.columns or not pd.api.types.is_numeric_dtype(df[treatment]):
+        return None
+    candidates = _time_like_columns(intake)
+    if declared.time is not None:
+        candidates = candidates | {declared.time}
+    for col in sorted(candidates - {treatment}):
+        if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        sub = df[[col, treatment]].dropna()
+        if len(sub) < 2:
+            continue
+        share = sub.groupby(col)[treatment].mean().to_numpy(dtype=float)
+        if share.size < 2 or not np.isin(share, (0.0, 1.0)).all():
+            continue
+        if share.min() == share.max():
+            continue
+        steps = np.diff(share)
+        if bool((steps >= 0).all() or (steps <= 0).all()):
+            return col
+    return None
 
 
 def _two_sided_p(tau: float, se: float) -> float:
@@ -528,7 +600,7 @@ def _run_kink(
         if col not in numeric:
             skipped[col] = f"cutoff column {col!r} is not numeric"
             continue
-        outcome = _first_outcome_guess(intake, df, exclude={col})
+        outcome = _first_outcome_guess(intake, df, exclude={col}, declared=declared)
         if outcome is None:
             saw_no_outcome = True
             skipped[col] = _NO_OUTCOME_REASON
@@ -580,6 +652,20 @@ def _run_kink(
         if col in time_like:
             caveats.append(_CALENDAR_KINK_CAVEAT.format(col=col))
 
+    # Issue #52: the survey kink pools ALL rows — with a binary group column
+    # in the data, a treated-vs-control (group DiK) contrast is out of its
+    # vocabulary, and a pooled null must say so instead of implying it.
+    group_columns = [
+        c for c in intake.profile.treatment_candidates if c in df.columns
+    ]
+    if group_columns and per_cutoff:
+        caveats.append(
+            f"binary group column(s) {group_columns} present: the pooled survey kink "
+            "cannot express a group (difference-in-kinks) contrast, so a pooled null "
+            "does not rule out a group-specific kink — run "
+            "natex kink --design dik --group <col> for that contrast"
+        )
+
     diagnostics = {
         "caveats": caveats, "cutoffs": used_cutoffs, "per_cutoff": per_cutoff,
         "sensitivity": sensitivity,
@@ -617,6 +703,8 @@ def _run_kink(
             f"min Holm-adjusted kink p={min_holm:.2f} above {ALPHA} "
             f"across {m} declared cutoff(s)"
         )
+        if group_columns:
+            reason += " (pooled across groups; a group-DiK contrast is not expressible here)"
     first = per_cutoff[next(iter(per_cutoff))]
     key_numbers = {
         "tau": first["tau"], "se": first["se"],
@@ -671,7 +759,7 @@ def _run_iv(
             diagnostics={"caveats": [FAMILIES["iv"].caveat],
                          "dropped_instruments": dropped},
         )
-    outcome = _first_outcome_guess(intake, df, exclude={treatment, *pool})
+    outcome = _first_outcome_guess(intake, df, exclude={treatment, *pool}, declared=declared)
 
     res = discover_instruments(
         df, treatment, pool, outcome=outcome, honest=True, rng=fam_rng
@@ -762,7 +850,7 @@ def _run_sc(
     if unit is None or time is None:
         raise ValueError("no panel structure (unit, time) declared or profiled for sc")
     outcome = _first_outcome_guess(
-        intake, df, exclude={unit, time, *profile.treatment_candidates}
+        intake, df, exclude={unit, time, *profile.treatment_candidates}, declared=declared
     )
     diagnostics: dict = {
         "caveats": [FAMILIES["sc"].caveat], "unit": unit, "time": time,

@@ -266,6 +266,12 @@ class NullBackend:
                 {"column": c["name"], "reason": "numeric, non-binary"}
                 for c in cols
                 if c.get("is_numeric") and not c.get("is_binary") and not c.get("is_time_like")
+                # issue #52: a monotone integer counter (row/run id) is a
+                # bookkeeping column, never an auto-proposed outcome.
+                and not (
+                    c.get("is_monotone")
+                    and str(c.get("dtype", "")).lower().startswith(("int", "uint"))
+                )
             ],
             "forcing": [
                 {"column": f, "reason": "numeric with >= 20 distinct values"}
