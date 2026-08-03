@@ -132,7 +132,18 @@ floor (audit item 24).
   from the placebo panel, and (gess seeding) the **same constrained-dimension pattern** as the
   observed discovery. Exact zero movement (`tau = 0` and `se = 0`, e.g. composition shares of
   time-invariant covariates) maps to statistic 0.0 — provably no movement is the least extreme
-  outcome, not a failure; any other undefined case stays NaN.
+  outcome, not a failure; any other undefined case stays NaN. Fewer than 5 usable
+  placebos is a refusal (`p = NaN`, reason in `extras["refusal"]`), never a fake p.
+* **Opt-in fallback inference** (issue #55; `fallback="permutation"` /
+  `--fallback-inference permutation`): when the matched placebo pool refuses, the treated
+  profile set is label-permuted over ALL profiles on the FULL panel (`s_tau` records kept),
+  same studentized statistic and +1-rank rule. The result replaces `p` and is stamped in
+  `extras["fallback_inference"]` (method, why the pool was unusable, mode, q) and surfaced
+  in `results.json` beside `p_refusal`. Two honest limits, both recorded: it is valid only
+  under the SHARP null (no effect for any unit — weaker than placebo-in-space), and its
+  power degrades as the treated share of profiles grows, because overlapping permutations
+  carry the true effect. When even the permutation space lacks 5 usable draws, the fallback
+  refuses too, with its own reason. The default remains refusal.
 * **Per-dimension composition placebos**: for each dimension not defining `s_tau`, the modal
   one-hot share replaces the outcome, the tested dimension is removed from the profile
   definition (matched shapes again), Holm across dimensions.

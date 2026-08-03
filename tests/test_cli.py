@@ -514,3 +514,35 @@ def test_discover_degree_passthrough(tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads((tmp_path / "out" / "results.json").read_text())
     assert payload["params"]["degree"] == 2
+
+
+def test_discover_did_fallback_inference_flag(tmp_path):
+    """Issue #55: --fallback-inference validates, records in params, and is
+    inert when the placebo test runs normally."""
+    ds, _ = make_did_synthetic(n=400, d=2, V=3, zeta=8.0, rng=np.random.default_rng(1))
+    csv = tmp_path / "did.csv"
+    ds.df.to_csv(csv, index=False)
+    runner = CliRunner()
+    base = [
+        "discover", str(csv), "--design", "did", "--treatment", "theta",
+        "--outcome", "y", "--time", "t", "--q", "9", "--restarts", "2",
+        "--windows", "4", "--seed", "0",
+    ]
+
+    bad = runner.invoke(
+        app, [*base, "--fallback-inference", "bootstrap", "--out", str(tmp_path / "bad")]
+    )
+    assert bad.exit_code == 2
+    assert "bootstrap" in bad.output
+
+    ok = runner.invoke(
+        app,
+        [*base, "--fallback-inference", "permutation", "--out", str(tmp_path / "ok")],
+    )
+    assert ok.exit_code == 0, ok.output
+    payload = json.loads((tmp_path / "ok" / "results.json").read_text())
+    assert payload["params"]["fallback_inference"] == "permutation"
+    for effect in payload["did"]["effects"].values():
+        # Either the placebo test ran (no fallback keys) or the refusal and
+        # its fallback stamp travel together.
+        assert ("fallback_inference" in effect) == ("p_refusal" in effect)

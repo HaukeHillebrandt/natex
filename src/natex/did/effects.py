@@ -431,6 +431,7 @@ def tau_randomization_test(
     control: str = "dd",
     Q: int | str = "auto",
     rng: np.random.Generator | None = None,
+    fallback: str | None = None,
 ) -> TauRandomizationReport:
     """Two-sided studentized placebo test for tau_hat (audit item 5 in full).
 
@@ -465,7 +466,23 @@ def tau_randomization_test(
     are treated as exchangeable with ``s_tau`` under H0 — an assumption, not
     a theorem. The thesis's "independence of the two tests" claim is replaced
     by this precise conditional statement.
+
+    ``fallback="permutation"`` (issue #55, opt-in — the default stays a
+    refusal) engages ONLY when the matched placebo pool refuses with fewer
+    than 5 usable placebos: the treated profile set is then label-permuted
+    over ALL profiles on the FULL panel (``s_tau`` records kept), the same
+    studentized statistic and +1-rank rule apply, and the result is stamped
+    in ``extras["fallback_inference"]`` with the method, why the primary pool
+    was unusable, and the sharp-null caveat — this leg is valid only under
+    H0 of no effect for ANY unit, a strictly weaker guarantee than the
+    placebo-in-space test. When even the permutation space lacks 5 usable
+    draws, the fallback refuses too and records its own reason; ``p`` stays
+    NaN, never fabricated.
     """
+    if fallback not in (None, "permutation"):
+        raise ValueError(
+            f"fallback must be None or 'permutation', got {fallback!r}"
+        )
     if rng is not None and not isinstance(rng, np.random.Generator):
         raise TypeError(f"rng must be a numpy Generator, got {type(rng).__name__}")
     mask = np.asarray(discovery.mask, dtype=bool)
@@ -501,10 +518,69 @@ def tau_randomization_test(
         draws = [tuple(sorted(rng.choice(pool, size=k, replace=False).tolist()))
                  for _ in range(n_draws)] if pool.size >= k else []
 
+    null_stats, n_failed = _studentized_draws(
+        placebo_panel, pid_p, draws, panel, discovery, control
+    )
+    q = int(null_stats.size)
+    # Issue #37: a refusal records WHY in ``extras["refusal"]`` so consumers
+    # (the CLI, reports) can explain the NaN instead of surfacing it bare.
+    refusal = None
+    if q < _MIN_USABLE:
+        refusal = f"only {q} usable placebos; >= {_MIN_USABLE} required"
+    elif np.isnan(observed):
+        refusal = "observed studentized statistic is undefined (tau or se non-finite)"
+    if refusal is not None:
+        p_value = float("nan")
+    else:
+        p_value = float((1 + int(np.sum(np.abs(null_stats) >= abs(observed)))) / (1 + q))
+    extras = {
+        "n_failed": n_failed,
+        "n_pool_profiles": int(pool.size),
+        "k_profiles": k,
+        "n_draws": len(draws),
+        "tau_hat": eff_obs.tau,
+        "se_hat": eff_obs.se,
+        **({"refusal": refusal} if refusal is not None else {}),
+    }
+    if fallback == "permutation" and refusal is not None:
+        if np.isnan(observed):
+            extras["fallback_inference"] = {
+                "method": "treated_set_label_permutation",
+                "why": refusal,
+                "refusal": (
+                    "observed studentized statistic is undefined "
+                    "(tau or se non-finite); no permutation can rescue it"
+                ),
+            }
+        else:
+            p_value, null_stats, q, mode = _permutation_fallback(
+                panel, discovery, control, observed, tau_profiles, rng, refusal,
+                p_value, null_stats, q, mode, extras,
+            )
+    return TauRandomizationReport(
+        p_value=p_value,
+        observed=observed,
+        null_stats=null_stats,
+        q=q,
+        mode=mode,
+        extras=extras,
+    )
+
+
+def _studentized_draws(
+    panel_eval: CategoricalPanel,
+    pid_eval: np.ndarray,
+    draws: list[tuple[int, ...]],
+    panel: CategoricalPanel,
+    discovery: DiDDiscovery,
+    control: str,
+) -> tuple[np.ndarray, int]:
+    """Studentized ``did_effect`` statistics for profile-set draws on
+    ``panel_eval``; NaN draws are dropped and counted."""
     stats: list[float] = []
     n_failed = 0
     for profiles in draws:
-        p_mask = np.isin(pid_p, np.asarray(profiles, dtype=np.int64))
+        p_mask = np.isin(pid_eval, np.asarray(profiles, dtype=np.int64))
         if not p_mask.any():
             n_failed += 1
             continue
@@ -520,42 +596,100 @@ def tau_randomization_test(
             method=discovery.method,
         )
         stat = _studentized(
-            did_effect(placebo_panel, p_disc, control=control, dose_normalize=False)
+            did_effect(panel_eval, p_disc, control=control, dose_normalize=False)
         )
         if np.isnan(stat):
             n_failed += 1
         else:
             stats.append(stat)
+    return np.asarray(stats, dtype=float), n_failed
 
-    null_stats = np.asarray(stats, dtype=float)
-    q = int(null_stats.size)
-    # Issue #37: a refusal records WHY in ``extras["refusal"]`` so consumers
-    # (the CLI, reports) can explain the NaN instead of surfacing it bare.
-    refusal = None
-    if q < _MIN_USABLE:
-        refusal = f"only {q} usable placebos; >= {_MIN_USABLE} required"
-    elif np.isnan(observed):
-        refusal = "observed studentized statistic is undefined (tau or se non-finite)"
-    if refusal is not None:
-        p_value = float("nan")
+
+_FALLBACK_NOTE = (
+    "sharp-null treated-set label permutation over ALL profiles on the full "
+    "panel (s_tau records kept): valid only under H0 of no effect for any "
+    "unit — a weaker guarantee than the matched placebo-in-space test — and "
+    "power degrades as the treated share of profiles grows, because "
+    "overlapping permutations carry the true effect"
+)
+
+
+def _permutation_fallback(
+    panel: CategoricalPanel,
+    discovery: DiDDiscovery,
+    control: str,
+    observed: float,
+    tau_profiles: np.ndarray,
+    rng: np.random.Generator | None,
+    primary_refusal: str,
+    p_value: float,
+    null_stats: np.ndarray,
+    q: int,
+    mode: str,
+    extras: dict,
+) -> tuple[float, np.ndarray, int, str]:
+    """Issue #55 opt-in leg: label-permute the treated profile set over all
+    profiles on the full panel. Mutates ``extras`` with the
+    ``fallback_inference`` stamp and returns the (possibly replaced)
+    ``(p_value, null_stats, q, mode)``."""
+    pid = panel.profile_id
+    all_profiles = np.unique(pid)
+    k = int(tau_profiles.size)
+    treated_key = tuple(sorted(int(p) for p in tau_profiles))
+    stamp: dict = {
+        "method": "treated_set_label_permutation",
+        "why": primary_refusal,
+        "note": _FALLBACK_NOTE,
+    }
+    extras["fallback_inference"] = stamp
+
+    n_enum = comb(int(all_profiles.size), k) if all_profiles.size >= k else 0
+    if n_enum <= 1:
+        stamp["refusal"] = (
+            "the permutation space has no alternative treated set "
+            f"({all_profiles.size} profiles, treated set of {k})"
+        )
+        return p_value, null_stats, q, mode
+    if n_enum - 1 <= _ENUM_MAX:
+        fb_mode = "enumerate"
+        fb_draws = [
+            tuple(c)
+            for c in combinations(all_profiles.tolist(), k)
+            if tuple(sorted(int(p) for p in c)) != treated_key
+        ]
+    elif rng is None:
+        stamp["refusal"] = (
+            "label permutation needs rng in sampling mode "
+            f"({n_enum - 1} alternative treated sets)"
+        )
+        return p_value, null_stats, q, mode
     else:
-        p_value = float((1 + int(np.sum(np.abs(null_stats) >= abs(observed)))) / (1 + q))
-    return TauRandomizationReport(
-        p_value=p_value,
-        observed=observed,
-        null_stats=null_stats,
-        q=q,
-        mode=mode,
-        extras={
-            "n_failed": n_failed,
-            "n_pool_profiles": int(pool.size),
-            "k_profiles": k,
-            "n_draws": len(draws),
-            "tau_hat": eff_obs.tau,
-            "se_hat": eff_obs.se,
-            **({"refusal": refusal} if refusal is not None else {}),
-        },
+        fb_mode = "sample"
+        fb_draws = [
+            draw
+            for _ in range(_SAMPLE_Q)
+            if (
+                draw := tuple(
+                    sorted(rng.choice(all_profiles, size=k, replace=False).tolist())
+                )
+            )
+            != treated_key
+        ]
+    fb_stats, fb_failed = _studentized_draws(
+        panel, pid, fb_draws, panel, discovery, control
     )
+    fb_q = int(fb_stats.size)
+    stamp.update({"mode": fb_mode, "n_draws": len(fb_draws), "n_failed": fb_failed,
+                  "q": fb_q})
+    if fb_q < _MIN_USABLE:
+        stamp["refusal"] = (
+            f"fallback permutation: only {fb_q} usable label permutations; "
+            f">= {_MIN_USABLE} required"
+        )
+        return p_value, null_stats, q, mode
+    fb_p = float((1 + int(np.sum(np.abs(fb_stats) >= abs(observed)))) / (1 + fb_q))
+    stamp["p_value"] = fb_p
+    return fb_p, fb_stats, fb_q, "fallback_permutation"
 
 
 # ---------------------------------------------------------------------------

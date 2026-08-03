@@ -334,6 +334,7 @@ def _discover_plan(
     n_coarse: int,
     seed: int,
     out: Path,
+    fallback_inference: str | None = None,
 ) -> None:
     """Plan-driven branch of ``discover`` (spec 6b through the CLI).
 
@@ -392,6 +393,8 @@ def _discover_plan(
             budget[key] = value
     if max_configs is not None:
         budget["max_configs"] = max_configs
+    if fallback_inference is not None:
+        budget["fallback_inference"] = fallback_inference
     rep = run_discover(
         ds, design=plan_design, guidance=guidance, search_plan=report.search_plan,
         rng=np.random.default_rng(seed), budget=budget, out=out,
@@ -479,6 +482,12 @@ def discover(
         help="scan-attempt budget across configurations (--plan mode); the "
              "remainder is listed as skipped_budget, never dropped",
     ),
+    fallback_inference: str = typer.Option(
+        "none", "--fallback-inference",
+        help="none|permutation — opt-in effect-leg inference when the placebo "
+             "pool refuses (issue #55): sharp-null treated-set label "
+             "permutation, stamped in results.json beside p_refusal",
+    ),
     out: Path = typer.Option(Path("out"), help="output directory"),
 ):
     """Scan for natural experiments: LoRD3 RDD scan or SuDDDS DiD scan, with
@@ -488,6 +497,12 @@ def discover(
     (plan candidates scan first, the exhaustive remainder runs within budget).
     Writes OUT/results.json; plan mode also writes OUT/discover_report.json.
     """
+    if fallback_inference not in ("none", "permutation"):
+        typer.echo(
+            f"--fallback-inference must be 'none' or 'permutation', got {fallback_inference!r}"
+        )
+        raise typer.Exit(code=2)
+    fallback = None if fallback_inference == "none" else fallback_inference
     if plan is not None:
         if covariates is not None:
             # Issue #35: never silently ignored — with --plan the scan space
@@ -502,6 +517,7 @@ def discover(
             ctx, csv=csv, plan=plan, prep_plan=prep_plan, backend=backend,
             model=model, workdir=workdir, max_configs=max_configs, design=design,
             k=k, q=q, coarse=coarse, n_coarse=n_coarse, seed=seed, out=out,
+            fallback_inference=fallback,
         )
         return
     if prep_plan is not None:
@@ -525,6 +541,7 @@ def discover(
             covariates=covariates, q=q,
             seed=seed, degree=degree, time=time, unit=unit, bins=bins,
             windows=windows, restarts=restarts, method=method, model=model, out=out,
+            fallback_inference=fallback,
         )
         return
     ds = Dataset.from_csv(
@@ -1269,6 +1286,7 @@ def _discover_did(
     method: str,
     model: str,
     out: Path,
+    fallback_inference: str | None = None,
 ) -> None:
     """SuDDDS branch of ``discover``: scan + validation battery + effects.
 
@@ -1321,7 +1339,9 @@ def _discover_did(
     if ds.y is not None:
         for control in ("dd", "synthetic", "gess"):
             eff = did_effect(panel, top, control=control)
-            tau_rand = tau_randomization_test(panel, top, control=control, rng=rng)
+            tau_rand = tau_randomization_test(
+                panel, top, control=control, rng=rng, fallback=fallback_inference
+            )
             effects[control] = {
                 "tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
                 "pre_mse": eff.pre_mse, "dose": eff.dose,
@@ -1329,6 +1349,9 @@ def _discover_did(
                 # e.g. a few-unit panel), record WHY in the payload.
                 **({"p_refusal": tau_rand.extras["refusal"]}
                    if "refusal" in tau_rand.extras else {}),
+                # Issue #55: which fallback ran (or why it also refused).
+                **({"fallback_inference": tau_rand.extras["fallback_inference"]}
+                   if "fallback_inference" in tau_rand.extras else {}),
             }
     payload = _clean(
         {
@@ -1340,6 +1363,7 @@ def _discover_did(
                        "q": q, "seed": seed, "degree": degree,
                        "time": time, "unit": unit, "bins": bins, "windows": windows,
                        "restarts": restarts, "method": method, "model": model,
+                       "fallback_inference": fallback_inference,
                        "csv": str(csv)},
             "did": {
                 "scan": {"model": res.model, "method": res.method,

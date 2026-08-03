@@ -644,3 +644,131 @@ class TestPeriodGaps:
         assert panel_no_y.y is None
         with pytest.raises(ValueError, match="outcome"):
             period_gaps(panel_no_y, top, "dd")
+
+
+# ---------------------------------------------------------------------------
+# issue #55: opt-in fallback inference when the placebo pool is unusable
+# ---------------------------------------------------------------------------
+
+
+def _multi_profile_panel(n_profiles=8, n_treated=4, effect=6.0, seed=0, n_t=10,
+                         t0=5.0, n_rep=2, noise=0.5):
+    """``n_treated`` of ``n_profiles`` profiles are treated post-t0 (the
+    aei-btos shape: the never-treated pool is too small for matched placebo
+    draws, while the label-permutation space is large)."""
+    rng = np.random.default_rng(seed)
+    base = rng.normal(0.0, 1.0, size=n_profiles)
+    rows = [(p, tt) for p in range(n_profiles) for tt in range(n_t) for _ in range(n_rep)]
+    p_arr = np.array([p for p, _ in rows], dtype=np.int64)
+    t_arr = np.array([float(tt) for _, tt in rows])
+    treated = (p_arr < n_treated) & (t_arr >= t0)
+    y = base[p_arr] + noise * rng.normal(size=len(rows)) + effect * treated
+    panel = CategoricalPanel(
+        codes=p_arr[:, None].copy(),
+        dim_names=["g"],
+        dim_values=[np.array([f"g{p}" for p in range(n_profiles)])],
+        t=t_arr,
+        theta=treated.astype(float),
+        y=y,
+        unit=p_arr.copy(),
+        unit_values=np.array([f"u{p}" for p in range(n_profiles)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": [f"g{p}" for p in range(n_treated)]},
+        mask=p_arr < n_treated,
+        t0=t0,
+        window=float(n_t),
+        llr=1.0,
+        model="normal",
+        method="greedy",
+    )
+    return panel, disc
+
+
+def test_fallback_permutation_rescues_a_refused_placebo_pool():
+    """4 of 8 profiles treated: pool C(4,4)=1 refuses; permutation C(8,4)-1=69 runs.
+
+    The pinned p=0.1 documents the overlap dilution of the sharp-null leg:
+    with half the profiles treated, permuted sets sharing 3 of 4 treated
+    profiles carry most of the true effect, so an unmissable effect=6 still
+    cannot reach the 1/70 floor. Deterministic (enumerate mode, seeded panel).
+    """
+    panel, disc = _multi_profile_panel()
+
+    refused = tau_randomization_test(panel, disc, control="dd")
+    assert np.isnan(refused.p_value)
+    assert "usable placebos" in refused.extras["refusal"]
+    assert "fallback_inference" not in refused.extras  # opt-in only
+
+    rep = tau_randomization_test(panel, disc, control="dd", fallback="permutation")
+    assert np.isfinite(rep.p_value)
+    assert rep.mode == "fallback_permutation"
+    assert rep.p_value == pytest.approx(0.1)
+    fb = rep.extras["fallback_inference"]
+    assert fb["method"] == "treated_set_label_permutation"
+    assert fb["why"] == refused.extras["refusal"]
+    assert fb["mode"] == "enumerate"
+    assert fb["q"] == 69
+    assert "sharp" in fb["note"] and "power degrades" in fb["note"]
+    # the primary refusal stays recorded beside the fallback
+    assert rep.extras["refusal"] == refused.extras["refusal"]
+
+
+def test_fallback_stamps_why_it_cannot_rescue_an_undefined_observed_stat():
+    """All never-treated profiles post-only: the observed dd effect itself is
+    undefined — the opt-in must say so instead of silently skipping."""
+    rng = np.random.default_rng(0)
+    n_profiles, n_treated, n_t, t0, n_rep = 12, 2, 10, 5.0, 2
+    post_only = set(range(n_treated, n_profiles))
+    base = rng.normal(0.0, 1.0, size=n_profiles)
+    rows = [(p, tt) for p in range(n_profiles) for tt in range(n_t)
+            if not (p in post_only and tt < t0) for _ in range(n_rep)]
+    p_arr = np.array([p for p, _ in rows], dtype=np.int64)
+    t_arr = np.array([float(tt) for _, tt in rows])
+    treated = (p_arr < n_treated) & (t_arr >= t0)
+    y = base[p_arr] + 0.5 * rng.normal(size=len(rows)) + 6.0 * treated
+    panel = CategoricalPanel(
+        codes=p_arr[:, None].copy(), dim_names=["g"],
+        dim_values=[np.array([f"g{p}" for p in range(n_profiles)])],
+        t=t_arr, theta=treated.astype(float), y=y,
+        unit=p_arr.copy(),
+        unit_values=np.array([f"u{p}" for p in range(n_profiles)]),
+    )
+    disc = DiDDiscovery(
+        subset_values={"g": [f"g{p}" for p in range(n_treated)]},
+        mask=p_arr < n_treated, t0=t0, window=float(n_t),
+        llr=1.0, model="normal", method="greedy",
+    )
+
+    rep = tau_randomization_test(panel, disc, control="dd", fallback="permutation")
+
+    assert np.isnan(rep.p_value)
+    fb = rep.extras["fallback_inference"]
+    assert "no permutation can rescue" in fb["refusal"]
+
+
+def test_fallback_refuses_when_the_permutation_space_is_also_too_small():
+    """Single binary dimension (benchmark-contamination shape): honest double refusal."""
+    panel, disc = profile_panel(2, effect=6.0, seed=1)
+
+    rep = tau_randomization_test(panel, disc, control="dd", fallback="permutation")
+
+    assert np.isnan(rep.p_value)
+    assert "refusal" in rep.extras
+    fb = rep.extras["fallback_inference"]
+    assert fb["method"] == "treated_set_label_permutation"
+    assert "refusal" in fb
+
+
+def test_fallback_not_used_when_the_primary_test_runs():
+    panel, disc = profile_panel(12, effect=6.0, seed=2)
+    rep = tau_randomization_test(panel, disc, control="dd", fallback="permutation")
+    assert np.isfinite(rep.p_value)
+    assert rep.mode in ("enumerate", "sample")
+    assert "fallback_inference" not in rep.extras
+
+
+def test_fallback_argument_is_validated():
+    panel, disc = profile_panel(6, effect=6.0, seed=3)
+    with pytest.raises(ValueError, match="fallback"):
+        tau_randomization_test(panel, disc, control="dd", fallback="bootstrap")

@@ -50,7 +50,10 @@ from natex.validate.randomization import randomization_test
 # records an internal top_m in ctf.params/coarse_block.
 _BUDGET_DEFAULTS = {"max_configs": None, "k": 50, "q": 99, "degree": 1, "coarse": False,
                     "n_coarse": 2000, "bins": 4, "restarts": 8, "method": "single_delta",
-                    "model": "auto", "windows": None, "report_top_m": 20}
+                    "model": "auto", "windows": None, "report_top_m": 20,
+                    # issue #55: None (default refusal) | "permutation" — opt-in
+                    # effect-leg inference when the placebo pool is unusable.
+                    "fallback_inference": None}
 
 _DESIGNS = ("auto", "rdd", "did")
 
@@ -442,9 +445,18 @@ def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
         controls: dict[str, object] = {"dd": "dd", "synthetic": "synthetic", "gess": gess}
         for name, control in controls.items():
             eff = did_effect(panel, top, control=control)
-            tau_rand = tau_randomization_test(panel, top, control=name, rng=rng)
+            tau_rand = tau_randomization_test(
+                panel, top, control=name, rng=rng,
+                fallback=budget["fallback_inference"],
+            )
             effects[name] = {"tau": eff.tau, "se": eff.se, "p": tau_rand.p_value,
                              "pre_mse": eff.pre_mse, "dose": eff.dose}
+            # Issue #37/#55: surface WHY p is NaN and which fallback (if any)
+            # ran, beside the effect numbers, in results.json.
+            if "refusal" in tau_rand.extras:
+                effects[name]["p_refusal"] = tau_rand.extras["refusal"]
+            if "fallback_inference" in tau_rand.extras:
+                effects[name]["fallback_inference"] = tau_rand.extras["fallback_inference"]
         if review is not None:
             effects["gess"]["vetoed_by_guidance"] = bool(review.get("veto", False))
     summary["effects"] = effects
