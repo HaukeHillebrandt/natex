@@ -142,3 +142,48 @@ def test_status_vocabulary(tmp_path):
     # survey.json statuses match too
     saved = json.loads((tmp_path / "out" / "survey.json").read_text())
     assert {f["status"] for f in saved["families"].values()} <= _STATUSES
+
+
+def _mixed_time_panel(root):
+    """Issue #49 shape: numeric decimal-year ``t`` plus a string ``date`` column.
+
+    ``t`` is neither name- nor value-time-like, so the profiled panel
+    candidate (and the null backend's did candidate) uses the string ``date``
+    column — the declared ``--time t`` must still bind the did family.
+    """
+    rng = np.random.default_rng(3)
+    units = [f"u{i}" for i in range(6)]
+    periods = np.arange(10)
+    rows = []
+    for u_index, u in enumerate(units):
+        adopt = 4 + (u_index % 3)
+        for p in periods:
+            treated = int(p >= adopt)
+            rows.append({
+                "u": u,
+                "date": f"2023-{p + 1:02d}-01",
+                "t": 2023.0 + p / 12.0 + 0.001,
+                "treat": treated,
+                "y": 0.3 * p + 0.8 * treated + 0.05 * rng.standard_normal(),
+            })
+    df = pd.DataFrame(rows)
+    path = root / "panel.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+def test_declared_time_binds_the_did_family_over_candidate_guesses(tmp_path):
+    """Issue #49: --time must bind even when a ranked did candidate disagrees."""
+    csv = _mixed_time_panel(tmp_path)
+    out = tmp_path / "out"
+
+    res = survey(
+        csv, rng=np.random.default_rng(0), out_dir=out,
+        budget=_BUDGET, time="t", unit="u",
+    )
+
+    did = res.families["did"]
+    assert "time column must be numeric" not in (did.error or "")
+    assert "time column must be numeric" not in did.reason
+    assert did.status in ("credible", "null"), (did.status, did.reason, did.error)
+    assert did.diagnostics.get("searched") is not None

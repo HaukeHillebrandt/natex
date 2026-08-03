@@ -217,10 +217,27 @@ def _rdd_dataset(df: pd.DataFrame, intake: IntakeReport) -> Dataset:
 
 
 def _did_dataset(df: pd.DataFrame, intake: IntakeReport, declared: DeclaredInputs) -> Dataset:
-    """First ranked did candidate via ``intake.prepare``; else a constructed spec
-    with unit/time from the declared inputs or the first profiled panel
-    candidate (the unit column may be non-numeric: it stays out of forcing)."""
-    idx = _first_candidate_index(intake, "did")
+    """First ranked did candidate CONSISTENT with the declared inputs via
+    ``intake.prepare``; else a constructed spec with unit/time from the
+    declared inputs or the first profiled panel candidate (the unit column may
+    be non-numeric: it stays out of forcing).
+
+    Issue #49: declared inputs bind every family runner — a ranked did
+    candidate whose time (or unit) contradicts an explicit ``--time``/
+    ``--unit`` declaration must not shadow it (the null backend's own
+    candidate can pick a string date column and crash the family with
+    'time column must be numeric' despite a declared numeric time).
+    """
+    idx = next(
+        (
+            i
+            for i, c in enumerate(intake.search_plan.ranked())
+            if c.design == "did"
+            and (declared.time is None or c.time == declared.time)
+            and (declared.unit is None or c.unit == declared.unit)
+        ),
+        None,
+    )
     if idx is not None:
         return intake.prepare(df, candidate=idx)
     df2, _ = intake.prep_plan.apply(df)

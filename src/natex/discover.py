@@ -242,6 +242,8 @@ def _candidate_error(candidate: DesignCandidate, df: pd.DataFrame) -> str | None
     bad = [c for c in candidate.forcing if not pd.api.types.is_numeric_dtype(df[c])]
     if bad:
         return f"forcing columns must be numeric: {bad}"
+    if candidate.time is not None and not pd.api.types.is_numeric_dtype(df[candidate.time]):
+        return f"time column must be numeric: {candidate.time}"
     return None
 
 
