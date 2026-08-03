@@ -644,6 +644,14 @@ def kink(
     kernel: str = typer.Option("triangular", help="triangular|uniform|epanechnikov"),
     donut: float = typer.Option(0.0, help="exclude |running-cutoff| below this radius"),
     covariates: str = typer.Option(None, help="comma-separated numeric adjustment columns"),
+    weights: str = typer.Option(
+        None,
+        "--weights",
+        help=(
+            "per-observation nonnegative precision-weight column, multiplied into "
+            "the kernel weights (use 1/sigma^2 for outcomes with published SEs)"
+        ),
+    ),
     cluster: str = typer.Option(None, help="cluster column for CR1 covariance"),
     hac_lags: int = typer.Option(
         None,
@@ -698,7 +706,7 @@ def kink(
         raise typer.Exit(code=2)
 
     columns = [outcome, running, *covariate_names]
-    columns += [c for c in (treatment, time, cluster) if c is not None]
+    columns += [c for c in (treatment, time, cluster, weights) if c is not None]
     missing = sorted({c for c in columns if c not in df.columns})
     if missing:
         typer.echo(f"columns not in dataframe: {missing}")
@@ -720,6 +728,7 @@ def kink(
             else None
         )
         cluster_values = None if cluster is None else df[cluster].to_numpy()
+        weight_values = None if weights is None else numeric_column(weights)
         common = {
             "treatment": treatment_values,
             "cutoff": cutoff,
@@ -729,6 +738,7 @@ def kink(
             "donut": donut,
             "covariates": covariate_values,
             "clusters": cluster_values,
+            "weights": weight_values,
             "hac_lags": hac_lags,
             "alpha": alpha,
         }
@@ -792,6 +802,7 @@ def kink(
                 "kernel": kernel,
                 "donut": donut,
                 "covariates": covariate_names,
+                "weights": weights,
                 "cluster": cluster,
                 "hac_lags": hac_lags,
                 "alpha": alpha,

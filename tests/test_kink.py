@@ -964,3 +964,167 @@ def test_hac_lags_beyond_distinct_running_values_is_nan_with_reason():
 
     assert np.isnan(est.tau)
     assert "distinct running values" in est.extras["reason"]
+
+
+def test_unit_weights_reproduce_the_unweighted_estimate_exactly():
+    x = _grid(15)
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + 0.05 * np.sin(7.0 * x)
+
+    plain = regression_kink(y, x, policy_kink=0.9, bandwidth=1.0)
+    weighted = regression_kink(
+        y, x, policy_kink=0.9, bandwidth=1.0, weights=np.ones_like(x)
+    )
+
+    assert weighted.tau == plain.tau
+    assert weighted.se == plain.se
+    assert weighted.reduced_form == plain.reduced_form
+    assert weighted.reduced_form_se == plain.reduced_form_se
+    assert weighted.n_by_cell == plain.n_by_cell
+    assert (
+        weighted.extras["n_zero_weight_excluded"]
+        == plain.extras["n_zero_weight_excluded"]
+    )
+
+
+def test_weights_multiply_into_kernel_weights_against_the_wls_oracle():
+    x = _grid(14)
+    rng = np.random.default_rng(21)
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + 0.1 * rng.standard_normal(x.size)
+    user = 0.5 + rng.random(x.size)
+    bandwidth = 0.8
+    kernel_w = np.where(np.abs(x) <= bandwidth, 1.0 - np.abs(x) / bandwidth, 0.0)
+    combined = kernel_w * user
+    used = combined > 0.0
+    kink, se = _sandwich_oracle(x[used], y[used], combined[used])
+
+    est = regression_kink(
+        y, x, policy_kink=0.9, bandwidth=bandwidth, kernel="triangular", weights=user
+    )
+
+    assert est.n_used == int(used.sum())
+    assert est.reduced_form == pytest.approx(kink, rel=1e-10)
+    assert est.reduced_form_se == pytest.approx(se, rel=1e-10)
+
+
+def test_weights_are_scale_invariant():
+    x = _grid(12)
+    rng = np.random.default_rng(4)
+    y = 0.2 * x + 1.5 * np.maximum(x, 0.0) + 0.1 * rng.standard_normal(x.size)
+    user = 0.5 + rng.random(x.size)
+
+    one = regression_kink(y, x, policy_kink=1.5, bandwidth=1.0, weights=user)
+    scaled = regression_kink(y, x, policy_kink=1.5, bandwidth=1.0, weights=1e6 * user)
+
+    assert scaled.tau == pytest.approx(one.tau, rel=1e-12)
+    assert scaled.se == pytest.approx(one.se, rel=1e-10)
+
+
+def test_zero_weights_equal_dropping_those_rows_exactly():
+    x = _grid(12)
+    rng = np.random.default_rng(8)
+    y = 0.3 * x + 0.7 * np.maximum(x, 0.0) + 0.05 * rng.standard_normal(x.size)
+    user = np.ones_like(x)
+    drop = np.zeros(x.size, dtype=bool)
+    drop[::5] = True
+    user[drop] = 0.0
+
+    zeroed = regression_kink(
+        y, x, policy_kink=0.7, bandwidth=1.0, kernel="uniform", weights=user
+    )
+    subset = regression_kink(
+        y[~drop], x[~drop], policy_kink=0.7, bandwidth=1.0, kernel="uniform"
+    )
+
+    assert zeroed.tau == pytest.approx(subset.tau, rel=1e-12)
+    assert zeroed.se == pytest.approx(subset.se, rel=1e-12)
+    assert zeroed.n_used == subset.n_used
+    assert zeroed.extras["n_zero_weight_excluded"] == int(drop.sum())
+
+
+def test_integer_weights_match_row_duplication_for_the_point_estimate():
+    x = _grid(10)
+    rng = np.random.default_rng(13)
+    y = 0.1 * x + 1.2 * np.maximum(x, 0.0) + 0.2 * rng.standard_normal(x.size)
+    user = np.ones_like(x)
+    user[3] = 3.0
+
+    weighted = regression_kink(
+        y, x, policy_kink=1.2, bandwidth=1.0, kernel="uniform", weights=user
+    )
+    duplicated = regression_kink(
+        np.r_[y, y[3], y[3]],
+        np.r_[x, x[3], x[3]],
+        policy_kink=1.2,
+        bandwidth=1.0,
+        kernel="uniform",
+    )
+
+    assert weighted.tau == pytest.approx(duplicated.tau, rel=1e-10)
+
+
+def test_fuzzy_weights_flow_through_first_stage_and_combined_fit():
+    x = _grid(16)
+    rng = np.random.default_rng(17)
+    policy = 0.5 * x + 1.4 * np.maximum(x, 0.0) + 0.05 * rng.standard_normal(x.size)
+    y = 2.0 * policy + 0.3 * x + 0.1 * rng.standard_normal(x.size)
+    user = 0.5 + rng.random(x.size)
+    bandwidth = 1.0
+    kernel_w = np.where(np.abs(x) <= bandwidth, 1.0 - np.abs(x), 0.0)
+    combined = kernel_w * user
+    used = combined > 0.0
+    y_kink, _ = _sandwich_oracle(x[used], y[used], combined[used])
+    policy_kink, _ = _sandwich_oracle(x[used], policy[used], combined[used])
+
+    est = regression_kink(y, x, treatment=policy, bandwidth=bandwidth, weights=user)
+
+    assert est.reduced_form == pytest.approx(y_kink, rel=1e-10)
+    assert est.first_stage == pytest.approx(policy_kink, rel=1e-10)
+    assert est.tau == pytest.approx(y_kink / policy_kink, rel=1e-10)
+    assert np.isfinite(est.se)
+    assert est.fieller_kind is not None
+
+
+def test_nonfinite_weights_drop_rows_and_negative_weights_are_rejected():
+    x = _grid(12)
+    y = 0.2 * x + np.maximum(x, 0.0)
+    user = np.ones_like(x)
+    user[2] = np.nan
+    user[5] = np.inf
+
+    est = regression_kink(
+        y, x, policy_kink=1.0, bandwidth=1.0, kernel="uniform", weights=user
+    )
+    assert est.extras["n_dropped_nonfinite"] == 2
+    assert est.n_used == x.size - 2
+
+    with pytest.raises(ValueError, match="nonnegative"):
+        regression_kink(
+            y, x, policy_kink=1.0, bandwidth=1.0, weights=np.full(x.size, -1.0)
+        )
+    with pytest.raises(ValueError, match="weights"):
+        regression_kink(y, x, policy_kink=1.0, bandwidth=1.0, weights=np.ones(3))
+
+
+def test_weights_compose_with_hac_and_with_dik():
+    t = np.tile(np.arange(-12, 12, dtype=float) + 0.5, 2)
+    post = np.r_[np.zeros(24), np.ones(24)]
+    rng = np.random.default_rng(23)
+    y = 0.1 * t + 0.8 * np.maximum(t, 0.0) * post + 0.1 * rng.standard_normal(t.size)
+    user = 0.5 + rng.random(t.size)
+
+    dik = difference_in_kinks(
+        y, t, post, policy_kink_change=1.0, bandwidth=12.0, kernel="uniform",
+        weights=user,
+    )
+    assert np.isfinite(dik.tau)
+
+    hac = regression_kink(
+        y[:24], t[:24], policy_kink=1.0, bandwidth=12.0, kernel="uniform",
+        weights=user[:24], hac_lags=2,
+    )
+    plain = regression_kink(
+        y[:24], t[:24], policy_kink=1.0, bandwidth=12.0, kernel="uniform",
+        weights=user[:24],
+    )
+    assert hac.reduced_form == pytest.approx(plain.reduced_form, rel=1e-12)
+    assert np.isfinite(hac.se) and hac.se != pytest.approx(plain.se, rel=1e-6)

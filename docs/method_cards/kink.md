@@ -56,6 +56,13 @@ reported slopes are transformed back to the original running-variable units.
 - Optional `donut` excludes observations closest to the cutoff.
 - Numeric covariates enter additively after scaling; constant covariates are dropped and
   counted. Side/period polynomial coefficients remain fully saturated.
+- Optional per-observation weights (`weights=` / `--weights`) are multiplied into the
+  kernel weights for every fit (outcome, first stage, combined influence). Use
+  `1/sigma_i^2` when the outcome carries published standard errors or CIs
+  (precision-weighted kink). Weights are fixed known constants: zero-weight rows are
+  excluded and counted like zero kernel weights, non-finite weights drop the row, negative
+  weights are rejected, and the HC1 `n − k` degrees-of-freedom correction keeps counting
+  rows, not effective sample size — rescaling all weights by a constant changes nothing.
 - Non-finite rows are dropped only when the requested fit uses that variable. Counts are
   returned in `n_used`, `n_by_cell`, and `extras`.
 

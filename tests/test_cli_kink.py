@@ -435,3 +435,73 @@ def test_kink_cli_rejects_hac_lags_combined_with_cluster(tmp_path):
     assert result.exit_code == 2
     assert "at most one" in result.output
     assert "Traceback" not in result.output
+
+
+def test_kink_cli_weights_column_changes_inference_and_is_recorded(tmp_path):
+    rng = np.random.default_rng(6)
+    x = np.r_[np.linspace(-1.0, -0.05, 25), np.linspace(0.05, 1.0, 25)]
+    sigma = 0.2 + rng.random(x.size)
+    y = 0.4 * x + 0.9 * np.maximum(x, 0.0) + sigma * rng.standard_normal(x.size)
+    df = pd.DataFrame({"x": x, "y": y, "w": 1.0 / sigma**2})
+    csv = tmp_path / "weighted.csv"
+    df.to_csv(csv, index=False)
+
+    base = [
+        "kink",
+        str(csv),
+        "--design",
+        "rkd",
+        "--outcome",
+        "y",
+        "--running",
+        "x",
+        "--policy-kink",
+        "0.9",
+        "--bandwidth",
+        "1.0",
+    ]
+    plain = runner.invoke(app, [*base, "--out", str(tmp_path / "plain")])
+    weighted = runner.invoke(
+        app, [*base, "--weights", "w", "--out", str(tmp_path / "weighted")]
+    )
+
+    assert plain.exit_code == 0, plain.output
+    assert weighted.exit_code == 0, weighted.output
+    plain_payload = _strict_loads((tmp_path / "plain" / "kink.json").read_text())
+    payload = _strict_loads((tmp_path / "weighted" / "kink.json").read_text())
+    assert payload["params"]["weights"] == "w"
+    assert payload["estimate"]["extras"]["user_weights"] is True
+    assert plain_payload["estimate"]["extras"]["user_weights"] is False
+    assert payload["estimate"]["tau"] != plain_payload["estimate"]["tau"]
+
+
+def test_kink_cli_rejects_unknown_weights_column(tmp_path):
+    df = pd.DataFrame({"x": np.linspace(-1, 1, 20), "y": np.zeros(20)})
+    csv = tmp_path / "d.csv"
+    df.to_csv(csv, index=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "rkd",
+            "--outcome",
+            "y",
+            "--running",
+            "x",
+            "--policy-kink",
+            "1.0",
+            "--bandwidth",
+            "1.0",
+            "--weights",
+            "nope",
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "nope" in result.output
+    assert "Traceback" not in result.output

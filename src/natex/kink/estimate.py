@@ -194,6 +194,7 @@ def _prepare(
     covariates,
     clusters,
     hac_lags: int | None = None,
+    sample_weights=None,
 ) -> _Prepared:
     y_all = _as_vector("y", y)
     n = y_all.size
@@ -201,6 +202,11 @@ def _prepare(
     treatment_all = (
         None if treatment is None else _as_vector("treatment", treatment, n)
     )
+    weight_all = (
+        None if sample_weights is None else _as_vector("weights", sample_weights, n)
+    )
+    if weight_all is not None and np.any(weight_all[np.isfinite(weight_all)] < 0.0):
+        raise ValueError("weights must be nonnegative")
     covariates_all = _as_covariates(covariates, n)
     cluster_all, cluster_ok = _cluster_present(clusters, n)
     if post is None:
@@ -214,6 +220,8 @@ def _prepare(
     finite = np.isfinite(y_all) & np.isfinite(running_all) & post_ok & cluster_ok
     if treatment_all is not None:
         finite &= np.isfinite(treatment_all)
+    if weight_all is not None:
+        finite &= np.isfinite(weight_all)
     if covariates_all.shape[1]:
         finite &= np.isfinite(covariates_all).all(axis=1)
     n_dropped_nonfinite = int(n - finite.sum())
@@ -228,7 +236,10 @@ def _prepare(
     selected = finite & in_window
     u_all = distance / bandwidth
     positive_weight = np.zeros(n, dtype=bool)
-    positive_weight[selected] = _kernel_weights(u_all[selected], kernel) > 0.0
+    positive_kernel = _kernel_weights(u_all[selected], kernel) > 0.0
+    if weight_all is not None:
+        positive_kernel &= weight_all[selected] > 0.0
+    positive_weight[selected] = positive_kernel
     zero_weight_excluded = int(np.sum(selected & ~positive_weight))
     selected &= positive_weight
 
@@ -241,6 +252,8 @@ def _prepare(
     else:
         cell = post_all[selected].astype(np.int64) * 2 + right.astype(np.int64)
     weights = _kernel_weights(u, kernel)
+    if weight_all is not None:
+        weights = weights * weight_all[selected]
     n_by_cell = {
         label: int(np.sum(cell == j)) for j, label in enumerate(cell_labels)
     }
@@ -631,6 +644,7 @@ def _estimate(
     covariates,
     clusters,
     hac_lags: int | None,
+    weights,
     alpha: float,
 ) -> KinkEstimate:
     sharp = policy_kink is not None
@@ -649,6 +663,7 @@ def _estimate(
         covariates=covariates,
         clusters=clusters,
         hac_lags=hac_lags,
+        sample_weights=weights,
     )
     n, p = prepared.design.shape
     n_clusters = None
@@ -690,6 +705,7 @@ def _estimate(
         "n_zero_weight_excluded": prepared.n_zero_weight_excluded,
         "n_covariates": prepared.n_covariates,
         "n_covariates_dropped_constant": prepared.n_covariates_dropped_constant,
+        "user_weights": weights is not None,
     }
     if prepared.hac is not None:
         extras["hac_lags"] = int(prepared.hac[2])
@@ -909,6 +925,7 @@ def regression_kink(
     covariates=None,
     clusters=None,
     hac_lags: int | None = None,
+    weights=None,
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy regression kink at a known cutoff.
@@ -925,6 +942,14 @@ def regression_kink(
     exclusive with ``clusters`` and uses ``t(n_time_points - 1)`` critical
     values; lag ``l`` refers to steps in the sorted sequence of distinct
     running values inside the window.
+
+    ``weights`` are per-observation nonnegative precision weights multiplied
+    into the kernel weights for every fit (outcome, first stage, combined
+    influence): use ``1/sigma_i**2`` when the outcome carries published
+    standard errors. Weights are treated as fixed and known; zero-weight rows
+    are excluded and counted like zero kernel weights, and the HC1
+    degrees-of-freedom correction keeps counting rows, not effective sample
+    size.
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
     _validate_hac(hac_lags, clusters)
@@ -943,6 +968,7 @@ def regression_kink(
         covariates=covariates,
         clusters=clusters,
         hac_lags=hac_lags,
+        weights=weights,
         alpha=alpha,
     )
 
@@ -962,6 +988,7 @@ def difference_in_kinks(
     covariates=None,
     clusters=None,
     hac_lags: int | None = None,
+    weights=None,
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy difference-in-kinks design.
@@ -975,9 +1002,11 @@ def difference_in_kinks(
     across periods at the cutoff and individual kink changes share one sign.
     These identifying assumptions are not testable by this function.
 
-    ``hac_lags`` behaves as in :func:`regression_kink`: Newey-West/
-    Driscoll-Kraay covariance over distinct running values for serially
-    correlated (time-running) designs, mutually exclusive with ``clusters``.
+    ``hac_lags`` and ``weights`` behave as in :func:`regression_kink`:
+    Newey-West/Driscoll-Kraay covariance over distinct running values for
+    serially correlated (time-running) designs (mutually exclusive with
+    ``clusters``), and fixed nonnegative precision weights multiplied into
+    the kernel weights.
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
     _validate_hac(hac_lags, clusters)
@@ -996,5 +1025,6 @@ def difference_in_kinks(
         covariates=covariates,
         clusters=clusters,
         hac_lags=hac_lags,
+        weights=weights,
         alpha=alpha,
     )
