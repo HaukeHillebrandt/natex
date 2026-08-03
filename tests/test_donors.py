@@ -313,3 +313,18 @@ def test_dataset_adapter_requires_unit_time_outcome():
     ds = Dataset(df, spec)
     with pytest.raises(ValueError, match="spec.unit"):
         select_donors_from_dataset(ds, "treated", d.t0)
+
+
+def test_single_unit_panel_reports_missing_donors_before_pre_time_issue_50():
+    """Issue #50: 'no donor units' is the precise reason on a one-unit panel,
+    even when the treated series also lacks pre-t0 observations."""
+    y = np.array([[1.0, 2.0, 3.0, 4.0]])
+    units = np.array(["only"])
+    times = np.array([1.0, 2.0, 3.0, 4.0])
+
+    with_pre = select_donors(y, units, times, "only", t0=3.0)
+    assert "no donor units in the panel" in with_pre.extras["failure"]
+
+    no_pre = select_donors(y, units, times, "only", t0=1.0)
+    assert "no donor units in the panel" in no_pre.extras["failure"]
+    assert "no common pre time" not in no_pre.extras["failure"]

@@ -159,10 +159,15 @@ def select_donors(
             },
         )
 
+    # Issue #50: the donor-count check comes FIRST — on a one-unit panel the
+    # actionable problem is the missing donors, not the treated pre window.
+    if n_candidates == 0:
+        return _fail(
+            "no donor units in the panel: every row belongs to the treated unit; "
+            "synthetic control needs at least one untreated donor series"
+        )
     if not common.any():
         return _fail("treated unit has no finite outcome before t0 (no common pre time)")
-    if n_candidates == 0:
-        return _fail("no candidate units besides the treated unit")
 
     # Balanced-donor rule: complete candidates have finite outcomes at EVERY
     # common pre time (phase-3 rule; see did/controls.synthetic_control).

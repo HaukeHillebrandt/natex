@@ -263,3 +263,37 @@ def test_kink_family_says_when_a_group_contrast_is_not_expressible(tmp_path):
     assert "cannot express" in caveats and "--design dik" in caveats
     if kink.status == "null":
         assert "group" in kink.reason
+
+
+def test_sc_family_aggregates_a_multi_treated_indicator(tmp_path):
+    """Issue #50: >1 ever-treated unit aggregates into one treated series
+    instead of a refusal."""
+    rng = np.random.default_rng(7)
+    units = [f"u{i}" for i in range(6)]
+    periods = np.arange(12)
+    rows = []
+    for u_index, u in enumerate(units):
+        base = 1.0 + 0.1 * u_index
+        for p in periods:
+            treated = int(u_index < 2 and p >= 6)
+            rows.append({
+                "ticker": u,
+                "period": float(p),
+                "treated_flag": treated,
+                "value": base + 0.2 * p + 0.5 * treated
+                + 0.02 * rng.standard_normal(),
+            })
+    csv = tmp_path / "multi.csv"
+    pd.DataFrame(rows).to_csv(csv, index=False)
+
+    res = survey(
+        csv, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+        budget=_BUDGET, unit="ticker", time="period",
+    )
+
+    sc = res.families["sc"]
+    assert sc.status in ("credible", "null"), (sc.status, sc.reason, sc.error)
+    aggregated = sc.diagnostics.get("treated_units_aggregated")
+    assert aggregated == ["u0", "u1"]
+    assert "aggregate" in str(sc.diagnostics.get("treated_unit"))
+    assert any("aggregat" in c for c in sc.diagnostics["caveats"])

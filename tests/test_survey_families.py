@@ -242,14 +242,17 @@ def test_bunching_window_threads_through_survey(tmp_path):
 # ---------------------------------------------------------------- sc
 
 
-def test_sc_needs_input_when_ambiguous(tmp_path):
-    df = _panel_df(seed=0, treated=("u03", "u07"))  # TWO ever-treated units
+def test_sc_aggregates_two_ever_treated_units(tmp_path):
+    """Issue #50: TWO ever-treated units aggregate into one treated series
+    (per-time mean) instead of the former needs_input refusal."""
+    df = _panel_df(seed=0, treated=("u03", "u07"))
     res = survey(df, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
                  budget=_BUDGET)
     sc = res.families["sc"]
-    assert sc.status == "needs_input"
-    assert "found 2" in sc.reason
-    assert "treated_unit" in sc.reason  # tells the user what to provide
+    assert sc.status in ("credible", "null"), (sc.status, sc.reason)
+    assert sc.diagnostics["treated_units_aggregated"] == ["u03", "u07"]
+    assert "aggregate" in str(sc.diagnostics["treated_unit"])
+    assert any("aggregat" in c for c in sc.diagnostics["caveats"])
 
 
 # ---------------------------------------------------------------- dee

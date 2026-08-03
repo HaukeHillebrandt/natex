@@ -882,16 +882,46 @@ def _run_sc(
         t_on = df[tcol].to_numpy(dtype=float) == 1.0
         if treated is None:
             ever = pd.unique(df.loc[t_on, unit])  # per-unit ever-treated set
-            if len(ever) != 1:
+            if len(ever) == 0:
                 return FamilyResult(
                     family="sc", status="needs_input",
                     reason=(
-                        f"could not identify a single treated unit from {tcol!r} "
-                        f"(found {len(ever)}); provide treated_unit/t0 via guidance"
+                        f"could not identify a treated unit from {tcol!r} "
+                        "(no row has value 1); provide treated_unit/t0 via guidance"
                     ),
                     diagnostics=diagnostics,
                 )
-            treated = ever[0]
+            if len(ever) > 1:
+                # Issue #50: a treated indicator marking several units is a
+                # legitimate design — aggregate the ever-treated units into
+                # one treated series (mean by time) instead of refusing.
+                treated_units = [str(u) for u in ever]
+                mask = np.isin(units, ever)
+                block = Y[mask]
+                finite = np.isfinite(block)
+                counts = finite.sum(axis=0)
+                sums = np.where(finite, block, 0.0).sum(axis=0)
+                aggregate_row = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+                treated = f"aggregate({len(treated_units)} treated units)"
+                Y = np.vstack([Y[~mask], aggregate_row])
+                units = np.append(units[~mask], treated)
+                adoption = sorted(
+                    float(df.loc[t_on & (df[unit] == u), time].min()) for u in ever
+                )
+                diagnostics["treated_units_aggregated"] = treated_units
+                diagnostics["treated_adoption_times"] = adoption
+                caveat = (
+                    f"multi-treated aggregate: {treated_units} pooled as the per-time "
+                    "mean outcome; unit-level effect heterogeneity is not identified"
+                )
+                if len(set(adoption)) > 1:
+                    caveat += (
+                        f"; adoption is staggered ({adoption}) and t0 uses the "
+                        "earliest adoption"
+                    )
+                diagnostics["caveats"].append(caveat)
+            else:
+                treated = ever[0]
         if t0 is None:
             t0 = float(df.loc[t_on, time].min())  # min(time where T == 1)
     t0 = float(t0)
