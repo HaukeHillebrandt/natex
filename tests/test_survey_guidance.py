@@ -131,7 +131,7 @@ def test_mock_override_both_ways():
         assert p.override is None, name
 
     # merged declared gains the analyst cutoff hint
-    assert merged.cutoffs == {"z": 1.5}
+    assert merged.cutoffs == {"z": (1.5,)}
 
 
 def test_hint_hygiene():
@@ -171,7 +171,7 @@ def test_hint_hygiene():
         ("y", 0.5),
     ]
     # explicit declaration is NOT overwritten; the valid new hint merges
-    assert merged.cutoffs == {"z": 1.5, "y": 0.5}
+    assert merged.cutoffs == {"z": (1.5,), "y": (0.5,)}
 
 
 def test_backend_failure_falls_back():

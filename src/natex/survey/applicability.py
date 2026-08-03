@@ -171,9 +171,9 @@ def _merge_declared(declared: DeclaredInputs, plans: dict[str, FamilyPlan]) -> D
     for plan in plans.values():  # FAMILY_ORDER
         hints = plan.config_hints
         for h in hints.cutoffs:
-            cutoffs.setdefault(h.column, h.value)
+            cutoffs.setdefault(h.column, (h.value,))
         for h in hints.thresholds:
-            thresholds.setdefault(h.column, h.value)
+            thresholds.setdefault(h.column, (h.value,))
         for col in hints.instruments:
             if col not in instruments:
                 instruments.append(col)

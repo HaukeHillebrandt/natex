@@ -211,22 +211,30 @@ def _given(ctx: typer.Context, name: str) -> bool:
     return src is not None and src.name == "COMMANDLINE"
 
 
-def _parse_col_value_pairs(items: list[str] | None, option: str) -> dict[str, float]:
-    """Repeatable ``COL=VALUE`` flags -> ``{col: float(value)}``.
+def _parse_col_value_pairs(
+    items: list[str] | None, option: str
+) -> dict[str, list[float]]:
+    """Repeatable ``COL=VALUE`` flags -> ``{col: [float(value), ...]}``.
 
-    A malformed item (no ``=``, empty column, non-numeric value) exits 2
-    naming the offending item, no traceback.
+    Repeating a column collects every distinct value in flag order (issue
+    #48: repeated flags on one column used to collapse silently to the last
+    value); exact duplicates deduplicate. A malformed item (no ``=``, empty
+    column, non-numeric value) exits 2 naming the offending item, no
+    traceback.
     """
-    pairs: dict[str, float] = {}
+    pairs: dict[str, list[float]] = {}
     for item in items or []:
         col, sep, raw = item.partition("=")
         try:
             if not col or not sep:
                 raise ValueError(item)
-            pairs[col] = float(raw)
+            value = float(raw)
         except ValueError:
             typer.echo(f"{option} expects COL=VALUE with a numeric VALUE, got {item!r}")
             raise typer.Exit(code=2) from None
+        values = pairs.setdefault(col, [])
+        if value not in values:
+            values.append(value)
     return pairs
 
 
@@ -245,13 +253,17 @@ def survey(
     time: str = typer.Option(None, help="panel time column (did/sc families)"),
     unit: str = typer.Option(None, help="panel unit column (did/sc families)"),
     cutoff: list[str] = typer.Option(
-        None, "--cutoff", help="declared kink cutoff COL=VALUE (repeatable)"
+        None,
+        "--cutoff",
+        help="declared kink cutoff COL=VALUE (repeatable, incl. several per column)",
     ),
     instrument: list[str] = typer.Option(
         None, "--instrument", help="candidate instrument column (repeatable)"
     ),
     threshold: list[str] = typer.Option(
-        None, "--threshold", help="declared bunching threshold COL=VALUE (repeatable)"
+        None,
+        "--threshold",
+        help="declared bunching threshold COL=VALUE (repeatable, incl. several per column)",
     ),
     k: int = typer.Option(50, help="scan neighborhood size (forwarded into the budget when passed)"),
     q: int = typer.Option(99, help="randomization replicas (forwarded into the budget when passed)"),

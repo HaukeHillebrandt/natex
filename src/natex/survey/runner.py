@@ -37,6 +37,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -503,7 +504,7 @@ def _run_kink(
     p_values: dict[str, float] = {}
     saw_no_outcome = False
 
-    for col, cut in declared.cutoffs.items():
+    for col, cuts in declared.cutoffs.items():
         if col not in df.columns:
             skipped[col] = f"cutoff column {col!r} not in the dataset"
             continue
@@ -517,43 +518,48 @@ def _run_kink(
             continue
         r = df[col].to_numpy(dtype=float)
         y = df[outcome].to_numpy(dtype=float)
-        c = float(cut)
-        # Documented default with NO optimality claim: the median absolute
-        # distance to the cutoff puts about half the sample in-window.
-        bw = float(np.nanquantile(np.abs(r - c), 0.5))
-        if not (np.isfinite(bw) and bw > 0.0):
-            skipped[col] = (
-                "default bandwidth (median |running - cutoff|) is not finite and positive"
-            )
-            continue
-        try:
-            est = regression_kink(y, r, policy_kink=1.0, cutoff=c, bandwidth=bw)
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            skipped[col] = f"kink fit failed: {exc}"
-            continue
-        used_cutoffs[col] = c
-        # With policy_kink=1, tau IS the reduced-form outcome slope kink
-        # (right-minus-left, kink-card convention).
-        p = _two_sided_p(est.tau, est.se)
-        p_values[col] = p
-        per_cutoff[col] = {
-            "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
-            "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
-        }
-        # Figure payload (task 7): kink_fit_plot per usable cutoff.
-        artifacts.setdefault("cutoffs", []).append({
-            "column": col, "running": r, "outcome_values": y, "cutoff": c,
-            "bandwidth": bw, "estimate": est,
-        })
-        bws = [0.5 * bw, bw, 2.0 * bw]
-        try:
-            grid = sensitivity_grid(y, r, bandwidths=bws, policy_kink=1.0, cutoff=c)
-            sensitivity[col] = [
-                {"bandwidth": h, "tau": g.tau, "se": g.se}
-                for h, g in zip(bws, grid, strict=True)
-            ]
-        except (ValueError, np.linalg.LinAlgError) as exc:
-            sensitivity_errors[col] = str(exc)
+        for cut in cuts:
+            c = float(cut)
+            # Issue #48: several cutoffs may share one column; results keep
+            # the bare column key for the single-declaration case and
+            # qualify as ``col=value`` only under multiplicity.
+            key = col if len(cuts) == 1 else f"{col}={c:g}"
+            # Documented default with NO optimality claim: the median absolute
+            # distance to the cutoff puts about half the sample in-window.
+            bw = float(np.nanquantile(np.abs(r - c), 0.5))
+            if not (np.isfinite(bw) and bw > 0.0):
+                skipped[key] = (
+                    "default bandwidth (median |running - cutoff|) is not finite and positive"
+                )
+                continue
+            try:
+                est = regression_kink(y, r, policy_kink=1.0, cutoff=c, bandwidth=bw)
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                skipped[key] = f"kink fit failed: {exc}"
+                continue
+            used_cutoffs[key] = c
+            # With policy_kink=1, tau IS the reduced-form outcome slope kink
+            # (right-minus-left, kink-card convention).
+            p = _two_sided_p(est.tau, est.se)
+            p_values[key] = p
+            per_cutoff[key] = {
+                "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
+                "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
+            }
+            # Figure payload (task 7): kink_fit_plot per usable cutoff.
+            artifacts.setdefault("cutoffs", []).append({
+                "column": col, "running": r, "outcome_values": y, "cutoff": c,
+                "bandwidth": bw, "estimate": est,
+            })
+            bws = [0.5 * bw, bw, 2.0 * bw]
+            try:
+                grid = sensitivity_grid(y, r, bandwidths=bws, policy_kink=1.0, cutoff=c)
+                sensitivity[key] = [
+                    {"bandwidth": h, "tau": g.tau, "se": g.se}
+                    for h, g in zip(bws, grid, strict=True)
+                ]
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                sensitivity_errors[key] = str(exc)
         if col in time_like:
             caveats.append(_CALENDAR_KINK_CAVEAT.format(col=col))
 
@@ -833,31 +839,35 @@ def _run_bunching(
     per_threshold: dict[str, dict] = {}
     p_values: dict[str, float] = {}
 
-    for col, thr in declared.thresholds.items():
+    for col, thrs in declared.thresholds.items():
         if col not in df.columns:
             skipped[col] = f"threshold column {col!r} not in the dataset"
             continue
         if col not in numeric:
             skipped[col] = f"threshold column {col!r} is not numeric"
             continue
-        t = float(thr)
-        s = df[col].to_numpy(dtype=float) - t
-        # drops non-finite s itself; issue #42: an analyst-declared window
-        # restricts the fit to |s| <= window (local jump, not full support)
-        rep = binned_poisson_jump(s, window=declared.bunching_window)
-        p_values[col] = rep.p_value
-        per_threshold[col] = {
-            "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
-            "se": rep.se, "window": declared.bunching_window,
-            "n_finite": int(np.isfinite(s).sum()),
-            # issue #44 audit trail: side counts and the refusal reason
-            "n_left": rep.n_left, "n_right": rep.n_right, "note": rep.note,
-        }
-        # Figure payload (task 7): bunching_hist per usable threshold.
-        artifacts.setdefault("thresholds", []).append({
-            "column": col, "values": df[col].to_numpy(dtype=float),
-            "threshold": t, "p_value": rep.p_value,
-        })
+        for thr in thrs:
+            t = float(thr)
+            # Issue #48 key convention: bare column when one declared value,
+            # ``col=value`` under multiplicity.
+            key = col if len(thrs) == 1 else f"{col}={t:g}"
+            s = df[col].to_numpy(dtype=float) - t
+            # drops non-finite s itself; issue #42: an analyst-declared window
+            # restricts the fit to |s| <= window (local jump, not full support)
+            rep = binned_poisson_jump(s, window=declared.bunching_window)
+            p_values[key] = rep.p_value
+            per_threshold[key] = {
+                "threshold": t, "p_value": rep.p_value, "theta": rep.theta,
+                "se": rep.se, "window": declared.bunching_window,
+                "n_finite": int(np.isfinite(s).sum()),
+                # issue #44 audit trail: side counts and the refusal reason
+                "n_left": rep.n_left, "n_right": rep.n_right, "note": rep.note,
+            }
+            # Figure payload (task 7): bunching_hist per usable threshold.
+            artifacts.setdefault("thresholds", []).append({
+                "column": col, "values": df[col].to_numpy(dtype=float),
+                "threshold": t, "p_value": rep.p_value,
+            })
         if col in time_like:
             caveats.append(_AUDIT18_CAVEAT.format(col=col))
 
@@ -1002,9 +1012,9 @@ def survey(
     budget: dict | None = None,  # passed through discover() — its keys, its validation
     time: str | None = None,
     unit: str | None = None,
-    cutoffs: dict[str, float] | None = None,
+    cutoffs: dict[str, float | Sequence[float]] | None = None,
     instruments: list[str] | None = None,
-    thresholds: dict[str, float] | None = None,
+    thresholds: dict[str, float | Sequence[float]] | None = None,
     bunching_window: float | None = None,  # issue #42: |x - threshold| <= window
     seed: int | None = None,  # metadata only; rng governs randomness
 ) -> SurveyResult:

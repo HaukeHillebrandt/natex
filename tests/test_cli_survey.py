@@ -163,3 +163,45 @@ def test_cli_survey_unknown_backend(tmp_path):
     assert result.exit_code == 2
     assert "bogus" in result.output
     assert not (tmp_path / "out" / "survey.json").exists()
+
+
+def test_cli_survey_repeated_cutoffs_on_one_column_all_run(tmp_path):
+    """Issue #48: two --cutoff flags on one column must both be evaluated."""
+    csv = _write_synthetic_csv(tmp_path)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["survey", str(csv), "--seed", "0", *_FAST, "--out", str(out),
+         "--cutoff", "x0=0.4", "--cutoff", "x0=0.6", "--cutoff", "x1=0.5",
+         "--threshold", "x0=0.4", "--threshold", "x0=0.6"],
+    )
+    assert result.exit_code == 0, result.output
+    saved = json.loads((out / "survey.json").read_text())
+    fams = saved["families"]
+
+    per_cutoff = fams["kink"]["diagnostics"]["per_cutoff"]
+    assert set(per_cutoff) == {"x0=0.4", "x0=0.6", "x1"}
+    assert per_cutoff["x0=0.4"]["cutoff"] == 0.4
+    assert per_cutoff["x0=0.6"]["cutoff"] == 0.6
+    assert per_cutoff["x1"]["cutoff"] == 0.5
+    assert fams["kink"]["diagnostics"]["cutoffs"] == {
+        "x0=0.4": 0.4, "x0=0.6": 0.6, "x1": 0.5,
+    }
+
+    per_threshold = fams["bunching"]["diagnostics"]["per_threshold"]
+    assert set(per_threshold) == {"x0=0.4", "x0=0.6"}
+    assert per_threshold["x0=0.4"]["threshold"] == 0.4
+    assert per_threshold["x0=0.6"]["threshold"] == 0.6
+
+
+def test_cli_survey_exact_duplicate_cutoff_flags_deduplicate(tmp_path):
+    csv = _write_synthetic_csv(tmp_path)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["survey", str(csv), "--seed", "0", *_FAST, "--out", str(out),
+         "--cutoff", "x0=0.5", "--cutoff", "x0=0.5"],
+    )
+    assert result.exit_code == 0, result.output
+    saved = json.loads((out / "survey.json").read_text())
+    assert saved["families"]["kink"]["diagnostics"]["cutoffs"] == {"x0": 0.5}

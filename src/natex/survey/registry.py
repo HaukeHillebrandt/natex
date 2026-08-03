@@ -17,18 +17,53 @@ from natex.data.spec import DatasetSpec
 from natex.intake.profiler import IntakeProfile
 
 
+def _declared_value_tuples(
+    mapping: dict[str, object], name: str
+) -> dict[str, tuple[float, ...]]:
+    """Normalize ``col -> value | values`` into ``col -> (float, ...)``.
+
+    Scalars become a one-tuple (the pre-#48 shape stays constructible);
+    sequences keep declaration order with exact duplicates removed. An empty
+    value sequence is rejected rather than silently declaring nothing.
+    """
+    out: dict[str, tuple[float, ...]] = {}
+    for col, raw in (mapping or {}).items():
+        try:
+            iterator = iter(raw)  # type: ignore[call-overload]
+        except TypeError:
+            values = [float(raw)]  # type: ignore[arg-type]
+        else:
+            values = [float(v) for v in iterator]
+        if not values:
+            raise ValueError(f"{name}[{col!r}] declares no values")
+        out[col] = tuple(dict.fromkeys(values))
+    return out
+
+
 @dataclass(frozen=True)
 class DeclaredInputs:
     """User/analyst-declared survey inputs; the ONLY non-profile evidence predicates may read."""
 
     time: str | None = None
     unit: str | None = None
-    cutoffs: dict[str, float] = field(default_factory=dict)  # col -> cutoff value
+    cutoffs: dict[str, tuple[float, ...]] = field(
+        default_factory=dict
+    )  # col -> declared cutoff values (usually one; issue #48 allows several)
     instruments: list[str] = field(default_factory=list)
-    thresholds: dict[str, float] = field(default_factory=dict)  # col -> threshold value
+    thresholds: dict[str, tuple[float, ...]] = field(
+        default_factory=dict
+    )  # col -> declared threshold values
     treated_unit: str | None = None  # sc hint (guidance/config only)
     t0: float | None = None  # sc hint
     bunching_window: float | None = None  # bunching: restrict fits to |x - threshold| <= window
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "cutoffs", _declared_value_tuples(self.cutoffs, "cutoffs")
+        )
+        object.__setattr__(
+            self, "thresholds", _declared_value_tuples(self.thresholds, "thresholds")
+        )
 
 
 @dataclass(frozen=True)
