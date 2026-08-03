@@ -151,20 +151,22 @@ def _kernel_weights(u: np.ndarray, kernel: str) -> np.ndarray:
     return np.ones_like(u)
 
 
-def _post_indicator(post, n: int) -> tuple[np.ndarray, np.ndarray]:
+def _post_indicator(
+    post, n: int, name: str = "post"
+) -> tuple[np.ndarray, np.ndarray]:
     raw = np.asarray(post)
     if raw.ndim != 1 or raw.size != n:
-        raise ValueError(f"post must be one-dimensional with {n} rows")
+        raise ValueError(f"{name} must be one-dimensional with {n} rows")
     present = ~pd.isna(raw)
     if pd.api.types.is_numeric_dtype(raw.dtype):
         present &= np.isfinite(raw.astype(float))
     values = set(pd.unique(raw[present]).tolist())
     if not values <= {0, 1, False, True}:
-        raise ValueError("post must contain only boolean or 0/1 values")
+        raise ValueError(f"{name} must contain only boolean or 0/1 values")
     indicator = np.zeros(n, dtype=bool)
     indicator[present] = raw[present].astype(bool)
     if set(indicator[present].tolist()) != {False, True}:
-        raise ValueError("post must contain both pre and post rows")
+        raise ValueError(f"{name} must contain both 0-coded and 1-coded rows")
     return indicator, present
 
 
@@ -195,6 +197,8 @@ def _prepare(
     clusters,
     hac_lags: int | None = None,
     sample_weights=None,
+    cell_prefixes: tuple[str, str] = ("pre", "post"),
+    indicator_name: str = "post",
 ) -> _Prepared:
     y_all = _as_vector("y", y)
     n = y_all.size
@@ -214,8 +218,13 @@ def _prepare(
         post_ok = np.ones(n, dtype=bool)
         cell_labels = ("left", "right")
     else:
-        post_all, post_ok = _post_indicator(post, n)
-        cell_labels = ("pre_left", "pre_right", "post_left", "post_right")
+        post_all, post_ok = _post_indicator(post, n, name=indicator_name)
+        cell_labels = (
+            f"{cell_prefixes[0]}_left",
+            f"{cell_prefixes[0]}_right",
+            f"{cell_prefixes[1]}_left",
+            f"{cell_prefixes[1]}_right",
+        )
 
     finite = np.isfinite(y_all) & np.isfinite(running_all) & post_ok & cluster_ok
     if treatment_all is not None:
@@ -646,6 +655,8 @@ def _estimate(
     hac_lags: int | None,
     weights,
     alpha: float,
+    cell_prefixes: tuple[str, str] = ("pre", "post"),
+    indicator_name: str = "post",
 ) -> KinkEstimate:
     sharp = policy_kink is not None
     design_name = "dik" if post is not None else "rkd"
@@ -664,6 +675,8 @@ def _estimate(
         clusters=clusters,
         hac_lags=hac_lags,
         sample_weights=weights,
+        cell_prefixes=cell_prefixes,
+        indicator_name=indicator_name,
     )
     n, p = prepared.design.shape
     n_clusters = None
@@ -695,6 +708,9 @@ def _estimate(
         "donut": donut,
         "contrast": "right_minus_left",
         "inference": inference,
+        "dik_contrast": (
+            f"{cell_prefixes[1]}_minus_{cell_prefixes[0]}" if post is not None else None
+        ),
         "n_clusters": n_clusters,
         "critical_df": critical_df,
         "critical_value": critical_value,
@@ -837,15 +853,15 @@ def _estimate(
             extras["first_stage_slope_se"] = first_stage_slope_se
             if post is not None:
                 extras["first_stage_kinks"] = {
-                    "pre": first_stage_slopes["pre_right"]
-                    - first_stage_slopes["pre_left"],
-                    "post": first_stage_slopes["post_right"]
-                    - first_stage_slopes["post_left"],
+                    prefix: first_stage_slopes[f"{prefix}_right"]
+                    - first_stage_slopes[f"{prefix}_left"]
+                    for prefix in cell_prefixes
                 }
         if post is not None:
             extras["outcome_kinks"] = {
-                "pre": outcome_slopes["pre_right"] - outcome_slopes["pre_left"],
-                "post": outcome_slopes["post_right"] - outcome_slopes["post_left"],
+                prefix: outcome_slopes[f"{prefix}_right"]
+                - outcome_slopes[f"{prefix}_left"]
+                for prefix in cell_prefixes
             }
     except (np.linalg.LinAlgError, ValueError) as exc:
         return _nan_estimate(method, prepared, str(exc), extras)
@@ -976,8 +992,9 @@ def regression_kink(
 def difference_in_kinks(
     y,
     running,
-    post,
+    post=None,
     *,
+    group=None,
     treatment=None,
     policy_kink_change: float | None = None,
     cutoff: float = 0.0,
@@ -1007,16 +1024,32 @@ def difference_in_kinks(
     serially correlated (time-running) designs (mutually exclusive with
     ``clusters``), and fixed nonnegative precision weights multiplied into
     the kernel weights.
+
+    Supply exactly one of ``post`` (time DiK: the contrast is post-minus-pre,
+    cells ``pre_*``/``post_*``) or ``group`` (group DiK: a binary
+    treated-vs-control indicator; the contrast is the 1-coded group's kink
+    minus the 0-coded group's, cells ``group0_*``/``group1_*``). The two are
+    numerically identical - only the labels, the recorded
+    ``extras["dik_contrast"]``, and the identification reading differ: a
+    group DiK is a cross-group contrast at one time, not a time-stable
+    marginal response.
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
     _validate_hac(hac_lags, clusters)
     _validate_first_stage(treatment, policy_kink_change, "policy_kink_change")
+    if (post is None) == (group is None):
+        raise ValueError(
+            "supply exactly one of post (time DiK) or group (group DiK)"
+        )
+    indicator = post if post is not None else group
+    cell_prefixes = ("pre", "post") if post is not None else ("group0", "group1")
+    indicator_name = "post" if post is not None else "group"
     return _estimate(
         y,
         running,
         treatment=treatment,
         policy_kink=policy_kink_change,
-        post=post,
+        post=indicator,
         cutoff=cutoff,
         bandwidth=bandwidth,
         degree=degree,
@@ -1027,4 +1060,6 @@ def difference_in_kinks(
         hac_lags=hac_lags,
         weights=weights,
         alpha=alpha,
+        cell_prefixes=cell_prefixes,
+        indicator_name=indicator_name,
     )

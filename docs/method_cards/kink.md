@@ -33,6 +33,16 @@ ratio, but it would reverse the reported reduced-form and first-stage signs.
 | Fuzzy RKD | `kappa[Y] / kappa[policy]` |
 | Sharp DiK | `(kappa[Y,post] - kappa[Y,pre]) / known_policy_kink_change` |
 | Fuzzy DiK | `(kappa[Y,post] - kappa[Y,pre]) / (kappa[policy,post] - kappa[policy,pre])` |
+| Group DiK | as DiK with `group1`/`group0` (a binary group) in place of `post`/`pre` |
+
+**Group DiK** (`group=` / `--group`) is the treated-vs-control variant: the same stacked
+estimator contrasts the 1-coded group's kink against the 0-coded group's at one time,
+with neutral cell labels `group0_left ... group1_right` and
+`extras["dik_contrast"] = "group1_minus_group0"`. It is numerically identical to aliasing
+the group indicator as the DiK time variable — the labels, recorded contrast, and caveat
+text are what change: a group DiK is a **cross-group contrast**, so identification needs
+parallel non-policy slope kinks *across groups* and a *group-stable* marginal response,
+not a time-stable one.
 
 The RKD ratio is the marginal average causal response at the cutoff. Under the fuzzy DiK
 conditions below, the ratio is a kink-change-weighted marginal response: latent policy types
@@ -226,6 +236,9 @@ natex kink data.csv --design rkd --outcome y --running score \
 natex kink panel.csv --design dik --outcome y --running score \
   --treatment policy --time year --t0 2011 --bandwidth 1500 \
   --cluster person_id --out out/
+
+natex kink groups.csv --design dik --outcome capex --running quarter \
+  --group big4 --policy-kink-change 1.0 --bandwidth 8 --hac-lags 4 --out out/
 ```
 
 ## Diagnostics the estimator does and does not provide

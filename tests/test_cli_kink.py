@@ -505,3 +505,144 @@ def test_kink_cli_rejects_unknown_weights_column(tmp_path):
     assert result.exit_code == 2
     assert "nope" in result.output
     assert "Traceback" not in result.output
+
+
+def _group_dik_frame():
+    t = np.tile(np.arange(-12, 12, dtype=float) + 0.5, 2)
+    group = np.r_[np.zeros(24), np.ones(24)]
+    rng = np.random.default_rng(41)
+    y = (
+        0.1 * t
+        + 0.5 * np.maximum(t, 0.0)
+        + 0.8 * np.maximum(t, 0.0) * group
+        + 0.05 * rng.standard_normal(t.size)
+    )
+    return pd.DataFrame({"t": t, "g": group.astype(int), "y": y})
+
+
+def test_kink_cli_group_dik_runs_with_neutral_labels_and_group_caveat(tmp_path):
+    df = _group_dik_frame()
+    csv = tmp_path / "group.csv"
+    df.to_csv(csv, index=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "dik",
+            "--outcome",
+            "y",
+            "--running",
+            "t",
+            "--group",
+            "g",
+            "--policy-kink-change",
+            "1.0",
+            "--bandwidth",
+            "12",
+            "--kernel",
+            "uniform",
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _strict_loads((tmp_path / "out" / "kink.json").read_text())
+    assert payload["params"]["group"] == "g"
+    assert payload["estimate"]["extras"]["dik_contrast"] == "group1_minus_group0"
+    assert "group1_left" in payload["estimate"]["n_by_cell"]
+    caveats = " ".join(payload["identification_caveats"])
+    assert "across groups" in caveats
+    assert "group-stable" in caveats
+    assert "time-stable" not in caveats
+
+
+def test_kink_cli_group_excludes_time_and_requires_dik(tmp_path):
+    df = _group_dik_frame()
+    csv = tmp_path / "group.csv"
+    df.to_csv(csv, index=False)
+    base = [
+        "kink",
+        str(csv),
+        "--outcome",
+        "y",
+        "--running",
+        "t",
+        "--policy-kink-change",
+        "1.0",
+        "--bandwidth",
+        "12",
+        "--out",
+        str(tmp_path / "out"),
+    ]
+
+    both = runner.invoke(
+        app,
+        [*base, "--design", "dik", "--group", "g", "--time", "t", "--t0", "0.5"],
+    )
+    assert both.exit_code == 2
+    assert "not both" in both.output
+
+    neither = runner.invoke(app, [*base, "--design", "dik"])
+    assert neither.exit_code == 2
+    assert "--group" in neither.output and "--time" in neither.output
+
+    rkd = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "rkd",
+            "--outcome",
+            "y",
+            "--running",
+            "t",
+            "--policy-kink",
+            "1.0",
+            "--bandwidth",
+            "12",
+            "--group",
+            "g",
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+    assert rkd.exit_code == 2
+    assert "--design dik" in rkd.output
+
+
+def test_kink_cli_group_column_must_be_binary(tmp_path):
+    df = _group_dik_frame()
+    df["g"] = np.arange(len(df))
+    csv = tmp_path / "bad.csv"
+    df.to_csv(csv, index=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "dik",
+            "--outcome",
+            "y",
+            "--running",
+            "t",
+            "--group",
+            "g",
+            "--policy-kink-change",
+            "1.0",
+            "--bandwidth",
+            "12",
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "0/1" in result.output
+    assert "Traceback" not in result.output

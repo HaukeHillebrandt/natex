@@ -638,6 +638,15 @@ def kink(
     ),
     time: str = typer.Option(None, help="time/period column (--design dik)"),
     t0: float = typer.Option(None, help="first post-policy period (--design dik)"),
+    group: str = typer.Option(
+        None,
+        "--group",
+        help=(
+            "binary group column for a group DiK (--design dik); alternative to "
+            "--time/--t0. The 1-coded group's kink is the contrast's minuend "
+            "(group1 minus group0)."
+        ),
+    ),
     cutoff: float = typer.Option(0.0, help="known running-variable cutoff"),
     bandwidth: float = typer.Option(..., help="required symmetric bandwidth around cutoff"),
     degree: int = typer.Option(1, help="local polynomial degree (>=1)"),
@@ -688,13 +697,22 @@ def kink(
         if time is not None or t0 is not None:
             typer.echo("--time/--t0 apply only to --design dik")
             raise typer.Exit(code=2)
+        if group is not None:
+            typer.echo("--group applies only to --design dik")
+            raise typer.Exit(code=2)
         if policy_kink_change is not None:
             typer.echo("--policy-kink-change applies only to --design dik")
             raise typer.Exit(code=2)
         known = policy_kink
     else:
-        if time is None or t0 is None:
-            typer.echo("--design dik requires both --time COLUMN and --t0 VALUE")
+        if group is not None and (time is not None or t0 is not None):
+            typer.echo("supply either --group or --time/--t0, not both")
+            raise typer.Exit(code=2)
+        if group is None and (time is None or t0 is None):
+            typer.echo(
+                "--design dik requires either --group COLUMN or "
+                "both --time COLUMN and --t0 VALUE"
+            )
             raise typer.Exit(code=2)
         if policy_kink is not None:
             typer.echo("--policy-kink applies only to --design rkd")
@@ -706,7 +724,7 @@ def kink(
         raise typer.Exit(code=2)
 
     columns = [outcome, running, *covariate_names]
-    columns += [c for c in (treatment, time, cluster, weights) if c is not None]
+    columns += [c for c in (treatment, time, group, cluster, weights) if c is not None]
     missing = sorted({c for c in columns if c not in df.columns})
     if missing:
         typer.echo(f"columns not in dataframe: {missing}")
@@ -750,6 +768,15 @@ def kink(
                 **common,
             )
             post = None
+        elif group is not None:
+            estimate = difference_in_kinks(
+                outcome_values,
+                running_values,
+                group=df[group].to_numpy(),
+                policy_kink_change=policy_kink_change,
+                **common,
+            )
+            post = None
         else:
             time_values = numeric_column(time)
             post = np.full(time_values.shape, np.nan, dtype=float)
@@ -774,6 +801,17 @@ def kink(
         caveats.append(
             "Causal interpretation requires no kink in the non-policy outcome derivative and a continuous marginal response at the cutoff."
         )
+    elif group is not None:
+        caveats.append(
+            "This is a cross-group contrast (group1-minus-group0 kink difference), not a within-series change over time: causal interpretation requires parallel non-policy slope kinks across groups and a group-stable marginal response at the cutoff."
+        )
+        if treatment is not None:
+            caveats.extend(
+                [
+                    "Fuzzy group DiK additionally requires stable latent policy-schedule composition at the cutoff across groups (or valid reweighting).",
+                    "Individual latent policy kink differences must have the same sign for positive-weight interpretation.",
+                ]
+            )
     else:
         caveats.append(
             "Causal interpretation requires parallel changes in non-policy slope kinks and a time-stable marginal response at the cutoff."
@@ -796,6 +834,7 @@ def kink(
                 "policy_kink_change": policy_kink_change,
                 "time": time,
                 "t0": t0,
+                "group": group,
                 "cutoff": cutoff,
                 "bandwidth": bandwidth,
                 "degree": degree,

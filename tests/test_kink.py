@@ -474,7 +474,7 @@ def test_exactly_one_sharp_or_fuzzy_first_stage_must_be_supplied():
 
 def test_dik_requires_both_pre_and_post_rows():
     v = _grid(5)
-    with pytest.raises(ValueError, match="pre and post"):
+    with pytest.raises(ValueError, match="0-coded and 1-coded"):
         difference_in_kinks(
             v,
             v,
@@ -1128,3 +1128,102 @@ def test_weights_compose_with_hac_and_with_dik():
     )
     assert hac.reduced_form == pytest.approx(plain.reduced_form, rel=1e-12)
     assert np.isfinite(hac.se) and hac.se != pytest.approx(plain.se, rel=1e-6)
+
+
+def _group_dik_data():
+    t = np.tile(np.arange(-12, 12, dtype=float) + 0.5, 2)
+    group = np.r_[np.zeros(24), np.ones(24)]
+    rng = np.random.default_rng(31)
+    y = (
+        0.1 * t
+        + 0.6 * np.maximum(t, 0.0)
+        + 0.9 * np.maximum(t, 0.0) * group
+        + 0.05 * rng.standard_normal(t.size)
+    )
+    return t, group, y
+
+
+def test_group_dik_matches_the_post_alias_numerically():
+    t, group, y = _group_dik_data()
+
+    aliased = difference_in_kinks(
+        y, t, group, policy_kink_change=1.0, bandwidth=12.0, kernel="uniform"
+    )
+    grouped = difference_in_kinks(
+        y, t, group=group, policy_kink_change=1.0, bandwidth=12.0, kernel="uniform"
+    )
+
+    assert grouped.tau == aliased.tau
+    assert grouped.se == aliased.se
+    assert grouped.reduced_form == aliased.reduced_form
+    assert grouped.ci == aliased.ci
+    assert grouped.method == "sharp_dik"
+
+
+def test_group_dik_labels_cells_and_kinks_neutrally():
+    t, group, y = _group_dik_data()
+
+    est = difference_in_kinks(
+        y, t, group=group, policy_kink_change=1.0, bandwidth=12.0, kernel="uniform"
+    )
+
+    assert set(est.n_by_cell) == {
+        "group0_left",
+        "group0_right",
+        "group1_left",
+        "group1_right",
+    }
+    assert est.extras["dik_contrast"] == "group1_minus_group0"
+    assert set(est.extras["outcome_kinks"]) == {"group0", "group1"}
+    assert set(est.extras["outcome_slopes"]) == set(est.n_by_cell)
+    assert est.extras["outcome_kinks"]["group1"] - est.extras["outcome_kinks"][
+        "group0"
+    ] == pytest.approx(est.reduced_form, rel=1e-10)
+    assert set(est.extras["residual_lag1_autocorr"]) == set(est.n_by_cell)
+
+
+def test_time_dik_still_reports_the_post_minus_pre_contrast_labels():
+    t, group, y = _group_dik_data()
+
+    est = difference_in_kinks(
+        y, t, group, policy_kink_change=1.0, bandwidth=12.0, kernel="uniform"
+    )
+
+    assert est.extras["dik_contrast"] == "post_minus_pre"
+    assert set(est.extras["outcome_kinks"]) == {"pre", "post"}
+
+
+def test_fuzzy_group_dik_labels_first_stage_kinks_by_group():
+    t, group, y = _group_dik_data()
+    rng = np.random.default_rng(37)
+    policy = (
+        0.2 * t
+        + 1.1 * np.maximum(t, 0.0) * group
+        + 0.05 * rng.standard_normal(t.size)
+    )
+
+    est = difference_in_kinks(
+        y, t, group=group, treatment=policy, bandwidth=12.0, kernel="uniform"
+    )
+
+    assert est.method == "fuzzy_dik"
+    assert set(est.extras["first_stage_kinks"]) == {"group0", "group1"}
+
+
+def test_group_dik_input_validation():
+    t, group, y = _group_dik_data()
+
+    with pytest.raises(ValueError, match="exactly one of post"):
+        difference_in_kinks(
+            y, t, group, group=group, policy_kink_change=1.0, bandwidth=12.0
+        )
+    with pytest.raises(ValueError, match="exactly one of post"):
+        difference_in_kinks(y, t, policy_kink_change=1.0, bandwidth=12.0)
+    with pytest.raises(ValueError, match="group"):
+        difference_in_kinks(
+            y, t, group=np.r_[group[:-1], 2.0], policy_kink_change=1.0, bandwidth=12.0
+        )
+    with pytest.raises(ValueError, match="group"):
+        difference_in_kinks(
+            y, t, group=np.ones_like(group), policy_kink_change=1.0, bandwidth=12.0
+        )
