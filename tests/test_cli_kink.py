@@ -349,3 +349,89 @@ def test_kink_cli_drops_rows_with_missing_time_instead_of_calling_them_pre(tmp_p
     payload = _strict_loads((out / "kink.json").read_text())
     assert payload["estimate"]["n_used"] == 99
     assert payload["estimate"]["extras"]["n_dropped_nonfinite"] == 1
+
+
+def test_kink_cli_hac_lags_flag_switches_inference_and_echoes_warning(tmp_path):
+    t = np.arange(-30, 30, dtype=float) + 0.5
+    rho = 0.85
+    rng = np.random.default_rng(2)
+    noise = np.empty(t.size)
+    noise[0] = rng.standard_normal()
+    for i in range(1, t.size):
+        noise[i] = rho * noise[i - 1] + 0.1 * rng.standard_normal()
+    df = pd.DataFrame({"t": t, "y": 0.02 * t + noise})
+    csv = tmp_path / "series.csv"
+    df.to_csv(csv, index=False)
+
+    base = [
+        "kink",
+        str(csv),
+        "--design",
+        "rkd",
+        "--outcome",
+        "y",
+        "--running",
+        "t",
+        "--policy-kink",
+        "1.0",
+        "--bandwidth",
+        "30",
+        "--kernel",
+        "uniform",
+    ]
+
+    plain = runner.invoke(app, [*base, "--out", str(tmp_path / "plain")])
+    assert plain.exit_code == 0, plain.output
+    plain_payload = _strict_loads((tmp_path / "plain" / "kink.json").read_text())
+    assert plain_payload["estimate"]["extras"]["inference"] == "HC1"
+    assert "autocorrelation_warning" in plain_payload["estimate"]["extras"]
+    assert "warning:" in plain.output
+
+    hac = runner.invoke(
+        app, [*base, "--hac-lags", "4", "--out", str(tmp_path / "hac")]
+    )
+    assert hac.exit_code == 0, hac.output
+    payload = _strict_loads((tmp_path / "hac" / "kink.json").read_text())
+    assert payload["params"]["hac_lags"] == 4
+    assert payload["estimate"]["extras"]["inference"] == "HAC"
+    assert payload["estimate"]["extras"]["hac_lags"] == 4
+    assert "warning:" not in hac.output
+    assert (
+        payload["estimate"]["reduced_form_se"]
+        > plain_payload["estimate"]["reduced_form_se"]
+    )
+
+
+def test_kink_cli_rejects_hac_lags_combined_with_cluster(tmp_path):
+    t = np.arange(-10, 10, dtype=float) + 0.5
+    df = pd.DataFrame({"t": t, "y": 0.1 * t, "g": (np.arange(t.size) % 4)})
+    csv = tmp_path / "series.csv"
+    df.to_csv(csv, index=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "kink",
+            str(csv),
+            "--design",
+            "rkd",
+            "--outcome",
+            "y",
+            "--running",
+            "t",
+            "--policy-kink",
+            "1.0",
+            "--bandwidth",
+            "10",
+            "--cluster",
+            "g",
+            "--hac-lags",
+            "2",
+            "--out",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "at most one" in result.output
+    assert "Traceback" not in result.output

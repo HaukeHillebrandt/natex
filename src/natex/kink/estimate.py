@@ -21,6 +21,8 @@ from scipy import stats
 _KERNELS = {"triangular", "uniform", "epanechnikov"}
 _WEAK_F_THRESHOLD = 10.0
 _RELATIVE_ROUNDOFF_TOL = 1_000.0 * np.finfo(float).eps
+_AUTOCORR_WARN_THRESHOLD = 0.25
+_AUTOCORR_MIN_SERIES = 5
 
 
 @dataclass
@@ -55,6 +57,7 @@ class _Prepared:
     cell: np.ndarray
     cell_labels: tuple[str, ...]
     clusters: np.ndarray | None
+    hac: tuple[np.ndarray, int, int] | None
     n_input: int
     n_dropped_nonfinite: int
     n_outside_bandwidth: int
@@ -117,6 +120,19 @@ def _validate_common(
         raise ValueError("alpha must lie in (0, 1)")
 
 
+def _validate_hac(hac_lags: int | None, clusters) -> None:
+    if hac_lags is None:
+        return
+    if (
+        isinstance(hac_lags, bool)
+        or not isinstance(hac_lags, (int, np.integer))
+        or hac_lags < 0
+    ):
+        raise ValueError("hac_lags must be an integer >= 0")
+    if clusters is not None:
+        raise ValueError("supply at most one of clusters (CR1) and hac_lags (HAC)")
+
+
 def _validate_first_stage(treatment, policy_kink: float | None, name: str) -> None:
     if (treatment is None) == (policy_kink is None):
         raise ValueError(
@@ -177,6 +193,7 @@ def _prepare(
     donut: float,
     covariates,
     clusters,
+    hac_lags: int | None = None,
 ) -> _Prepared:
     y_all = _as_vector("y", y)
     n = y_all.size
@@ -278,6 +295,11 @@ def _prepare(
     if cluster_all is not None:
         cluster_fit, _ = pd.factorize(cluster_all[selected], sort=False)
 
+    hac = None
+    if hac_lags is not None:
+        unique_x, time_ids = np.unique(u * bandwidth, return_inverse=True)
+        hac = (time_ids, int(unique_x.size), int(hac_lags))
+
     return _Prepared(
         y=y_fit,
         treatment=treatment_fit,
@@ -288,6 +310,7 @@ def _prepare(
         cell=cell,
         cell_labels=cell_labels,
         clusters=cluster_fit,
+        hac=hac,
         n_input=n,
         n_dropped_nonfinite=n_dropped_nonfinite,
         n_outside_bandwidth=outside_bandwidth,
@@ -305,10 +328,27 @@ def _score_meat(
     residual_a: np.ndarray,
     residual_b: np.ndarray,
     clusters: np.ndarray | None,
+    hac: tuple[np.ndarray, int, int] | None = None,
 ) -> tuple[np.ndarray, float, int | None]:
     score_a = design * (weights * residual_a)[:, None]
     score_b = design * (weights * residual_b)[:, None]
     n, p = design.shape
+    if hac is not None:
+        time_ids, n_times, lags = hac
+        if n_times < 2:
+            raise ValueError("HAC inference requires at least two distinct running values")
+        sums_a = np.zeros((n_times, p), dtype=float)
+        sums_b = np.zeros((n_times, p), dtype=float)
+        np.add.at(sums_a, time_ids, score_a)
+        np.add.at(sums_b, time_ids, score_b)
+        meat = sums_a.T @ sums_b
+        for lag in range(1, min(lags, n_times - 1) + 1):
+            bartlett = 1.0 - lag / (lags + 1.0)
+            meat = meat + bartlett * (
+                sums_a[lag:].T @ sums_b[:-lag] + sums_a[:-lag].T @ sums_b[lag:]
+            )
+        factor = (n_times / (n_times - 1)) * ((n - 1) / max(n - p, 1))
+        return meat, factor, n_times
     if clusters is None:
         factor = n / max(n - p, 1)
         return score_a.T @ score_b, factor, None
@@ -358,7 +398,7 @@ def _fit(prepared: _Prepared, values: np.ndarray) -> _Fit:
     if scaled_sse <= _RELATIVE_ROUNDOFF_TOL**2 * scaled_value_ss:
         residual = np.zeros_like(residual)
     meat, factor, _ = _score_meat(
-        design, weights, residual, residual, prepared.clusters
+        design, weights, residual, residual, prepared.clusters, prepared.hac
     )
     cov = bread @ meat @ bread * factor
     return _Fit(
@@ -378,6 +418,7 @@ def _cross_cov(prepared: _Prepared, fit_a: _Fit, fit_b: _Fit) -> np.ndarray:
         fit_a.residual,
         fit_b.residual,
         prepared.clusters,
+        prepared.hac,
     )
     return fit_a.bread @ meat @ fit_b.bread * factor
 
@@ -434,6 +475,32 @@ def _cell_slopes(
         slopes[label] = value
         ses[label] = se
     return slopes, ses
+
+
+def _lag1_autocorr(x: np.ndarray, residual: np.ndarray) -> float:
+    """Lag-1 autocorrelation of per-distinct-``x`` mean residuals, in ``x`` order."""
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    if unique_x.size < _AUTOCORR_MIN_SERIES:
+        return float("nan")
+    sums = np.zeros(unique_x.size, dtype=float)
+    counts = np.zeros(unique_x.size, dtype=float)
+    np.add.at(sums, inverse, residual)
+    np.add.at(counts, inverse, 1.0)
+    series = sums / counts
+    centered = series - series.mean()
+    denominator = float(centered @ centered)
+    if denominator <= 0.0:
+        return float("nan")
+    return float(centered[1:] @ centered[:-1] / denominator)
+
+
+def _residual_lag1_autocorr(
+    prepared: _Prepared, residual: np.ndarray
+) -> dict[str, float]:
+    return {
+        label: _lag1_autocorr(prepared.x[prepared.cell == j], residual[prepared.cell == j])
+        for j, label in enumerate(prepared.cell_labels)
+    }
 
 
 def _fieller(
@@ -563,6 +630,7 @@ def _estimate(
     donut: float,
     covariates,
     clusters,
+    hac_lags: int | None,
     alpha: float,
 ) -> KinkEstimate:
     sharp = policy_kink is not None
@@ -580,21 +648,30 @@ def _estimate(
         donut=donut,
         covariates=covariates,
         clusters=clusters,
+        hac_lags=hac_lags,
     )
     n, p = prepared.design.shape
     n_clusters = None
     if prepared.clusters is not None:
         n_clusters = int(prepared.clusters.max(initial=-1) + 1)
-    critical_df = (
-        n_clusters - 1
-        if prepared.clusters is not None and n_clusters is not None and n_clusters >= 2
-        else None
-    )
+    n_time_points = None if prepared.hac is None else prepared.hac[1]
+    if prepared.clusters is not None and n_clusters is not None and n_clusters >= 2:
+        critical_df = n_clusters - 1
+    elif n_time_points is not None and n_time_points >= 2:
+        critical_df = n_time_points - 1
+    else:
+        critical_df = None
     critical_value = float(
         stats.t.isf(alpha / 2.0, critical_df)
         if critical_df is not None
         else stats.norm.isf(alpha / 2.0)
     )
+    if prepared.hac is not None:
+        inference = "HAC"
+    elif prepared.clusters is not None:
+        inference = "CR1"
+    else:
+        inference = "HC1"
     extras = {
         "cutoff": cutoff,
         "bandwidth": bandwidth,
@@ -602,7 +679,7 @@ def _estimate(
         "kernel": kernel,
         "donut": donut,
         "contrast": "right_minus_left",
-        "inference": "CR1" if prepared.clusters is not None else "HC1",
+        "inference": inference,
         "n_clusters": n_clusters,
         "critical_df": critical_df,
         "critical_value": critical_value,
@@ -614,6 +691,10 @@ def _estimate(
         "n_covariates": prepared.n_covariates,
         "n_covariates_dropped_constant": prepared.n_covariates_dropped_constant,
     }
+    if prepared.hac is not None:
+        extras["hac_lags"] = int(prepared.hac[2])
+        extras["hac_kernel"] = "bartlett"
+        extras["n_time_points"] = n_time_points
     under = [label for label, count in prepared.n_by_cell.items() if count < degree + 1]
     if under:
         return _nan_estimate(
@@ -659,6 +740,18 @@ def _estimate(
                 f"cluster-robust inference needs at least two clusters in every cell: {unsupported}",
                 extras,
             )
+    if (
+        prepared.hac is not None
+        and n_time_points is not None
+        and prepared.hac[2] >= n_time_points
+    ):
+        return _nan_estimate(
+            method,
+            prepared,
+            f"hac_lags={prepared.hac[2]} needs at least {prepared.hac[2] + 1} "
+            f"distinct running values inside the window; found {n_time_points}",
+            extras,
+        )
 
     try:
         outcome_fit = _fit(prepared, prepared.y)
@@ -671,6 +764,21 @@ def _estimate(
         extras["outcome_slopes"] = outcome_slopes
         extras["outcome_slope_se"] = outcome_slope_se
         extras["rank"] = outcome_fit.rank
+        autocorr = _residual_lag1_autocorr(prepared, outcome_fit.residual)
+        extras["residual_lag1_autocorr"] = autocorr
+        finite_rho = [value for value in autocorr.values() if np.isfinite(value)]
+        if (
+            prepared.hac is None
+            and finite_rho
+            and max(finite_rho) >= _AUTOCORR_WARN_THRESHOLD
+        ):
+            extras["autocorrelation_warning"] = (
+                f"residual lag-1 autocorrelation reaches {max(finite_rho):.2f}; "
+                "HC1/CR1 p-values are oversized under positive serial correlation - "
+                "calibrate against placebo_kinks (placebo_calibrated_p) and consider "
+                "hac_lags (Newey-West), which reduces but does not remove the "
+                "oversizing on short windows"
+            )
 
         if sharp:
             first_stage = float(policy_kink)
@@ -800,6 +908,7 @@ def regression_kink(
     donut: float = 0.0,
     covariates=None,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy regression kink at a known cutoff.
@@ -808,8 +917,17 @@ def regression_kink(
     slope change; sharp RKD) or ``treatment`` (observed stochastic policy
     variable; fuzzy RKD).  ``bandwidth`` is required because natex does not
     claim an automatic derivative-optimal selector.
+
+    ``hac_lags`` switches the sandwich covariance to Newey-West/Driscoll-Kraay
+    over distinct running values (Bartlett weights, scores pooled per value):
+    use it when the running variable is time and residuals are serially
+    correlated, where HC1/CR1 p-values are badly oversized. It is mutually
+    exclusive with ``clusters`` and uses ``t(n_time_points - 1)`` critical
+    values; lag ``l`` refers to steps in the sorted sequence of distinct
+    running values inside the window.
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
+    _validate_hac(hac_lags, clusters)
     _validate_first_stage(treatment, policy_kink, "policy_kink")
     return _estimate(
         y,
@@ -824,6 +942,7 @@ def regression_kink(
         donut=donut,
         covariates=covariates,
         clusters=clusters,
+        hac_lags=hac_lags,
         alpha=alpha,
     )
 
@@ -842,6 +961,7 @@ def difference_in_kinks(
     donut: float = 0.0,
     covariates=None,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> KinkEstimate:
     """Estimate a sharp or fuzzy difference-in-kinks design.
@@ -854,8 +974,13 @@ def difference_in_kinks(
     when latent policy-schedule composition is stable (or validly reweighted)
     across periods at the cutoff and individual kink changes share one sign.
     These identifying assumptions are not testable by this function.
+
+    ``hac_lags`` behaves as in :func:`regression_kink`: Newey-West/
+    Driscoll-Kraay covariance over distinct running values for serially
+    correlated (time-running) designs, mutually exclusive with ``clusters``.
     """
     _validate_common(cutoff, bandwidth, degree, kernel, donut, alpha)
+    _validate_hac(hac_lags, clusters)
     _validate_first_stage(treatment, policy_kink_change, "policy_kink_change")
     return _estimate(
         y,
@@ -870,5 +995,6 @@ def difference_in_kinks(
         donut=donut,
         covariates=covariates,
         clusters=clusters,
+        hac_lags=hac_lags,
         alpha=alpha,
     )

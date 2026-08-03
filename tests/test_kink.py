@@ -746,3 +746,221 @@ def test_zero_weight_kernel_endpoint_does_not_supply_residual_degrees_of_freedom
     assert est.extras["n_zero_weight_excluded"] == 1
     assert np.isnan(est.tau)
     assert "residual degrees of freedom" in est.extras["reason"]
+
+
+def _hac_oracle(x, y, weights, lags):
+    """Textbook Driscoll-Kraay/Newey-West sandwich for the side-specific contrast.
+
+    Scores are summed by distinct running value (ascending order), the meat adds
+    Bartlett-weighted lag cross-products over that sequence, and the small-sample
+    factor treats distinct running values exactly like CR1 clusters.
+    """
+    right = x >= 0.0
+    design = np.column_stack(
+        [(~right).astype(float), (~right) * x, right.astype(float), right * x]
+    )
+    bread = np.linalg.inv(design.T @ (design * weights[:, None]))
+    beta = bread @ (design.T @ (weights * y))
+    scores = design * (weights * (y - design @ beta))[:, None]
+    n, p = design.shape
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    sums = np.zeros((unique_x.size, p))
+    np.add.at(sums, inverse, scores)
+    meat = sums.T @ sums
+    for lag in range(1, lags + 1):
+        bartlett = 1.0 - lag / (lags + 1.0)
+        gamma = sums[lag:].T @ sums[:-lag]
+        meat = meat + bartlett * (gamma + gamma.T)
+    n_times = unique_x.size
+    factor = (n_times / (n_times - 1)) * ((n - 1) / (n - p))
+    cov = bread @ meat @ bread * factor
+    contrast = np.array([0.0, -1.0, 0.0, 1.0])
+    return float(contrast @ beta), float(np.sqrt(contrast @ cov @ contrast))
+
+
+def test_hac_sandwich_matches_a_hand_computed_newey_west_oracle():
+    times = np.r_[np.linspace(-1.0, -0.05, 20), np.linspace(0.05, 1.0, 20)]
+    x = np.repeat(times, 2)
+    rng = np.random.default_rng(7)
+    y = (
+        0.4 * x
+        + 0.9 * np.maximum(x, 0.0)
+        + 0.15 * np.sin(9.0 * x)
+        + 0.05 * rng.standard_normal(x.size)
+    )
+    kink, se = _hac_oracle(x, y, np.ones_like(x), lags=3)
+
+    est = regression_kink(
+        y, x, policy_kink=0.9, bandwidth=1.0, kernel="uniform", hac_lags=3
+    )
+
+    assert est.extras["inference"] == "HAC"
+    assert est.extras["hac_lags"] == 3
+    assert est.extras["hac_kernel"] == "bartlett"
+    assert est.extras["n_time_points"] == 40
+    assert est.extras["critical_df"] == 39
+    assert est.reduced_form == pytest.approx(kink, rel=1e-10)
+    assert est.reduced_form_se == pytest.approx(se, rel=1e-10)
+    assert est.se == pytest.approx(se / 0.9, rel=1e-10)
+
+
+def test_hac_lags_zero_equals_cr1_clustered_by_running_value():
+    x = _grid(18)
+    y = 0.3 * x + 1.1 * np.maximum(x, 0.0) + 0.08 * np.cos(5.0 * x)
+
+    hac = regression_kink(
+        y, x, policy_kink=1.1, bandwidth=1.0, kernel="uniform", hac_lags=0
+    )
+    cr1 = regression_kink(
+        y, x, policy_kink=1.1, bandwidth=1.0, kernel="uniform", clusters=x
+    )
+
+    assert hac.reduced_form == pytest.approx(cr1.reduced_form, rel=1e-12)
+    assert hac.reduced_form_se == pytest.approx(cr1.reduced_form_se, rel=1e-12)
+    assert hac.extras["critical_df"] == cr1.extras["critical_df"]
+    assert hac.ci == pytest.approx(cr1.ci, rel=1e-12)
+
+
+def test_hac_reduces_but_does_not_remove_hc1_oversizing_on_serially_correlated_series():
+    """AR(1) rho=0.75, T=64, 150 reps, seed 3: HC1 size 0.43, HAC(6) size 0.29.
+
+    Newey-West on residual scores cannot restore nominal size here because the
+    side-specific local fits absorb the low-frequency noise (measured during
+    implementation: plain NW 0.34-0.43 across lags 4-20 at 400 reps, VAR(1)
+    prewhitening still 0.19). The honest tool on such series is
+    ``placebo_calibrated_p``; this test pins both the improvement and the
+    documented residual oversizing.
+    """
+    rng = np.random.default_rng(3)
+    t = np.arange(-32, 32, dtype=float) + 0.5
+    n_reps = 150
+    rho = 0.75
+    rejections = {"HC1": 0, "HAC": 0}
+    for _ in range(n_reps):
+        noise = np.empty(t.size)
+        noise[0] = rng.standard_normal() / np.sqrt(1.0 - rho**2)
+        for i in range(1, t.size):
+            noise[i] = rho * noise[i - 1] + rng.standard_normal()
+        y = 0.05 * t + noise
+        for name, kwargs in (("HC1", {}), ("HAC", {"hac_lags": 6})):
+            est = regression_kink(
+                y, t, policy_kink=1.0, bandwidth=32.0, kernel="uniform", **kwargs
+            )
+            z = est.reduced_form / est.reduced_form_se
+            df = est.extras["critical_df"]
+            p = 2.0 * (
+                stats.t.sf(abs(z), df) if df is not None else stats.norm.sf(abs(z))
+            )
+            rejections[name] += bool(p < 0.05)
+    hc1_size = rejections["HC1"] / n_reps
+    hac_size = rejections["HAC"] / n_reps
+
+    assert hc1_size > 0.25
+    assert hac_size < hc1_size - 0.10
+    assert hac_size > 0.10
+
+
+def test_fuzzy_hac_uses_time_degrees_of_freedom_throughout():
+    rng = np.random.default_rng(9)
+    t = np.arange(-24, 24, dtype=float) + 0.5
+    policy = 0.5 * t + 1.2 * np.maximum(t, 0.0) + 0.1 * rng.standard_normal(t.size)
+    noise = np.empty(t.size)
+    noise[0] = rng.standard_normal()
+    for i in range(1, t.size):
+        noise[i] = 0.6 * noise[i - 1] + 0.3 * rng.standard_normal()
+    y = 2.0 * policy + 0.2 * t + noise
+
+    plain = regression_kink(y, t, treatment=policy, bandwidth=24.0, kernel="uniform")
+    est = regression_kink(
+        y, t, treatment=policy, bandwidth=24.0, kernel="uniform", hac_lags=4
+    )
+
+    assert est.extras["inference"] == "HAC"
+    assert est.extras["critical_df"] == est.extras["n_time_points"] - 1
+    assert np.isfinite(est.tau) and np.isfinite(est.se)
+    assert est.tau == pytest.approx(plain.tau, rel=1e-12)
+    assert est.se != pytest.approx(plain.se, rel=1e-6)
+    assert est.fieller_kind is not None
+
+
+def test_residual_autocorrelation_diagnostic_reports_cells_and_warns_without_hac():
+    rng = np.random.default_rng(11)
+    t = np.arange(-30, 30, dtype=float) + 0.5
+    rho = 0.8
+    noise = np.empty(t.size)
+    noise[0] = rng.standard_normal()
+    for i in range(1, t.size):
+        noise[i] = rho * noise[i - 1] + 0.1 * rng.standard_normal()
+    y = 0.02 * t + noise
+
+    plain = regression_kink(y, t, policy_kink=1.0, bandwidth=30.0, kernel="uniform")
+    autocorr = plain.extras["residual_lag1_autocorr"]
+
+    assert set(autocorr) == {"left", "right"}
+    assert max(autocorr.values()) >= 0.25
+    assert "oversized" in plain.extras["autocorrelation_warning"]
+    assert "hac_lags" in plain.extras["autocorrelation_warning"]
+
+    hac = regression_kink(
+        y, t, policy_kink=1.0, bandwidth=30.0, kernel="uniform", hac_lags=4
+    )
+    assert hac.extras["residual_lag1_autocorr"]["left"] == pytest.approx(
+        autocorr["left"], rel=1e-12
+    )
+    assert "autocorrelation_warning" not in hac.extras
+
+
+def test_white_noise_residuals_do_not_trigger_the_autocorrelation_warning():
+    rng = np.random.default_rng(5)
+    t = np.arange(-40, 40, dtype=float) + 0.5
+    y = 0.01 * t + rng.standard_normal(t.size)
+
+    est = regression_kink(y, t, policy_kink=1.0, bandwidth=40.0, kernel="uniform")
+
+    assert "autocorrelation_warning" not in est.extras
+    assert all(v < 0.25 for v in est.extras["residual_lag1_autocorr"].values())
+
+
+def test_dik_autocorrelation_diagnostic_covers_all_four_cells():
+    t = np.tile(np.arange(-10, 10, dtype=float) + 0.5, 2)
+    post = np.r_[np.zeros(20), np.ones(20)]
+    y = 0.1 * t + 0.5 * np.maximum(t, 0.0) * post + 0.03 * np.cos(4.0 * t)
+
+    est = difference_in_kinks(
+        y, t, post, policy_kink_change=1.0, bandwidth=10.0, kernel="uniform"
+    )
+
+    assert set(est.extras["residual_lag1_autocorr"]) == {
+        "pre_left",
+        "pre_right",
+        "post_left",
+        "post_right",
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"hac_lags": -1}, "hac_lags"),
+        ({"hac_lags": 1.5}, "hac_lags"),
+        ({"hac_lags": True}, "hac_lags"),
+        ({"hac_lags": 2, "clusters": np.arange(60) % 3}, "at most one"),
+    ],
+)
+def test_hac_rejects_invalid_arguments(kwargs, message):
+    x = _grid()
+    y = np.cos(x)
+    with pytest.raises(ValueError, match=message):
+        regression_kink(y, x, policy_kink=1.0, bandwidth=1.0, **kwargs)
+
+
+def test_hac_lags_beyond_distinct_running_values_is_nan_with_reason():
+    x = _grid(6)
+    y = 0.2 * x + np.maximum(x, 0.0) + 0.01 * np.sin(20.0 * x)
+
+    est = regression_kink(
+        y, x, policy_kink=1.0, bandwidth=1.0, kernel="uniform", hac_lags=12
+    )
+
+    assert np.isnan(est.tau)
+    assert "distinct running values" in est.extras["reason"]

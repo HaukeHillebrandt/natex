@@ -140,6 +140,7 @@ def _reduced_form(
     donut: float,
     covariates,
     clusters,
+    hac_lags: int | None,
     alpha: float,
 ) -> KinkEstimate:
     """Outcome kink contrast with a unit denominator (sharp reduced form)."""
@@ -155,6 +156,7 @@ def _reduced_form(
             donut=donut,
             covariates=covariates,
             clusters=clusters,
+            hac_lags=hac_lags,
             alpha=alpha,
         )
     return difference_in_kinks(
@@ -169,6 +171,7 @@ def _reduced_form(
         donut=donut,
         covariates=covariates,
         clusters=clusters,
+        hac_lags=hac_lags,
         alpha=alpha,
     )
 
@@ -188,6 +191,7 @@ def sensitivity_grid(
     kernel: str = "triangular",
     covariates=None,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> list[KinkEstimate]:
     """Re-estimate the design over a bandwidth-by-donut grid (paper Fig. A3 A-B).
@@ -230,6 +234,7 @@ def sensitivity_grid(
                         donut=d,
                         covariates=covariates,
                         clusters=clusters,
+                        hac_lags=hac_lags,
                         alpha=alpha,
                     )
                 )
@@ -248,6 +253,7 @@ def sensitivity_grid(
                         donut=d,
                         covariates=covariates,
                         clusters=clusters,
+                        hac_lags=hac_lags,
                         alpha=alpha,
                     )
                 )
@@ -266,6 +272,7 @@ def placebo_kinks(
     donut: float = 0.0,
     covariates=None,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> PlaceboKinkGrid:
     """Reduced-form kink contrasts at shifted placebo cutoffs (paper Fig. A3 C).
@@ -295,6 +302,7 @@ def placebo_kinks(
             donut=donut,
             covariates=covariates,
             clusters=clusters,
+            hac_lags=hac_lags,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)
@@ -333,6 +341,7 @@ def covariate_kinks(
     kernel: str = "triangular",
     donut: float = 0.0,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> list[CovariateKink]:
     """Predetermined covariates as placebo outcomes (paper Fig. A4 B-D, Table A3).
@@ -357,6 +366,7 @@ def covariate_kinks(
             donut=donut,
             covariates=None,
             clusters=clusters,
+            hac_lags=hac_lags,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)
@@ -386,6 +396,7 @@ def event_study_kinks(
     donut: float = 0.0,
     covariates=None,
     clusters=None,
+    hac_lags: int | None = None,
     alpha: float = 0.05,
 ) -> KinkEventStudy:
     """Per-period kink contrasts relative to a base period (paper Fig. A2 D).
@@ -427,6 +438,7 @@ def event_study_kinks(
             donut=donut,
             covariates=None if covariates_all is None else covariates_all[mask],
             clusters=None if clusters_all is None else clusters_all[mask],
+            hac_lags=hac_lags,
             alpha=alpha,
         )
         value, se, p_value, n_used, reason = _contrast_row(estimate)
@@ -529,3 +541,54 @@ def density_kink_difference(
         density_difference=density_difference,
         reason=reason,
     )
+
+
+def _absolute_statistic(value: float, se: float, statistic: str) -> float:
+    if not np.isfinite(value):
+        return float("nan")
+    if statistic == "estimate":
+        return abs(value)
+    if not np.isfinite(se):
+        return float("nan")
+    if se == 0.0:
+        return float("inf") if value != 0.0 else float("nan")
+    return abs(value / se)
+
+
+def placebo_calibrated_p(
+    estimate: KinkEstimate,
+    grid: PlaceboKinkGrid,
+    *,
+    statistic: str = "z",
+) -> float:
+    """Empirical placebo-calibrated p for the headline kink contrast.
+
+    Under the null that the candidate cutoff is exchangeable with the supplied
+    placebo cutoffs, compares the headline reduced-form contrast against the
+    grid on the ``|z| = |estimate/se|`` scale (``statistic="z"``) or the raw
+    ``|estimate|`` scale (``statistic="estimate"``) and returns the add-one
+    permutation p-value ``(1 + #{placebo >= headline}) / (1 + #comparable)``.
+
+    This is the honest inference on serially correlated (time-running) series
+    where HC1/CR1 - and, to a smaller degree, ``hac_lags`` - over-reject:
+    supply cutoffs away from the true kink, and pass the same ``hac_lags`` to
+    ``placebo_kinks`` as to the headline estimate so both sides use one
+    covariance recipe. Unevaluable placebos are excluded from the denominator;
+    an unevaluable headline contrast returns ``NaN``, never ``0.0``.
+    """
+    if statistic not in ("z", "estimate"):
+        raise ValueError(f"statistic must be 'z' or 'estimate', got {statistic!r}")
+    headline = _absolute_statistic(
+        float(estimate.reduced_form), float(estimate.reduced_form_se), statistic
+    )
+    if np.isnan(headline):
+        return float("nan")
+    placebo_stats = [
+        _absolute_statistic(float(row.estimate), float(row.se), statistic)
+        for row in grid.placebos
+    ]
+    comparable = [value for value in placebo_stats if not np.isnan(value)]
+    if not comparable:
+        return float("nan")
+    n_extreme = sum(value >= headline for value in comparable)
+    return float((1 + n_extreme) / (1 + len(comparable)))

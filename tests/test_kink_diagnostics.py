@@ -13,10 +13,15 @@ import numpy as np
 import pytest
 
 from natex.kink import (
+    KinkEstimate,
+    PlaceboKink,
+    PlaceboKinkGrid,
     covariate_kinks,
     density_kink_difference,
     event_study_kinks,
+    placebo_calibrated_p,
     placebo_kinks,
+    regression_kink,
     sensitivity_grid,
 )
 
@@ -228,3 +233,105 @@ def test_density_kink_difference_validates_bins_and_reports_empty_windows():
     assert result.n_pre == 0
     assert np.isnan(result.estimate) and np.isnan(result.p_value)
     assert "pre" in result.reason
+
+
+def _headline(reduced_form: float, reduced_form_se: float) -> KinkEstimate:
+    nan = float("nan")
+    return KinkEstimate(
+        tau=nan,
+        se=nan,
+        ci=(nan, nan),
+        method="sharp_rkd",
+        reduced_form=reduced_form,
+        reduced_form_se=reduced_form_se,
+        first_stage=1.0,
+        first_stage_se=0.0,
+        first_stage_F=float("inf"),
+        weak_first_stage=False,
+        n_used=10,
+        n_by_cell={"left": 5, "right": 5},
+    )
+
+
+def _placebo_grid(rows) -> PlaceboKinkGrid:
+    placebos = [
+        PlaceboKink(
+            cutoff=float(i),
+            estimate=estimate,
+            se=se,
+            p_value=float("nan"),
+            n_used=10,
+            reason=None,
+        )
+        for i, (estimate, se) in enumerate(rows)
+    ]
+    return PlaceboKinkGrid(
+        placebos=placebos,
+        alpha=0.05,
+        n_evaluated=len(placebos),
+        n_significant=0,
+        empirical_size=float("nan"),
+    )
+
+
+def test_placebo_calibrated_p_uses_add_one_counting_on_the_z_scale():
+    grid = _placebo_grid([(1.0, 1.0), (2.0, 1.0), (4.0, 1.0), (5.0, 1.0)])
+    p = placebo_calibrated_p(_headline(3.0, 1.0), grid)
+    assert p == pytest.approx(3.0 / 5.0)
+
+    none_as_extreme = placebo_calibrated_p(_headline(9.0, 1.0), grid)
+    assert none_as_extreme == pytest.approx(1.0 / 5.0)
+
+
+def test_placebo_calibrated_p_supports_the_raw_estimate_scale():
+    grid = _placebo_grid([(0.2, 5.0), (-0.6, 5.0), (0.1, 5.0)])
+    p = placebo_calibrated_p(_headline(0.5, 1.0), grid, statistic="estimate")
+    assert p == pytest.approx(2.0 / 4.0)
+
+
+def test_placebo_calibrated_p_excludes_unevaluable_placebos_and_handles_nan():
+    grid = _placebo_grid([(float("nan"), 1.0), (2.0, 1.0)])
+    p = placebo_calibrated_p(_headline(3.0, 1.0), grid)
+    assert p == pytest.approx(1.0 / 2.0)
+
+    assert np.isnan(placebo_calibrated_p(_headline(float("nan"), 1.0), grid))
+    empty = _placebo_grid([(float("nan"), 1.0)])
+    assert np.isnan(placebo_calibrated_p(_headline(3.0, 1.0), empty))
+
+    with pytest.raises(ValueError, match="statistic"):
+        placebo_calibrated_p(_headline(3.0, 1.0), grid, statistic="wrong")
+
+
+def test_placebo_calibrated_p_flags_an_era_bend_that_nominal_p_certifies():
+    """Smooth curvature bends everywhere: nominal p is tiny, calibrated p is not.
+
+    ``exp`` is self-similar, so every shifted window reports the same |z| up to
+    float roundoff while the raw kinks grow strictly to the right: the two
+    placebo cutoffs at +8/+16 beat the headline kink on the estimate scale.
+    """
+    t = np.arange(-40.0, 40.0) + 0.5
+    y = np.exp(0.04 * t)
+
+    est = regression_kink(y, t, policy_kink=1.0, bandwidth=20.0, kernel="uniform")
+    nominal_z = abs(est.reduced_form / est.reduced_form_se)
+    assert nominal_z > 10.0
+
+    grid = placebo_kinks(
+        y, t, cutoffs=[-16.0, -8.0, 8.0, 16.0], bandwidth=20.0, kernel="uniform"
+    )
+    assert placebo_calibrated_p(est, grid, statistic="estimate") == pytest.approx(0.6)
+    assert placebo_calibrated_p(est, grid) >= 0.2
+
+
+def test_placebo_kinks_passes_hac_lags_through_to_the_estimator():
+    t = np.arange(-30.0, 30.0) + 0.5
+    y = 0.1 * t + 0.02 * t**2
+
+    plain = placebo_kinks(y, t, cutoffs=[-10.0, 10.0], bandwidth=15.0, kernel="uniform")
+    hac = placebo_kinks(
+        y, t, cutoffs=[-10.0, 10.0], bandwidth=15.0, kernel="uniform", hac_lags=3
+    )
+
+    for plain_row, hac_row in zip(plain.placebos, hac.placebos):
+        assert hac_row.estimate == pytest.approx(plain_row.estimate, rel=1e-12)
+        assert hac_row.se != pytest.approx(plain_row.se, rel=1e-6)

@@ -645,6 +645,14 @@ def kink(
     donut: float = typer.Option(0.0, help="exclude |running-cutoff| below this radius"),
     covariates: str = typer.Option(None, help="comma-separated numeric adjustment columns"),
     cluster: str = typer.Option(None, help="cluster column for CR1 covariance"),
+    hac_lags: int = typer.Option(
+        None,
+        "--hac-lags",
+        help=(
+            "Newey-West lags over distinct running values (serially correlated "
+            "time-running designs); replaces HC1 and excludes --cluster"
+        ),
+    ),
     alpha: float = typer.Option(0.05, help="two-sided confidence-set size"),
     out: Path = typer.Option(Path("out"), help="output directory"),
 ):
@@ -721,6 +729,7 @@ def kink(
             "donut": donut,
             "covariates": covariate_values,
             "clusters": cluster_values,
+            "hac_lags": hac_lags,
             "alpha": alpha,
         }
         if design == "rkd":
@@ -784,6 +793,7 @@ def kink(
                 "donut": donut,
                 "covariates": covariate_names,
                 "cluster": cluster,
+                "hac_lags": hac_lags,
                 "alpha": alpha,
                 "contrast": "right_minus_left",
                 "csv": str(csv),
@@ -805,6 +815,9 @@ def kink(
         f"first-stage F={fs_text} weak={estimate.weak_first_stage}"
     )
     typer.echo(f"results: {path}")
+    autocorrelation_warning = estimate.extras.get("autocorrelation_warning")
+    if autocorrelation_warning is not None:
+        typer.echo(f"warning: {autocorrelation_warning}")
     if not np.isfinite(estimate.tau):
         reason = estimate.extras.get(
             "reason", "the estimand is undefined because its denominator is zero or non-finite"

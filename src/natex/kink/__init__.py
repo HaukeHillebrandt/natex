@@ -10,6 +10,7 @@ from natex.kink.diagnostics import (
     covariate_kinks,
     density_kink_difference,
     event_study_kinks,
+    placebo_calibrated_p,
     placebo_kinks,
     sensitivity_grid,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "density_kink_difference",
     "difference_in_kinks",
     "event_study_kinks",
+    "placebo_calibrated_p",
     "placebo_kinks",
     "regression_kink",
     "sensitivity_grid",

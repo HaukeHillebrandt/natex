@@ -70,6 +70,15 @@ procedure. The following are natex choices:
 - HC1 sandwich covariance by default.
 - CR1 cluster-robust covariance when `clusters=` / `--cluster` is supplied, with
   `t(G-1)` critical values. Every local side/period cell must contain at least two clusters.
+- HAC (Newey-West/Driscoll-Kraay) covariance when `hac_lags=` / `--hac-lags` is supplied,
+  for serially correlated series where the running variable is time: scores are pooled by
+  distinct running value (ascending), the meat adds Bartlett-weighted lag cross-products
+  over that sequence (a lag is one step in the sorted distinct values, so gaps count as
+  adjacent), and critical values are `t(n_time_points - 1)`. `hac_lags=0` reduces exactly
+  to CR1 clustered by distinct running value. Mutually exclusive with `clusters=`.
+- Every estimate reports `extras["residual_lag1_autocorr"]` (per-cell lag-1
+  autocorrelation of per-distinct-running-value mean residuals) and, when it reaches 0.25
+  without `hac_lags`, an `extras["autocorrelation_warning"]`.
 - Joint outcome-policy sandwich covariance in the fuzzy delta-method standard error,
   evaluated through the combined outcome-minus-ratio-times-policy influence score to avoid
   numerical cancellation.
@@ -84,6 +93,14 @@ procedure. The following are natex choices:
 The ordinary Wald interval is conventional local-polynomial inference and may retain
 **smoothing bias**. Robust bias correction is not implemented; polynomial and bandwidth
 sensitivity is part of the required analysis.
+
+**HAC is a mitigation, not a certificate.** On short, strongly persistent windows even a
+correctly specified HAC covariance stays oversized, because the side-specific local fits
+absorb the low-frequency noise before the residual scores ever see it. Null calibration on
+AR(1) noise with `rho = 0.75` over 64 time points measured empirical size at nominal 0.05
+of ~0.48 for HC1 and still ~0.34 for Newey-West across lags 4-20 (VAR(1) prewhitening:
+~0.19). On such series the honest headline inference is the placebo-cutoff calibration
+below (`placebo_calibrated_p`), with `hac_lags` as the better-behaved nominal covariance.
 
 ### SE convention
 
@@ -141,8 +158,14 @@ single untestable assumption: *no co-located slope-changing event* — nothing e
 the outcome's expected slope at that exact date. Two practices are therefore mandatory,
 not optional:
 
-- **Always run the placebo-kink grid** (`placebo_kinks`), and read it as separating
-  **bend existence** from **date attribution**. A significant kink at the true cutoff plus
+- **Always run the placebo-kink grid** (`placebo_kinks`), and turn it into the headline
+  p with `placebo_calibrated_p(estimate, grid)` — the add-one share of placebo cutoffs at
+  least as extreme as the candidate on the `|z|` (or `|estimate|`) scale. Aggregate series
+  are serially correlated, HC1/CR1 p-values are oversized there (see the calibration
+  numbers above), and the estimator warns via `extras["autocorrelation_warning"]`; pass
+  the same `hac_lags` to the grid as to the headline so both use one covariance recipe.
+  Read the grid as separating **bend existence** from **date attribution**. A significant
+  kink at the true cutoff plus
   significant kinks at shifted cutoffs means the series bends over an era, not at the
   event. In the Epoch field pass, the METR time-horizon kink was positive in 8/8
   bandwidth-donut cells, yet pre-side placebos at −270/−180/−90 days also rejected
@@ -212,13 +235,14 @@ from natex.kink import (
     covariate_kinks,       # predetermined covariates as placebo outcomes (Fig. A4 B-D)
     density_kink_difference,  # binned pre/post density-difference kink test (Fig. A4 A)
     event_study_kinks,     # per-period kinks relative to a base period (Fig. A2 D)
+    placebo_calibrated_p,  # add-one placebo-calibrated p for the headline contrast
     placebo_kinks,         # shifted placebo cutoffs with empirical size (Fig. A3 C)
     sensitivity_grid,      # bandwidth-by-donut re-estimation grid (Fig. A3 A-B)
 )
 ```
 
 All five reuse the estimator's right-minus-left reduced-form contrast and NaN-never-0.0
-row handling. The density test defaults to a degree-2 bin regression because the paper's
+row handling, and all accept the same `hac_lags` passthrough as the estimator. The density test defaults to a degree-2 bin regression because the paper's
 degree-13 specification over-rejects under the null in calibration; the Table A3 spec is
 available via `degree=13`. These grids are falsification evidence — passing them does not
 certify the identifying assumptions, and a joint pretrend test, CLI flags, and report/paper
