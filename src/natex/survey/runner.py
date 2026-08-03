@@ -519,7 +519,10 @@ def _first_outcome_guess(
 
 
 def _mechanical_step_column(
-    df: pd.DataFrame, treatment: str, declared: DeclaredInputs, intake: IntakeReport
+    df: pd.DataFrame,
+    treatment: str,
+    declared: DeclaredInputs | None,
+    intake: IntakeReport,
 ) -> str | None:
     """First time column in which ``treatment`` is a global deterministic
     monotone 0/1 step, or None (issue #52).
@@ -532,7 +535,7 @@ def _mechanical_step_column(
     if treatment not in df.columns or not pd.api.types.is_numeric_dtype(df[treatment]):
         return None
     candidates = _time_like_columns(intake)
-    if declared.time is not None:
+    if declared is not None and declared.time is not None:
         candidates = candidates | {declared.time}
     for col in sorted(candidates - {treatment}):
         if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):

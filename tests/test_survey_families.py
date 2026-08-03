@@ -289,7 +289,9 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
     intake = SimpleNamespace(
         search_plan=SimpleNamespace(ranked=lambda: [], budget={}),
         prep_plan=SimpleNamespace(apply=lambda frame: (frame, []), column_roles={}),
-        profile=SimpleNamespace(treatment_candidates=["T"], forcing_candidates=["z"]),
+        profile=SimpleNamespace(
+            treatment_candidates=["T"], forcing_candidates=["z"], columns=[]
+        ),
         understanding=SimpleNamespace(outcomes=[SimpleNamespace(column="y")]),
     )
     summary = {
@@ -301,7 +303,9 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
     }
     best = SimpleNamespace(
         summary=summary, p_value=0.01, llr=5.0,
-        candidate=SimpleNamespace(model_dump=lambda: {"design": "rdd"}),
+        candidate=SimpleNamespace(
+            model_dump=lambda: {"design": "rdd"}, treatment="T"
+        ),
     )
     rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best)
     monkeypatch.setattr(runner_mod, "discover", lambda *a, **k: rep)
