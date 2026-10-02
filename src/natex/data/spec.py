@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -128,6 +129,20 @@ class Dataset:
             unit=unit,
         )
         return cls(df, spec)
+
+    def with_outcome(self, outcome: str) -> "Dataset":
+        """Row-aligned copy of this dataset with ``outcome`` as the outcome column.
+
+        Rows, listwise deletion and bookkeeping are shared untouched (the
+        outcome never drives deletion), so a discovery's ``members`` index the
+        copy exactly as they index ``self`` — this is how one scanned boundary
+        is estimated against every candidate outcome without rescanning.
+        """
+        if outcome not in self.df.columns:
+            raise ValueError(f"columns not in dataframe: {[outcome]}")
+        other = copy.copy(self)
+        other.spec = self.spec.model_copy(update={"outcome": outcome})
+        return other
 
     @property
     def n(self) -> int:

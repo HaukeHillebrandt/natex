@@ -68,6 +68,36 @@ def _is_time_like(s: pd.Series, name: str) -> bool:
     return False
 
 
+def mechanical_step_column(
+    df: pd.DataFrame, treatment: str, time_columns: list[str] | set[str]
+) -> str | None:
+    """First time column in which ``treatment`` is a global deterministic
+    monotone 0/1 step, or None (issue #52).
+
+    Such a treatment IS the design's own adoption boundary: any scan
+    "discovery" of it re-finds the construction, not a natural experiment.
+    Staggered (unit-specific) adoption is deliberately NOT flagged — the
+    per-time treated share is then strictly between 0 and 1.
+    """
+    if treatment not in df.columns or not pd.api.types.is_numeric_dtype(df[treatment]):
+        return None
+    for col in sorted(set(time_columns) - {treatment}):
+        if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        sub = df[[col, treatment]].dropna()
+        if len(sub) < 2:
+            continue
+        share = sub.groupby(col)[treatment].mean().to_numpy(dtype=float)
+        if share.size < 2 or not np.isin(share, (0.0, 1.0)).all():
+            continue
+        if share.min() == share.max():
+            continue
+        steps = np.diff(share)
+        if bool((steps >= 0).all() or (steps <= 0).all()):
+            return col
+    return None
+
+
 def profile(df: pd.DataFrame) -> IntakeProfile:
     cols: list[ColumnProfile] = []
     for name in df.columns:
