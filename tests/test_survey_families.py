@@ -293,9 +293,12 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
         search_plan=SimpleNamespace(ranked=lambda: [], budget={}),
         prep_plan=SimpleNamespace(apply=lambda frame: (frame, []), column_roles={}),
         profile=SimpleNamespace(
-            treatment_candidates=["T"], forcing_candidates=["z"], columns=[]
+            treatment_candidates=["T"], forcing_candidates=["z"], columns=[],
+            panel_candidates=[],
         ),
-        understanding=SimpleNamespace(outcomes=[SimpleNamespace(column="y")]),
+        understanding=SimpleNamespace(
+            outcomes=[SimpleNamespace(column="y")], did_structures=[]
+        ),
     )
     summary = {
         "placebo_passed": None,
@@ -310,7 +313,7 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
             model_dump=lambda: {"design": "rdd"}, treatment="T"
         ),
     )
-    rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best)
+    rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best, configs=[])
     monkeypatch.setattr(runner_mod, "discover", lambda *a, **k: rep)
     res = runner_mod._run_rdd(
         df, intake, None, None, None, np.random.default_rng(0), tmp_path, {},

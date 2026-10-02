@@ -345,3 +345,21 @@ def test_sc_family_with_numeric_units_and_string_declared_treated_unit(tmp_path)
     assert sc.diagnostics["treated_unit"] == 1
 
 
+
+
+def test_rdd_family_scans_the_full_role_space_and_reports_every_outcome(tmp_path):
+    """The survey's rdd family must not stop at the plan's one or two
+    candidates: every binary column x every single non-time forcing column
+    is scanned (coverage recorded), and the best boundary is estimated against
+    every candidate outcome so the report says which outcome jumps there."""
+    csv = _write_synthetic_csv(tmp_path)  # binary T + decoy 'holiday'; x0..x2, y
+    res = survey(str(csv), rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+                 budget=_BUDGET)
+    rdd = res.families["rdd"]
+    cov = res.coverage["rdd"]
+    assert cov["role_space"]["treatments"] == ["holiday", "T"]
+    assert cov["exhaustive_candidates"] >= 6  # 2 treatments x (3 singles + joint), deduped
+    assert cov["n_scanned"] >= 6
+    by_outcome = rdd.diagnostics["effects_by_outcome"]
+    assert "y" in by_outcome and "2sls" in by_outcome["y"]
+    assert rdd.diagnostics["best_candidate"]["treatment"] == "T"

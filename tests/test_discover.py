@@ -850,3 +850,39 @@ def test_discover_without_profile_is_unchanged():
     assert rep.searched["n_total"] == 1
     assert rep.searched["excluded"] == []
     assert rep.searched["role_space"] is None
+
+
+def test_known_outcomes_empty_keeps_a_guessed_outcome_in_the_forcing_space():
+    """A heuristic outcome guess is not a known outcome: with
+    ``known_outcomes=set()`` it is scanned as a running variable (outcome
+    None in that config) and estimated as an outcome wherever it is not a
+    role — so a wrong guess can never hide the planted boundary."""
+    from natex.intake.profiler import profile
+
+    ds = _rdd_dataset_with_decoy()
+    rep = discover(ds, design="rdd", rng=np.random.default_rng(2), budget=SMALL,
+                   profile=profile(ds.df), outcome_candidates=["x0", "x1", "y"],
+                   known_outcomes=set())
+    y_as_forcing = [r for r in rep.configs if r.candidate.forcing == ["y"]]
+    assert {r.candidate.treatment for r in y_as_forcing} == {"T", "holiday"}
+    assert all(r.candidate.outcome is None for r in y_as_forcing)
+    assert all("y" not in r.summary["effects_by_outcome"] for r in y_as_forcing)
+    assert not any(e["column"] == "y" for e in rep.searched["excluded"])
+    assert rep.best().candidate.treatment == "T"
+
+
+def test_best_ranks_calibrated_p_before_raw_llr():
+    """Raw LLRs are not comparable across forcing dimensions; the calibrated
+    p ranks first and LLR only breaks ties."""
+    from natex.discover import ConfigRecord, DiscoverReport
+
+    def rec(treatment, llr, p):
+        c = DesignCandidate(design="rdd", treatment=treatment, forcing=["x0"])
+        return ConfigRecord(candidate=c, source="plan", status="scanned", llr=llr, p_value=p)
+
+    records = [rec("decoy", 40.0, 0.4), rec("T", 12.0, 0.1), rec("tie", 9.0, 0.1)]
+    rep = DiscoverReport(configs=records, searched={}, best_index=None,
+                         guidance_log_path=None)
+    # the same ranking discover() applies
+    rep.best_index = min(range(3), key=lambda i: (records[i].p_value, -records[i].llr))
+    assert rep.best().candidate.treatment == "T"

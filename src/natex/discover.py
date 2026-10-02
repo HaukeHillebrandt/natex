@@ -172,6 +172,10 @@ class DiscoverReport:
     guidance_log_path: str | None
 
     def best(self) -> ConfigRecord | None:
+        """The scanned config with the smallest fitted-null p, ties broken by
+        LLR. Raw LLRs are not comparable across configurations with different
+        forcing dimensions (a random decoy in one dimension can out-score a
+        real jump in three), so the calibrated p ranks first."""
         return None if self.best_index is None else self.configs[self.best_index]
 
     def to_json(self) -> str:
@@ -215,7 +219,10 @@ def enumerate_configs(data: Dataset, design: str = "auto") -> list[DesignCandida
 
 
 def enumerate_role_configs(
-    data: Dataset, profile: IntakeProfile, design: str = "auto"
+    data: Dataset,
+    profile: IntakeProfile,
+    design: str = "auto",
+    known_outcomes: set[str] | None = None,
 ) -> tuple[list[DesignCandidate], dict]:
     """Exhaustive role enumeration from the intake profile (spec 6b made literal).
 
@@ -226,19 +233,26 @@ def enumerate_role_configs(
     outcome is the bound spec's outcome unless the candidate uses that column
     in another role.
 
-    Excluded, with the reason recorded in the returned role-space dict:
+    ``known_outcomes`` (default: the bound spec's outcome) are never recycled
+    as forcing columns (issue #7). Pass an empty set when the bound outcome is
+    only a heuristic guess — the survey's automatic role assignment — so the
+    guess is still scanned as a running variable and estimated as an outcome
+    wherever it is not a role (``effects_by_outcome``).
+
+    Also excluded, with the reason recorded in the returned role-space dict:
     time-like forcing columns (calendar time is a before/after contrast, not
-    a scannable running variable), the bound outcome (never a forcing column
-    — issue #7), and treatments that are a global deterministic step in a
-    time column (:func:`mechanical_step_column`: the scan would re-find the
-    design's own adoption boundary, issue #52). The bound configuration from
-    :func:`enumerate_configs` is always scanned regardless; this function
-    only widens the search beyond it.
+    a scannable running variable) and treatments that are a global
+    deterministic step in a time column (:func:`mechanical_step_column`: the
+    scan would re-find the design's own adoption boundary, issue #52). The
+    bound configuration from :func:`enumerate_configs` is always scanned
+    regardless; this function only widens the search beyond it.
     """
     if design not in _DESIGNS:
         raise ValueError(f"design must be one of {_DESIGNS}, got {design!r}")
     spec = data.spec
     df = data.df_input
+    if known_outcomes is None:
+        known_outcomes = {spec.outcome} if spec.outcome is not None else set()
     time_cols = {c.name for c in profile.columns if c.is_time_like}
     excluded: list[dict] = []
 
@@ -271,10 +285,10 @@ def enumerate_role_configs(
                 ),
             })
             continue
-        if z == spec.outcome:
+        if z in known_outcomes:
             excluded.append({
                 "column": z, "role": "forcing",
-                "reason": "bound outcome column is never a forcing variable (issue #7)",
+                "reason": "known outcome column is never a forcing variable (issue #7)",
             })
             continue
         if not pd.api.types.is_numeric_dtype(df[z]):
@@ -608,6 +622,7 @@ def discover(
     *,
     profile: IntakeProfile | None = None,
     outcome_candidates: list[str] | None = None,
+    known_outcomes: set[str] | None = None,
 ) -> DiscoverReport:
     """Scan every enumerated configuration: plan-ranked first, exhaustive still.
 
@@ -692,7 +707,9 @@ def discover(
     role_space: dict | None = None
     exhaustive: list[DesignCandidate] = enumerate_configs(data, design)
     if profile is not None:
-        role_configs, role_space = enumerate_role_configs(data, profile, design)
+        role_configs, role_space = enumerate_role_configs(
+            data, profile, design, known_outcomes=known_outcomes
+        )
         exhaustive = [*exhaustive, *role_configs]
     for c in exhaustive:
         if (c.key(), c.outcome) in seen:
@@ -766,11 +783,13 @@ def discover(
     scanned_idx = [i for i, r in enumerate(records) if r.status == "scanned"]
     best_index = None
     if scanned_idx:
-        def _llr_key(i: int) -> float:
-            v = records[i].llr
-            return v if v is not None and np.isfinite(v) else float("-inf")
+        def _rank_key(i: int) -> tuple[float, float]:
+            p, v = records[i].p_value, records[i].llr
+            p = p if p is not None and np.isfinite(p) else float("inf")
+            v = v if v is not None and np.isfinite(v) else float("-inf")
+            return (p, -v)
 
-        best_index = max(scanned_idx, key=_llr_key)
+        best_index = min(scanned_idx, key=_rank_key)
 
     report = DiscoverReport(
         configs=records,

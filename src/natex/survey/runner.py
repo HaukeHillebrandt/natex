@@ -296,6 +296,56 @@ def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> Fam
     )
 
 
+def _outcome_candidates(
+    intake: IntakeReport, df: pd.DataFrame, declared: DeclaredInputs | None = None
+) -> list[str]:
+    """Every numeric outcome guess that survives the issue-#52 role bans, in
+    guess order — the outcomes each discovered rdd boundary is estimated
+    against (the scan never reads any of them)."""
+    numeric = _numeric_columns(intake)
+    banned = _time_like_columns(intake)
+    if declared is not None:
+        banned |= {c for c in (declared.time, declared.unit) if c is not None}
+    for unit_col, time_col in intake.profile.panel_candidates:
+        banned |= {unit_col, time_col}
+    for structure in intake.understanding.did_structures:
+        banned |= {structure.unit, structure.time}
+    banned |= {
+        c.name
+        for c in intake.profile.columns
+        if c.is_monotone and str(c.dtype).lower().startswith(("int", "uint"))
+    }
+    return [
+        g.column for g in intake.understanding.outcomes
+        if g.column not in banned and g.column in df.columns and g.column in numeric
+    ]
+
+
+def _best_effects_by_outcome(rep: DiscoverReport) -> dict:
+    """Per candidate outcome, the effects at the highest-LLR scanned boundary
+    that could estimate it (an outcome used as a forcing column in one
+    configuration is estimable in another) — the "which outcome jumps where"
+    table an exhaustive scan exists to answer."""
+    table: dict = {}
+    for rec in rep.configs:
+        if rec.status != "scanned" or rec.llr is None or not np.isfinite(rec.llr):
+            continue
+        for col, block in (rec.summary.get("effects_by_outcome") or {}).items():
+            if "error" in block:
+                continue
+            current = table.get(col)
+            if current is not None and current["llr"] >= rec.llr:
+                continue
+            table[col] = {
+                "treatment": rec.candidate.treatment,
+                "forcing": list(rec.candidate.forcing),
+                "llr": rec.llr,
+                "p_value": rec.p_value,
+                **block,
+            }
+    return table
+
+
 def _run_rdd(
     df: pd.DataFrame,
     intake: IntakeReport,
@@ -307,15 +357,21 @@ def _run_rdd(
     artifacts: dict,
 ) -> FamilyResult:
     ds = _rdd_dataset(df, intake)
+    # The bound outcome is a heuristic/analyst GUESS here, never a declared
+    # fact, so it stays in the forcing space (known_outcomes=set()) and is
+    # estimated as an outcome wherever it is not a role.
     rep = discover(
         ds, design="rdd", search_plan=intake.search_plan, rng=fam_rng,
-        budget=budget, out=fam_dir,
+        budget=budget, out=fam_dir, profile=intake.profile,
+        outcome_candidates=_outcome_candidates(intake, df, declared),
+        known_outcomes=set(),
     )
     diagnostics = {"caveats": [FAMILIES["rdd"].caveat], "searched": rep.searched}
     best = rep.best()
     if best is None:
         return _scanless_result("rdd", rep, diagnostics)
     s = best.summary
+    diagnostics["effects_by_outcome"] = _best_effects_by_outcome(rep)
     mechanical = _mechanical_step_column(df, best.candidate.treatment, declared, intake)
     if mechanical is not None:
         diagnostics["mechanical_step"] = {
@@ -404,7 +460,7 @@ def _run_did(
     ds = _did_dataset(df, intake, declared)
     rep = discover(
         ds, design="did", search_plan=intake.search_plan, rng=fam_rng,
-        budget=budget, out=fam_dir,
+        budget=budget, out=fam_dir, profile=intake.profile, known_outcomes=set(),
     )
     diagnostics = {"caveats": [FAMILIES["did"].caveat], "searched": rep.searched}
     best = rep.best()
