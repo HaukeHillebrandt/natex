@@ -170,15 +170,22 @@ failed / invalid) are always recorded, never silently dropped.
 Plan mode writes `out/discover_report.json`; plain `natex discover` without `--plan`
 writes `out/results.json`. Report to the user:
 
+- coverage first: `searched.role_space` (every treatment x forcing pair and panel that
+  was enumerated — plan mode scans the FULL role space, not only the plan's
+  candidates), `searched.excluded` (columns left out, each with its reason: time-like
+  forcing columns, declared outcomes, mechanical time-step treatments) and the
+  scanned / skipped_budget / failed / invalid counts;
 - a discoveries table: design, location/center values, forcing-variable influence,
-  and the local likelihood ratio (LLR);
+  and the local likelihood ratio (LLR); the best configuration is ranked by scan
+  p-value before LLR (LLRs are not comparable across forcing dimensions);
 - the scan p-value;
 - the validation battery: randomization test, placebo battery (intercept-continuity
   tests with Holm correction, not side-means), density test;
 - effects, both `2sls` and `wald`: `tau`, `se`, `ci`, `first_stage_t`,
-  `weak_instrument`.
+  `weak_instrument` — and `summary.effects_by_outcome`, the same estimates for every
+  candidate outcome at that boundary: say which outcomes jump there and which do not.
 
-Honest-inference caveats — state these whenever you summarize results:
+Inference notes — state these ONCE, in a closing paragraph, not after every number:
 
 - p-values come from a **fitted-null Monte Carlo** (parametric bootstrap) with the
   **+1-rank** correction — they are **not exact** and must not be described as exact.

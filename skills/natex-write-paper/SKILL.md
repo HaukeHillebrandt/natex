@@ -70,7 +70,45 @@ anywhere:
   `null`/`NaN` in `results.json`) means the computation failed or was
   underpowered — never fill one in with a number.
 
-## 4. Google Docs (manual route)
+## 4. What counts as a finding
+
+- A discovery is a finding only if it cleared the validation battery AND, for any
+  design whose running variable is calendar time, its **placebo-calibrated p** (not
+  the nominal HC1/CR1 p) is at or below 0.05 over at least 19 shifted placebo cutoffs.
+  A 7-placebo grid has a floor of 0.125; "0 of 7 placebos reject" is not localization.
+- Rejections at placebo cutoffs are a size diagnostic (the nominal test is oversized
+  on that series), never a "power certificate" for a null at the event date.
+- `inconclusive` verdicts (refused placebo test, mechanical rediscovery, too few
+  placebo positions) are not findings and not nulls: they belong in one line of the
+  limitations, not in the abstract.
+- One abstract claim per surviving finding; a paper whose only surviving result is a
+  null is a short note, not a paper.
+
+## 5. Style contract
+
+The draft is read by people who know the methods. Write for them:
+
+- Sentences under 25 words, one idea each. No sentence may carry more than one
+  statistic unless it is a table row.
+- At most one em dash per page; prefer a full stop. No parentheses inside sentences
+  for numbers — numbers go in tables.
+- Titles are descriptive, not slogans: "Business AI adoption did not bend at
+  DeepSeek-R1 in BTOS sector data", never "A Sharp Bend, No Verdict: ...".
+- State the inference caveats ONCE, in a "Limitations" paragraph. Do not repeat
+  "honest", "stated as run", "refused", "not patched over", "the dial reads zero",
+  "rejections are results", "the battery is the analysis" or any such phrase; the
+  automated pipeline's refusals and degenerate configurations go in one appendix
+  table (family, status, reason), never in the results text.
+- Report each number once: the table carries it, the prose interprets it. Do not
+  list every specification cell in prose; give the range and point to the table.
+- No self-citation chains: cite the natex software once; cite companion notes only
+  when a number is taken from them.
+- Say what was NOT established in the first paragraph of the discussion, in plain
+  words ("these data cannot attribute the bend to X").
+- Delete any sentence that praises the pipeline, the battery, or the authors'
+  honesty. The reader judges that from the tables.
+
+## 6. Google Docs (manual route)
 
 natex **does not integrate** with the Google Docs API. To get the draft into
 Google Docs, render markdown first, then either:
@@ -80,7 +118,7 @@ Google Docs, render markdown first, then either:
 
 Either way, the banner line must survive the transfer at the top of the Doc.
 
-## 5. Warnings
+## 7. Warnings
 
 - **Never fabricate** statistics, citations, or results — every number comes
   from `results.json` and nowhere else.

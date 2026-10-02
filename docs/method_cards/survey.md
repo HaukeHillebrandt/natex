@@ -71,7 +71,8 @@ statistics are bitwise identical with and without guidance.
 | status | meaning |
 |---|---|
 | `credible` | the family ran and its design-specific gate passed (see below) |
-| `null` | the family ran; no credible design at its gate — a real, reported outcome |
+| `null` | the family ran, the design was testable, and no credible design surfaced — a real, reported outcome |
+| `inconclusive` | the family ran but the design could not be validly tested: a refused placebo test (too few placebos), a configuration that could not be scanned, a mechanical rediscovery of a constructed time step, a degenerate kink/density fit or DEE ensemble, or a calendar-time kink with fewer than 19 placebo positions (floor above alpha). Never a negative finding |
 | `skipped` | the family did not run: heuristics said inapplicable, the analyst said skip, or a runtime gate held it back (dee without a credible rdd) |
 | `needs_input` | requirements unmet that only the user can supply — declare them and re-run |
 | `failed` | the family raised; the verbatim error is recorded and other families are unaffected |
@@ -80,17 +81,53 @@ Design-specific `credible` gates (ALPHA = 0.05 unless stated):
 
 - **rdd** — scan p ≤ ALPHA, placebo battery passed, density p > ALPHA. A failed placebo
   battery demotes with the audit-3 phrasing "descriptive only — placebo battery failed".
+  A treatment that is a global deterministic step in a time column is a mechanical
+  rediscovery of the design's own adoption boundary (issue #52) and is `inconclusive`
+  whatever its scan p.
 - **did** — scan p ≤ ALPHA plus the composition and anticipation checks passed.
-- **kink** — min Holm-adjusted kink p across the declared cutoffs ≤ ALPHA.
+- **kink** — min Holm-adjusted kink p across the declared cutoffs ≤ ALPHA, where the
+  per-cutoff p is the nominal HC1 p for a cross-sectional running variable and the
+  **placebo-calibrated p** for a calendar-time (time-like) running variable: the same
+  estimator at up to 49 shifted placebo cutoffs (distinct running values in the central
+  80% of the support, a quarter-bandwidth away from the declared cutoff), add-one rank of
+  the headline |z| among them. With N placebo positions the floor is 1/(N+1), so fewer
+  than 19 positions cannot reach ALPHA and the cutoff is `inconclusive`. The nominal p,
+  N, the floor (`min_attainable_p`) and the placebo rejection rate (empirical size of
+  the nominal test at non-event dates) are reported beside the verdict.
 - **iv** — instruments selected AND a strong first stage on BOTH halves of the honest
   split; a weak half demotes to `null` (audit 10).
 - **sc** — in-space +1-rank RMSPE-ratio placebo p ≤ SC_ALPHA = 0.10. The coarser gate is a
   granularity rationale, not a lower bar: the +1-rank p has granularity 1/(n_used+1), so
-  with few usable placebo donors 0.05 is often unattainable by construction.
+  with few usable placebo donors 0.05 is often unattainable by construction. Fewer than 5
+  usable placebos is a refusal (p = NaN) and the verdict is `inconclusive`.
 - **bunching** — min Holm-adjusted binned-Poisson p at the declared thresholds ≤ ALPHA.
 - **dee** — a documented status-semantics stretch: dee is a surface fit, not a hypothesis
   test. `credible` means the debiased CATE surface was fitted over a usable ensemble of
   discovered experiments; a degenerate ensemble reports `null` with the diagnostic reason.
+
+## Coverage: the role space scanned by rdd and did
+
+The search plan (null-backend heuristics or an LLM analyst) ORDERS the scan; it never
+bounds it. The rdd and did families pass the intake profile into `natex.discover`, which
+enumerates the full role space (`enumerate_role_configs`): every profiled binary
+treatment candidate x every single non-time-like forcing column, plus the joint
+all-forcing candidate per treatment, and every treatment x profiled `(unit, time)` panel
+for did. The LoRD3 scan inside each configuration is itself exhaustive (every point's
+k-neighborhood, every hyperplane through its center). Coverage is always recorded in the
+family's `searched` block: `role_space` (the treatments, forcing columns and panels
+enumerated), `excluded` (columns left out, each with its reason: time-like forcing
+columns, declared outcome columns, mechanical time-step treatments), and the usual
+`n_scanned / n_skipped_budget / n_failed / n_invalid` counts. `--max-configs` bounds the
+scan attempts and lists the remainder as `skipped_budget`.
+
+A search-plan candidate's outcome is a guess, not a declaration: it stays in the forcing
+space and is estimated as an outcome wherever it is not a role. Only prep-plan-declared
+outcome roles are reserved from forcing (issue #7). Every scanned rdd boundary is
+estimated against every candidate outcome (`summary.effects_by_outcome`; the scan never
+reads any of them), and the family's `effects_by_outcome` diagnostic — rendered as its
+own table in the report — gives, per outcome, the highest-LLR boundary that could
+estimate it. The family's headline configuration is ranked by fitted-null scan p before
+raw LLR: LLRs are not comparable across forcing dimensions.
 
 ## Defaults that carry NO optimality claim
 

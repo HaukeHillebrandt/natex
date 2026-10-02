@@ -194,20 +194,28 @@ not optional:
   are serially correlated, HC1/CR1 p-values are oversized there (see the calibration
   numbers above), and the estimator warns via `extras["autocorrelation_warning"]`; pass
   the same `hac_lags` to the grid as to the headline so both use one covariance recipe.
-  Read the grid as separating **bend existence** from **date attribution**. A significant
-  kink at the true cutoff plus
-  significant kinks at shifted cutoffs means the series bends over an era, not at the
-  event. In the Epoch field pass, the METR time-horizon kink was positive in 8/8
-  bandwidth-donut cells, yet pre-side placebos at −270/−180/−90 days also rejected
-  (empirical size 3/6 at bw = 720): an era bend, honestly reported as "reasoning-era slope
-  doubling", not "o1-preview caused it". GPQA-diamond, in contrast, passed with empirical
-  size 0/7 — a bend that does localize to the date.
-- **Run a sibling-series falsification**: an aggregate or related series where the same
-  test demonstrably has power but reads null at the candidate date. The Epoch Capabilities
-  Index played this role for the METR/GPQA claims: its placebo grid rejected at 4/7 shifted
-  cutoffs (so the test has power in that data) while every specification at the o1 date was
-  null (t between −0.60 and −1.54) — evidence that the per-benchmark bends are not a global
-  measurement shift.
+  **Use at least 19 placebo positions** (49 is the survey's target): with N evaluable
+  placebos the calibrated p cannot go below `min_attainable_p = 1/(N+1)`, so a 7-placebo
+  grid bottoms out at 0.125 and "0 of 7 reject" is the floor of the test, not evidence
+  at the 5% level. Read the grid as separating **bend existence** from **date
+  attribution**: a significant kink at the true cutoff plus significant kinks at shifted
+  cutoffs means the series bends over an era, not at the event. In the Epoch field pass,
+  the METR time-horizon kink was positive in 8/8 bandwidth-donut cells, yet pre-side
+  placebos at −270/−180/−90 days also rejected: an era bend, reported as "reasoning-era
+  slope doubling", not "o1-preview caused it". GPQA-diamond had 0/7 placebo rejections,
+  which under this rule is a calibrated p of 0.125 — not date-localized at the 5% level.
+- **Placebo rejections are a size diagnostic, not a power certificate.** The share of
+  shifted cutoffs at which the nominal test rejects (`empirical_size`) measures how often
+  HC1/CR1 rejects where nothing happened on this series; it is NOT evidence that the test
+  would have detected a bend at the candidate date. A series that rejects at 4 of 7
+  shifted cutoffs and reads null at the event is telling you the nominal inference is
+  oversized there — the same fact the capex pre-period placebos revealed — not that the
+  null at the event is well powered. Argue power from the minimum detectable kink at the
+  cutoff (about 1.96 x the headline standard error against the slope change the claim
+  implies), never from rejections elsewhere.
+- **Run a sibling-series falsification** only as a composition check: an aggregate or
+  related series that should NOT bend if the candidate bend is specific to the claimed
+  mechanism, read on the same placebo-calibrated footing as the headline.
 
 With a dummy unit denominator (`--policy-kink 1.0`), tau is a descriptive slope change in
 outcome units per day, not a marginal causal response to a measured policy variable; label
