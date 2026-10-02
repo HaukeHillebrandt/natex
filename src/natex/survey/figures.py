@@ -98,6 +98,18 @@ def _safe(name: object) -> str:
     return "".join(ch if (ch.isalnum() or ch in "_-.") else "_" for ch in str(name))
 
 
+def _unique_stem(name: object, used: set[str]) -> str:
+    """Allocate a safe stem, accounting for sanitization and case collisions."""
+    base = _safe(name)
+    stem = base
+    suffix = 2
+    while stem.casefold() in used:
+        stem = f"{base}_{suffix}"
+        suffix += 1
+    used.add(stem.casefold())
+    return stem
+
+
 # ---------------------------------------------------------------------------
 # per-family renderers (imports lazy: glue must import on a core-only install)
 # ---------------------------------------------------------------------------
@@ -197,12 +209,13 @@ def _render_did(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
 
 def _render_kink(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
     """kink_fit_plot per usable declared cutoff (max 3), estimate annotated."""
+    used: set[str] = set()
     for item in art.get("cutoffs", [])[:_MAX_PER_COLUMN]:
         col = item["column"]
         key = item.get("key", col)
         _record(figs, f"fit_{key}", report_figures.kink_fit_plot(
             item["running"], item["outcome_values"], item["cutoff"],
-            item["bandwidth"], fig_dir / f"kink_fit_{_safe(key)}",
+            item["bandwidth"], fig_dir / f"kink_fit_{_unique_stem(key, used)}",
             estimate=item["estimate"],
             cutoff_label=f"declared cutoff on {key}",
         ))
@@ -237,13 +250,14 @@ def _render_sc(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
 
 def _render_bunching(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
     """bunching_hist per usable declared threshold (max 3), p annotated."""
+    used: set[str] = set()
     for item in art.get("thresholds", [])[:_MAX_PER_COLUMN]:
         col = item["column"]
         key = item.get("key", col)
         _record(figs, f"hist_{key}", report_figures.bunching_hist(
             item["values"], item["threshold"], out_dir=fig_dir,
             p_value=item["p_value"], name=str(key),
-            stem=f"bunching_hist_{_safe(key)}",
+            stem=f"bunching_hist_{_unique_stem(key, used)}",
         ))
 
 

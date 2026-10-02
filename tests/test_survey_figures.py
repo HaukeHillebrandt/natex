@@ -16,6 +16,7 @@ credible-or-null) — no new stochastic gates.
 """
 
 import importlib.util
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -163,3 +164,73 @@ def test_multi_cutoff_figures_do_not_overwrite(tmp_path):
     assert (out / b.figures["hist_z=2.5"]).exists()
     assert b.figures["hist_z=1.5"] != b.figures["hist_z=2.5"]
 
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_qualified_cutoff_figures_do_not_overwrite_columns(tmp_path, reverse):
+    """Qualified z=1 and the separate z_1 column keep their own PNG/PDF pairs."""
+    pytest.importorskip("matplotlib")
+    df = _kink_df()
+    df["z_1"] = df["z"] / 2.0
+    declarations = {"z_1": 1.0, "z": [1.0, 3.0]}
+    if reverse:
+        declarations = dict(reversed(list(declarations.items())))
+    out = tmp_path / "out"
+    res = survey(
+        df, rng=np.random.default_rng(0), out_dir=out,
+        cutoffs=declarations, thresholds=declarations,
+    )
+
+    for family, prefix in (("kink", "fit"), ("bunching", "hist")):
+        result = res.families[family]
+        assert result.no_figure_reason is None, result.no_figure_reason
+        assert set(result.figures) == {f"{prefix}_{key}" for key in ("z_1", "z=1", "z=3")}
+        assert len(set(result.figures.values())) == 3
+        for relative in result.figures.values():
+            png = out / relative
+            assert png.is_file()
+            assert png.with_suffix(".pdf").is_file()
+
+
+@pytest.mark.parametrize("family", ["kink", "bunching"])
+@pytest.mark.parametrize("keys", [("z=1", "z_1", "z_1_2"), ("Z", "z", "z_2")])
+def test_colliding_figure_stems_keep_each_payload(monkeypatch, tmp_path, family, keys):
+    """Suffix and case collisions preserve each figure's content across rerenders."""
+    from natex.report import figures as report_figures
+
+    def save_payload(out_stem, value):
+        png, pdf = Path(f"{out_stem}.png"), Path(f"{out_stem}.pdf")
+        png.parent.mkdir(parents=True, exist_ok=True)
+        for path in (png, pdf):
+            path.write_text(str(value), encoding="utf-8")
+        return report_figures.FigurePaths(png=png, pdf=pdf)
+
+    def kink_plot(running, outcome, cutoff, bandwidth, out_stem, **kwargs):
+        return save_payload(out_stem, cutoff)
+
+    def bunching_plot(values, threshold, *, out_dir, stem, **kwargs):
+        return save_payload(out_dir / stem, threshold)
+
+    monkeypatch.setattr(report_figures, "kink_fit_plot", kink_plot)
+    monkeypatch.setattr(report_figures, "bunching_hist", bunching_plot)
+    items = [
+        {
+            "key": key, "column": key, "running": [], "outcome_values": [],
+            "cutoff": float(i), "bandwidth": 1.0, "estimate": None,
+            "values": [], "threshold": float(i), "p_value": None,
+        }
+        for i, key in enumerate(keys)
+    ]
+    artifacts = {"cutoffs" if family == "kink" else "thresholds": items}
+    prefix = "fit" if family == "kink" else "hist"
+
+    figures, reason = survey_figures.render_family_figures(family, artifacts, tmp_path)
+    assert reason is None
+    assert set(figures) == {f"{prefix}_{key}" for key in keys}
+    assert len({path.casefold() for path in figures.values()}) == len(keys)
+    for i, key in enumerate(keys):
+        png = tmp_path / figures[f"{prefix}_{key}"]
+        assert png.read_text(encoding="utf-8") == str(float(i))
+        assert png.with_suffix(".pdf").read_text(encoding="utf-8") == str(float(i))
+    repeated, reason = survey_figures.render_family_figures(family, artifacts, tmp_path)
+    assert reason is None
+    assert repeated == figures
