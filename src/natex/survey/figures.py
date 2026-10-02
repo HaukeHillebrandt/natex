@@ -199,11 +199,12 @@ def _render_kink(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
     """kink_fit_plot per usable declared cutoff (max 3), estimate annotated."""
     for item in art.get("cutoffs", [])[:_MAX_PER_COLUMN]:
         col = item["column"]
-        _record(figs, f"fit_{col}", report_figures.kink_fit_plot(
+        key = item.get("key", col)
+        _record(figs, f"fit_{key}", report_figures.kink_fit_plot(
             item["running"], item["outcome_values"], item["cutoff"],
-            item["bandwidth"], fig_dir / f"kink_fit_{_safe(col)}",
+            item["bandwidth"], fig_dir / f"kink_fit_{_safe(key)}",
             estimate=item["estimate"],
-            cutoff_label=f"declared cutoff on {col}",
+            cutoff_label=f"declared cutoff on {key}",
         ))
 
 
@@ -238,10 +239,11 @@ def _render_bunching(art: dict, fig_dir: Path, figs: dict[str, str]) -> None:
     """bunching_hist per usable declared threshold (max 3), p annotated."""
     for item in art.get("thresholds", [])[:_MAX_PER_COLUMN]:
         col = item["column"]
-        _record(figs, f"hist_{col}", report_figures.bunching_hist(
+        key = item.get("key", col)
+        _record(figs, f"hist_{key}", report_figures.bunching_hist(
             item["values"], item["threshold"], out_dir=fig_dir,
-            p_value=item["p_value"], name=str(col),
-            stem=f"bunching_hist_{_safe(col)}",
+            p_value=item["p_value"], name=str(key),
+            stem=f"bunching_hist_{_safe(key)}",
         ))
 
 
