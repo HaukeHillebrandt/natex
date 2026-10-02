@@ -10,7 +10,13 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-_TIME_NAME = re.compile(r"date|time|year|month|quarter", re.IGNORECASE)
+# Calendar-time columns by name: dates and calendar units anywhere in the
+# name, plus elapsed-time running variables ("days", "days_since_o1", "wave",
+# "period", "t") as whole tokens — so "holiday" or "payday" never match.
+_TIME_NAME = re.compile(
+    r"date|time|year|month|quarter|(^|_)(day|days|week|weeks|period|periods|wave|waves|t)($|_)",
+    re.IGNORECASE,
+)
 
 
 @dataclass

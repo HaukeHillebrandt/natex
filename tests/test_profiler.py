@@ -77,3 +77,20 @@ def test_time_like_detection():
     assert by_name["year"].is_time_like
     assert by_name["when"].is_time_like
     assert not by_name["score"].is_time_like
+
+
+def test_time_like_detection_by_name_covers_elapsed_time_running_variables():
+    """A running variable of days/weeks/periods/waves since an event is
+    calendar time and must get the calendar-time inference (placebo
+    calibration), while a substring like 'holiday' or 'payday' must not."""
+    df = pd.DataFrame({
+        "days": np.arange(10.0), "days_since_o1": np.arange(10.0),
+        "week": np.arange(10.0), "period": np.arange(10.0), "wave": np.arange(10.0),
+        "t": np.arange(10.0), "holiday": np.arange(10) % 2, "payday": np.arange(10.0),
+        "score": np.linspace(0.0, 1.0, 10),
+    })
+    by_name = {c.name: c for c in profile(df).columns}
+    for name in ("days", "days_since_o1", "week", "period", "wave", "t"):
+        assert by_name[name].is_time_like, name
+    for name in ("holiday", "payday", "score"):
+        assert not by_name[name].is_time_like, name
