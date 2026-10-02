@@ -81,7 +81,14 @@ SC_ALPHA = 0.10
 @dataclass
 class FamilyResult:
     family: str
-    status: str  # credible|null|skipped|needs_input|failed
+    # credible: ran and cleared the family's gate.
+    # null: ran, was testable, and no credible design surfaced.
+    # inconclusive: ran but could not be validly tested — refused inference
+    #   (too few placebos), a degenerate or vacuous configuration (mechanical
+    #   rediscovery of a constructed step, no scannable config, a placebo
+    #   floor above alpha). Never a negative finding.
+    # skipped | needs_input: did not run.  failed: raised.
+    status: str  # credible|null|inconclusive|skipped|needs_input|failed
     reason: str  # one sentence, always set
     applicability: dict = field(default_factory=dict)  # FamilyPlan serialized
     key_numbers: dict = field(default_factory=dict)  # flat name->number (NaN -> null)
@@ -275,7 +282,8 @@ def _did_dataset(df: pd.DataFrame, intake: IntakeReport, declared: DeclaredInput
 
 def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> FamilyResult:
     """No scanned config: failed with the first config error verbatim, unless
-    every enumerated config was invalid — then null with a coverage reason."""
+    every enumerated config was invalid — then inconclusive (nothing was
+    tested, so there is no null result to report) with a coverage reason."""
     searched = rep.searched
     first_error = next(
         (r.error for r in rep.configs if r.status == "failed" and r.error), None
@@ -291,7 +299,7 @@ def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> Fam
         f"({searched['n_invalid']} invalid of {searched['n_total']} enumerated)"
     )
     return FamilyResult(
-        family=family, status="null", reason=reason, diagnostics=diagnostics,
+        family=family, status="inconclusive", reason=reason, diagnostics=diagnostics,
         no_figure_reason=f"no figure: no {family} configuration scanned",
     )
 
@@ -391,8 +399,14 @@ def _run_rdd(
         rng=fam_rng, summary=s,
     )
     p, density_p = best.p_value, s.get("density_p")
-    if not _finite(p):
-        status, reason = "null", "scan p-value unavailable — no credible discovery"
+    if mechanical is not None:
+        # The configuration is vacuous, whatever its p: nothing was tested.
+        status, reason = "inconclusive", (
+            f"mechanical rediscovery — treatment {best.candidate.treatment!r} is a "
+            f"deterministic step in the time column {mechanical!r}, not a natural experiment"
+        )
+    elif not _finite(p):
+        status, reason = "inconclusive", "scan p-value unavailable — the design was not tested"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
     elif s.get("placebo_passed") is False:
@@ -401,14 +415,11 @@ def _run_rdd(
         # only an actual False is a failure.
         status, reason = "null", "descriptive only — placebo battery failed"
     elif not _finite(density_p):
-        status, reason = "null", "density diagnostic unavailable — manipulation check inconclusive"
+        status, reason = (
+            "inconclusive", "density diagnostic unavailable — manipulation check not run"
+        )
     elif density_p <= ALPHA:
         status, reason = "null", f"density test rejects (p={density_p:.3f}) — manipulation risk"
-    elif mechanical is not None:
-        status, reason = "null", (
-            f"mechanical rediscovery — treatment {best.candidate.treatment!r} is a "
-            f"deterministic step in the time column {mechanical!r}, not a natural experiment"
-        )
     else:
         status = "credible"
         placebo_txt = (
@@ -475,7 +486,7 @@ def _run_did(
     )
     p = best.p_value
     if not _finite(p):
-        status, reason = "null", "scan p-value unavailable — no credible discovery"
+        status, reason = "inconclusive", "scan p-value unavailable — the design was not tested"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
     elif not s.get("composition_passed"):
@@ -733,7 +744,7 @@ def _run_kink(
     diagnostics["p_holm"] = p_holm
     m = len(p_values)
     if not np.isfinite(min_holm):
-        status = "null"
+        status = "inconclusive"
         reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
     elif min_holm <= ALPHA:
         status = "credible"
@@ -990,7 +1001,10 @@ def _run_sc(
     }
     p = rep.p_value  # audit 5: the +1-rank RMSPE-ratio p, verbatim
     if not _finite(p):
-        status, reason = "null", "too few usable placebos (<5) for the ratio test"
+        status, reason = (
+            "inconclusive",
+            "too few usable placebos (<5) for the RMSPE-ratio placebo test — not tested",
+        )
     elif p <= SC_ALPHA:
         status = "credible"
         reason = f"in-space placebo RMSPE-ratio p={p:.3f} at or below {SC_ALPHA}"
@@ -1068,7 +1082,7 @@ def _run_bunching(
     p_holm, min_holm = _min_holm(p_values)
     diagnostics["p_holm"] = p_holm
     if not np.isfinite(min_holm):
-        status = "null"
+        status = "inconclusive"
         reason = "density fits degenerate at every declared threshold"
     elif min_holm <= ALPHA:
         status = "credible"
@@ -1146,7 +1160,8 @@ def _run_dee(
         "dropped_experiments": res.diagnostics.get("dropped"),
     }
     if "reason" in res.diagnostics:
-        status, reason = "null", str(res.diagnostics["reason"])
+        # A degenerate experiment ensemble is a surface that could not be fitted.
+        status, reason = "inconclusive", str(res.diagnostics["reason"])
     else:
         # Documented status-semantics stretch: dee is a surface fit, not a
         # hypothesis test — "credible" here means the fit completed with a

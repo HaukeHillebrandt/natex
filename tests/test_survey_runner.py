@@ -28,7 +28,7 @@ from natex.survey.registry import FAMILY_ORDER
 
 _BUDGET = {"q": 9, "k": 25}  # small explicit test budget (plan task 5)
 
-_STATUSES = {"credible", "null", "skipped", "needs_input", "failed"}
+_STATUSES = {"credible", "null", "inconclusive", "skipped", "needs_input", "failed"}
 
 
 def _write_synthetic_csv(root):
@@ -232,7 +232,8 @@ def test_rdd_family_flags_mechanical_time_step_rediscovery(tmp_path):
     )
 
     rdd = res.families["rdd"]
-    assert rdd.status != "credible"
+    # a vacuous design is "could not test", never "tested and found nothing"
+    assert rdd.status == "inconclusive", (rdd.status, rdd.reason)
     mechanical = rdd.diagnostics.get("mechanical_step")
     assert mechanical, (rdd.status, rdd.reason, rdd.diagnostics.get("caveats"))
     assert mechanical["treatment"] == "post"
@@ -293,7 +294,9 @@ def test_sc_family_aggregates_a_multi_treated_indicator(tmp_path):
     )
 
     sc = res.families["sc"]
-    assert sc.status in ("credible", "null"), (sc.status, sc.reason, sc.error)
+    # four donors remain after aggregation: the placebo test refuses (<5),
+    # which is an inconclusive verdict, never a null one
+    assert sc.status in ("credible", "null", "inconclusive"), (sc.status, sc.reason, sc.error)
     aggregated = sc.diagnostics.get("treated_units_aggregated")
     assert aggregated == ["u0", "u1"]
     assert "aggregate" in str(sc.diagnostics.get("treated_unit"))
@@ -363,3 +366,44 @@ def test_rdd_family_scans_the_full_role_space_and_reports_every_outcome(tmp_path
     by_outcome = rdd.diagnostics["effects_by_outcome"]
     assert "y" in by_outcome and "2sls" in by_outcome["y"]
     assert rdd.diagnostics["best_candidate"]["treatment"] == "T"
+
+
+def _three_unit_panel(seed=0, years=range(1990, 2006), t0=2000):
+    """Three string units x 16 years, one treated from t0: too few donors for
+    the in-space RMSPE-ratio placebo (needs >= 5 usable placebos)."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i, u in enumerate(("u00", "u01", "u02")):
+        for t in years:
+            tr = int(u == "u01" and t >= t0)
+            rows.append((u, t, tr, 2.0 * i + 0.3 * (t - 1990) + 10.0 * tr + rng.normal(0, 0.5)))
+    return pd.DataFrame(rows, columns=["state", "year", "T", "y"])
+
+
+def test_sc_family_with_too_few_placebos_is_inconclusive_not_null(tmp_path):
+    """A refused placebo test (p = NaN) means the design could not be tested;
+    reporting it as a null result would fabricate a negative finding."""
+    res = survey(_three_unit_panel(), rng=np.random.default_rng(0),
+                 out_dir=tmp_path / "out", budget=_BUDGET)
+    sc = res.families["sc"]
+    assert sc.status == "inconclusive", (sc.status, sc.reason)
+    assert "placebo" in sc.reason
+    assert sc.key_numbers["p_value"] is None
+
+
+def test_scanless_rdd_family_is_inconclusive_not_null(tmp_path):
+    """Every enumerated rdd configuration invalid: nothing was tested, so the
+    verdict is inconclusive with the coverage count in the reason."""
+    from natex.survey import runner as runner_mod
+
+    class _Rep:
+        searched = {"n_invalid": 2, "n_total": 2, "n_scanned": 0}
+        configs = []
+
+        @staticmethod
+        def best():
+            return None
+
+    res = runner_mod._scanless_result("rdd", _Rep(), {"caveats": []})
+    assert res.status == "inconclusive"
+    assert "2 invalid of 2 enumerated" in res.reason

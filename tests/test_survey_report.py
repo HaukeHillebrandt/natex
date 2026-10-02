@@ -33,7 +33,7 @@ from natex.survey.registry import FAMILIES, FAMILY_ORDER
 
 _BUDGET = {"q": 9, "k": 25}  # small explicit test budget (plan task 5 convention)
 _KINK_SKIP = "no pre-declared cutoff (kink is candidate evaluation, not discovery)"
-_STATUSES = ("credible", "null", "skipped", "needs_input", "failed")
+_STATUSES = ("credible", "null", "inconclusive", "skipped", "needs_input", "failed")
 
 
 def _trap_words(text: str) -> list[str]:
@@ -67,7 +67,7 @@ def _fam(name, status):
         "status": status,
         "reason": f"doctored {status.replace('_', ' ')} outcome",
         "applicability": {
-            "run": status in ("credible", "null", "failed"),
+            "run": status in ("credible", "null", "inconclusive", "failed"),
             "reason": "all requirements met",
             "heuristic": {
                 "status": "applicable", "reason": "all requirements met", "unmet": [],
@@ -92,7 +92,7 @@ def _doctored_result():
     """All seven families with one family per status across the 5-value set,
     a recorded kink override, and a failed family carrying an error."""
     statuses = dict(rdd="credible", did="null", kink="needs_input", iv="failed",
-                    sc="skipped", bunching="null", dee="skipped")
+                    sc="skipped", bunching="inconclusive", dee="skipped")
     families = {n: _fam(n, statuses[n]) for n in FAMILY_ORDER}
     families["kink"]["applicability"]["override"] = {
         "heuristic_said": False,

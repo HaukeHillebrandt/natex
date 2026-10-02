@@ -38,6 +38,7 @@ _REPORT_EXTRA_MSG = (
 _BADGES = {
     "credible": ("#009E73", "✓"),
     "null": ("#999999", "○"),
+    "inconclusive": ("#56B4E9", "◌"),
     "skipped": ("#0072B2", "–"),
     "needs_input": ("#E69F00", "⚠"),
     "failed": ("#D55E00", "✗"),
