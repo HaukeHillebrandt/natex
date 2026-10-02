@@ -90,6 +90,15 @@ figcaption { color: #555; font-size: .9em; }
 {% endfor %}
 </table>
 {% endif %}
+{% if fam.effect_rows %}
+<p><strong>Effects by outcome</strong> (at the best boundary that could estimate each):</p>
+<table class="numbers">
+<tr>{% for c in fam.effect_columns %}<th>{{ c }}</th>{% endfor %}</tr>
+{% for row in fam.effect_rows %}
+<tr>{% for v in row %}<td>{{ v }}</td>{% endfor %}</tr>
+{% endfor %}
+</table>
+{% endif %}
 {% for fig in fam.figures %}
 {% if fig.b64 %}
 <figure>

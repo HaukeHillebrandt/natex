@@ -203,3 +203,42 @@ def test_md_html_render_from_loaded_json(tmp_path):
     html = render_survey_html(d, re_dir)
     assert md.read_text(encoding="utf-8") == (out / "report.md").read_text(encoding="utf-8")
     assert SURVEY_BANNER in html.read_text(encoding="utf-8")
+
+
+def _result_with_effects_by_outcome():
+    result = _doctored_result()
+    result["families"]["rdd"]["diagnostics"]["effects_by_outcome"] = {
+        "spend": {
+            "treatment": "T", "forcing": ["age"], "llr": 12.5, "p_value": 0.01,
+            "2sls": {"tau": 0.42, "se": 0.1, "ci": [0.22, 0.62], "first_stage_t": 9.0,
+                     "weak_instrument": False},
+            "wald": {"tau": 0.4, "se": 0.11, "ci": [0.18, 0.62], "first_stage_t": 9.0,
+                     "weak_instrument": False},
+        },
+        "hours": {
+            "treatment": "T", "forcing": ["age"], "llr": 12.5, "p_value": 0.01,
+            "2sls": {"tau": None, "se": None, "ci": [None, None], "first_stage_t": 9.0,
+                     "weak_instrument": True},
+            "wald": {"tau": 0.0, "se": 0.3, "ci": [-0.6, 0.6], "first_stage_t": 9.0,
+                     "weak_instrument": True},
+        },
+    }
+    return result
+
+
+def test_effects_by_outcome_render_as_a_table_not_a_blob(tmp_path):
+    """The per-outcome effects table is the payoff of an exhaustive scan: it
+    gets its own table in both renderers, never a one-line dict dump, and
+    missing numbers render as the em dash."""
+    md = render_survey_md(_result_with_effects_by_outcome(), tmp_path).read_text("utf-8")
+    assert "| outcome |" in md
+    assert "| spend |" in md and "| hours |" in md
+    assert "effects_by_outcome: {" not in md  # not dumped through the generic diagnostics
+    assert _trap_words(md) == []
+
+    pytest.importorskip("jinja2")
+    html = render_survey_html(_result_with_effects_by_outcome(), tmp_path).read_text("utf-8")
+    assert "Effects by outcome" in html
+    assert "<td>spend</td>" in html and "<td>hours</td>" in html
+    assert "effects_by_outcome:" not in html
+    assert _trap_words(html) == []
