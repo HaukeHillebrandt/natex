@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 from natex.data.synthetic import make_synthetic
+from natex.llm import MockBackend
 from natex.survey import SurveyResult, survey
 from natex.survey.registry import FAMILY_ORDER
 
@@ -297,3 +298,50 @@ def test_sc_family_aggregates_a_multi_treated_indicator(tmp_path):
     assert aggregated == ["u0", "u1"]
     assert "aggregate" in str(sc.diagnostics.get("treated_unit"))
     assert any("aggregat" in c for c in sc.diagnostics["caveats"])
+
+
+def test_sc_family_with_numeric_units_and_string_declared_treated_unit(tmp_path):
+    """Declared string treated_unit='1' matches numeric unit column in survey panel."""
+    rng = np.random.default_rng(42)
+    units = np.arange(1, 8)
+    periods = np.arange(10)
+    rows = []
+    for u in units:
+        base = 1.0 + 0.1 * float(u)
+        for p in periods:
+            rows.append({
+                "unit_id": int(u),
+                "year": float(p),
+                "val": base + 0.2 * float(p) + 0.02 * rng.standard_normal(),
+            })
+    csv = tmp_path / "numeric_panel.csv"
+    pd.DataFrame(rows).to_csv(csv, index=False)
+
+    mock = MockBackend([
+        {}, {}, {},  # understand / prepare / search_plan -> heuristic fallback
+        {
+            "families": [
+                {
+                    "family": "sc",
+                    "run": True,
+                    "reason": "evaluate unit 1",
+                    "config_hints": {"treated_unit": "1", "t0": 5.0},
+                }
+            ]
+        },
+    ])
+
+    res = survey(
+        csv,
+        guidance=mock,
+        rng=np.random.default_rng(0),
+        out_dir=tmp_path / "out",
+        budget=_BUDGET,
+        unit="unit_id",
+        time="year",
+    )
+    sc = res.families["sc"]
+    assert sc.status in ("credible", "null"), (sc.status, sc.reason, sc.error)
+    assert sc.diagnostics["treated_unit"] == 1
+
+
