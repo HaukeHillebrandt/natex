@@ -18,6 +18,7 @@ from natex.data.synthetic_sc import make_sc_synthetic
 from natex.iv.donors import (
     DonorScore,
     DonorSelectionResult,
+    sc_placebo_test,
     select_donors,
     select_donors_from_dataset,
     unit_time_matrix,
@@ -328,3 +329,25 @@ def test_single_unit_panel_reports_missing_donors_before_pre_time_issue_50():
     no_pre = select_donors(y, units, times, "only", t0=1.0)
     assert "no donor units in the panel" in no_pre.extras["failure"]
     assert "no common pre time" not in no_pre.extras["failure"]
+
+
+def test_select_donors_and_placebo_accept_string_treated_unit_with_numeric_panel():
+    """String treated_unit matches numeric unit identifiers (e.g. CLI/declared '1' vs int 1)."""
+    rng = np.random.default_rng(42)
+    units = np.arange(1, 8)
+    times = np.arange(10.0)
+    y = rng.normal(size=(len(units), len(times)))
+
+    res = select_donors(y, units, times, treated_unit="1", t0=5.0)
+    assert res.treated_unit == 1
+    assert len(res.donors) > 0
+
+    # Also test with float units and integer string treated_unit
+    float_units = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    res_float = select_donors(y, float_units, times, treated_unit="1", t0=5.0)
+    assert res_float.treated_unit == 1.0
+
+    # Also test sc_placebo_test
+    rep = sc_placebo_test(y, units, times, treated_unit="1", t0=5.0)
+    assert rep.ratio_treated is not None
+

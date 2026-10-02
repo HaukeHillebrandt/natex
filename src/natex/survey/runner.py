@@ -935,6 +935,8 @@ def _run_sc(
             family="sc", status="failed", reason=failure, error=failure,
             diagnostics=diagnostics,
         )
+    treated = sel.treated_unit
+    diagnostics["treated_unit"] = treated
     # Figure payload (task 7): per-period treated-minus-synthetic gap.
     artifacts.update(times=sel.times, gaps=sel.effect_by_time, t0=t0)
     rep = sc_placebo_test(Y, units, times, treated, t0)

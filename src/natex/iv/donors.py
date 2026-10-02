@@ -118,9 +118,23 @@ def select_donors(
         )
     hit = np.flatnonzero(units == treated_unit)
     if hit.size != 1:
-        raise ValueError(
-            f"treated_unit {treated_unit!r} matches {hit.size} rows of units (need exactly 1)"
-        )
+        str_hits = np.flatnonzero(np.asarray(units, dtype=str) == str(treated_unit))
+        if str_hits.size == 1:
+            hit = str_hits
+            treated_unit = units[hit[0]]
+        elif pd.api.types.is_numeric_dtype(units.dtype):
+            try:
+                num_val = pd.to_numeric(treated_unit)
+                num_hits = np.flatnonzero(units == num_val)
+                if num_hits.size == 1:
+                    hit = num_hits
+                    treated_unit = units[hit[0]]
+            except (ValueError, TypeError):
+                pass
+        if hit.size != 1:
+            raise ValueError(
+                f"treated_unit {treated_unit!r} matches {hit.size} rows of units (need exactly 1)"
+            )
     i_treated = int(hit[0])
 
     order = np.argsort(times, kind="stable")
@@ -341,6 +355,7 @@ def sc_placebo_test(
     ratio_treated = _rmspe_ratio(treated_res.pre_rmspe, treated_res.post_rmspe)
 
     units_arr = np.asarray(units)
+    treated_unit = treated_res.treated_unit
     i_treated = int(np.flatnonzero(units_arr == treated_unit)[0])  # validated above
     Y_placebo = np.delete(np.asarray(Y, dtype=float), i_treated, axis=0)
     units_placebo = np.delete(units_arr, i_treated)
