@@ -132,7 +132,8 @@ def _reduced_form(
     y,
     running,
     *,
-    post,
+    post=None,
+    group=None,
     cutoff: float,
     bandwidth: float,
     degree: int,
@@ -146,7 +147,7 @@ def _reduced_form(
     alpha: float,
 ) -> KinkEstimate:
     """Outcome kink contrast with a unit denominator (sharp reduced form)."""
-    if post is None:
+    if post is None and group is None:
         return regression_kink(
             y,
             running,
@@ -166,7 +167,8 @@ def _reduced_form(
     return difference_in_kinks(
         y,
         running,
-        post,
+        post=post,
+        group=group,
         policy_kink_change=1.0,
         cutoff=cutoff,
         bandwidth=bandwidth,
@@ -189,6 +191,7 @@ def sensitivity_grid(
     bandwidths,
     donuts=(0.0,),
     post=None,
+    group=None,
     treatment=None,
     policy_kink: float | None = None,
     policy_kink_change: float | None = None,
@@ -220,15 +223,18 @@ def sensitivity_grid(
     ]
     if invalid:
         raise ValueError(f"invalid bandwidth/donut combinations: {invalid}")
-    if post is None and policy_kink_change is not None:
+    if post is not None and group is not None:
+        raise ValueError("supply at most one of post (time DiK) or group (group DiK)")
+    is_dik = post is not None or group is not None
+    if not is_dik and policy_kink_change is not None:
         raise ValueError("policy_kink_change applies only to a difference-in-kinks design")
-    if post is not None and policy_kink is not None:
+    if is_dik and policy_kink is not None:
         raise ValueError("policy_kink applies only to a cross-sectional RKD")
 
     results: list[KinkEstimate] = []
     for h in bandwidth_grid:
         for d in donut_grid:
-            if post is None:
+            if not is_dik:
                 results.append(
                     regression_kink(
                         y,
@@ -253,7 +259,8 @@ def sensitivity_grid(
                     difference_in_kinks(
                         y,
                         running,
-                        post,
+                        post=post,
+                        group=group,
                         treatment=treatment,
                         policy_kink_change=policy_kink_change,
                         cutoff=cutoff,
@@ -279,6 +286,7 @@ def placebo_kinks(
     *,
     bandwidth: float,
     post=None,
+    group=None,
     degree: int = 1,
     kernel: str = "triangular",
     donut: float = 0.0,
@@ -292,12 +300,14 @@ def placebo_kinks(
     """Reduced-form kink contrasts at shifted placebo cutoffs (paper Fig. A3 C).
 
     Evaluates the outcome's right-minus-left slope contrast (post-minus-pre
-    when ``post`` is given) at each supplied cutoff with a unit denominator.
-    ``empirical_size`` is the share of evaluable contrasts with
-    ``p_value < alpha``; supply cutoffs away from the true kink so that the
-    share estimates false-rejection size. Unevaluable cutoffs are reported
+    or group1-minus-group0 when ``post`` or ``group`` is given) at each supplied
+    cutoff with a unit denominator. ``empirical_size`` is the share of evaluable
+    contrasts with ``p_value < alpha``; supply cutoffs away from the true kink so
+    that the share estimates false-rejection size. Unevaluable cutoffs are reported
     as ``NaN`` with a reason and excluded from the share.
     """
+    if post is not None and group is not None:
+        raise ValueError("supply at most one of post (time DiK) or group (group DiK)")
     cutoff_grid = [float(c) for c in np.atleast_1d(np.asarray(cutoffs, dtype=float))]
     if not cutoff_grid:
         raise ValueError("cutoffs must be non-empty")
@@ -309,6 +319,7 @@ def placebo_kinks(
             y,
             running,
             post=post,
+            group=group,
             cutoff=placebo_cutoff,
             bandwidth=bandwidth,
             degree=degree,
@@ -352,6 +363,7 @@ def covariate_kinks(
     *,
     bandwidth: float,
     post=None,
+    group=None,
     cutoff: float = 0.0,
     degree: int = 1,
     kernel: str = "triangular",
@@ -367,8 +379,10 @@ def covariate_kinks(
     Each named covariate is run through the same reduced-form kink contrast
     used for the outcome. A significant covariate kink (change) signals
     selection or composition at the cutoff. A kink that is stable over time
-    cancels in the DiK contrast, exactly as for the outcome.
+    (or across groups) cancels in the DiK contrast, exactly as for the outcome.
     """
+    if post is not None and group is not None:
+        raise ValueError("supply at most one of post (time DiK) or group (group DiK)")
     if not isinstance(covariates, Mapping) or not covariates:
         raise ValueError("covariates must be a non-empty mapping of name -> values")
     rows: list[CovariateKink] = []
@@ -377,6 +391,7 @@ def covariate_kinks(
             np.asarray(values, dtype=float),
             running,
             post=post,
+            group=group,
             cutoff=cutoff,
             bandwidth=bandwidth,
             degree=degree,
@@ -485,8 +500,9 @@ def event_study_kinks(
 
 def density_kink_difference(
     running,
-    post,
+    post=None,
     *,
+    group=None,
     bandwidth: float,
     cutoff: float = 0.0,
     n_bins: int = 80,
@@ -494,11 +510,11 @@ def density_kink_difference(
     kernel: str = "triangular",
     alpha: float = 0.05,
 ) -> DensityKinkDifference:
-    """Kink in the binned pre/post density difference (paper Fig. A4 A, Table A3).
+    """Kink in the binned pre/post or group0/group1 density difference (paper Fig. A4 A, Table A3).
 
     Bins the running variable within the bandwidth window on both sides of
-    the cutoff, forms the post-minus-pre difference of per-period density
-    estimates, and fits the side-specific local polynomial to that
+    the cutoff, forms the post-minus-pre (or group1-minus-group0) difference of
+    cell density estimates, and fits the side-specific local polynomial to that
     difference. The estimate is the change in the first-order term at the
     cutoff. The paper's Table A3 specification (``n_bins=80``,
     ``degree=13``) is available by override, but the default is ``degree=2``
@@ -507,6 +523,8 @@ def density_kink_difference(
     manipulation falsification check only — bin-level HC1 inference treats
     estimated frequencies as data.
     """
+    if (post is None) == (group is None):
+        raise ValueError("supply exactly one of post (time DiK) or group (group DiK)")
     _validate_common(cutoff, bandwidth, degree, kernel, 0.0, alpha)
     if isinstance(n_bins, bool) or not isinstance(n_bins, (int, np.integer)) or n_bins < 4:
         raise ValueError("n_bins must be an even integer >= 4")
@@ -519,7 +537,10 @@ def density_kink_difference(
     running_all = np.asarray(running, dtype=float)
     if running_all.ndim != 1:
         raise ValueError("running must be one-dimensional")
-    post_all, post_ok = _post_indicator(post, running_all.size)
+    indicator = post if post is not None else group
+    indicator_name = "post" if post is not None else "group"
+    cell_names = ("pre", "post") if post is not None else ("group0", "group1")
+    post_all, post_ok = _post_indicator(indicator, running_all.size, name=indicator_name)
     distance = running_all - cutoff
     window = post_ok & np.isfinite(running_all) & (np.abs(distance) <= bandwidth)
 
@@ -550,7 +571,11 @@ def density_kink_difference(
         alpha=alpha,
     )
     estimate, se, p_value, _, reason = _contrast_row(fit)
-    empty = [name for name, flag in (("pre", False), ("post", True)) if counts[flag] == 0]
+    empty = [
+        name
+        for name, flag in ((cell_names[0], False), (cell_names[1], True))
+        if counts[flag] == 0
+    ]
     if empty:
         reason = f"no {' or '.join(empty)} rows inside the bandwidth window"
     return DensityKinkDifference(

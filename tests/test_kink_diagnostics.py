@@ -335,3 +335,67 @@ def test_placebo_kinks_passes_hac_lags_through_to_the_estimator():
     for plain_row, hac_row in zip(plain.placebos, hac.placebos):
         assert hac_row.estimate == pytest.approx(plain_row.estimate, rel=1e-12)
         assert hac_row.se != pytest.approx(plain_row.se, rel=1e-6)
+
+
+def test_diagnostics_battery_supports_group_difference_in_kinks():
+    """First-class group DiK (issue #53) supported across the diagnostic battery."""
+    rng = np.random.default_rng(42)
+    n = 300
+    x = rng.uniform(-2.0, 2.0, n)
+    group = rng.integers(0, 2, n)
+    # group 0 has no kink; group 1 has a kink of 1.5 at x=0
+    y = 1.0 + 0.5 * x + 1.5 * np.maximum(x, 0.0) * group + rng.normal(0, 0.05, n)
+
+    # 1. sensitivity_grid with group
+    grid = sensitivity_grid(
+        y,
+        x,
+        group=group,
+        policy_kink_change=1.0,
+        bandwidths=(1.2, 1.6),
+        donuts=(0.0,),
+    )
+    assert len(grid) == 2
+    for est in grid:
+        assert est.tau == pytest.approx(1.5, abs=0.25)
+        assert est.extras["dik_contrast"] == "group1_minus_group0"
+
+    # 2. placebo_kinks with group
+    placebos = placebo_kinks(y, x, cutoffs=[-0.8, 0.8], group=group, bandwidth=1.0)
+    assert placebos.n_evaluated == 2
+    for p in placebos.placebos:
+        assert np.isfinite(p.estimate)
+        assert np.isfinite(p.p_value)
+
+    # 3. covariate_kinks with group
+    cov = {"z": rng.normal(0, 1, n)}
+    cov_res = covariate_kinks(cov, x, group=group, bandwidth=1.0)
+    assert len(cov_res) == 1
+    assert cov_res[0].name == "z"
+    assert np.isfinite(cov_res[0].estimate)
+
+    # 4. density_kink_difference with group
+    dens = density_kink_difference(x, group=group, bandwidth=1.5, n_bins=20)
+    assert np.isfinite(dens.estimate)
+    assert dens.n_pre > 0
+    assert dens.n_post > 0
+
+
+def test_diagnostics_battery_rejects_conflicting_post_and_group():
+    x = np.linspace(-2.0, 2.0, 100)
+    y = x.copy()
+    post = (x >= 0).astype(int)
+    group = (x < 0).astype(int)
+
+    with pytest.raises(ValueError, match="supply at most one of post"):
+        sensitivity_grid(y, x, post=post, group=group, bandwidths=(1.0,))
+
+    with pytest.raises(ValueError, match="supply at most one of post"):
+        placebo_kinks(y, x, cutoffs=[0.5], post=post, group=group, bandwidth=1.0)
+
+    with pytest.raises(ValueError, match="supply at most one of post"):
+        covariate_kinks({"c": x}, x, post=post, group=group, bandwidth=1.0)
+
+    with pytest.raises(ValueError, match="supply exactly one of post"):
+        density_kink_difference(x, post=post, group=group, bandwidth=1.0)
+
