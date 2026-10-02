@@ -395,9 +395,15 @@ def _discover_plan(
         budget["max_configs"] = max_configs
     if fallback_inference is not None:
         budget["fallback_inference"] = fallback_inference
+    # The intake profile drives exhaustive role enumeration (every treatment
+    # x forcing pair, coverage recorded) and every scanned boundary is
+    # estimated against every candidate outcome; only prep-plan-declared
+    # outcomes are reserved from the forcing space.
     rep = run_discover(
         ds, design=plan_design, guidance=guidance, search_plan=report.search_plan,
         rng=np.random.default_rng(seed), budget=budget, out=out,
+        profile=report.profile, outcome_candidates=report.outcome_candidates(ds.df_input),
+        known_outcomes=report.known_outcomes(),
     )
     path = rep.save(out)
     # Issue #2: also save the full ResultsBundle — seed, natex version, the

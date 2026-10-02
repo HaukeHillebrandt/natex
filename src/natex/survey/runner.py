@@ -53,7 +53,7 @@ from natex.dee.debias import dee_debias
 # hints <- explicit dict); dee reuses it so its scan k matches the rdd
 # family's effective budget exactly.
 from natex.discover import DiscoverReport, _effective_budget, discover
-from natex.intake.analyst import IntakeReport, study
+from natex.intake.analyst import IntakeReport, outcome_candidates, study
 from natex.intake.profiler import mechanical_step_column
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
@@ -312,26 +312,17 @@ def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> Fam
 def _outcome_candidates(
     intake: IntakeReport, df: pd.DataFrame, declared: DeclaredInputs | None = None
 ) -> list[str]:
-    """Every numeric outcome guess that survives the issue-#52 role bans, in
-    guess order — the outcomes each discovered rdd boundary is estimated
-    against (the scan never reads any of them)."""
-    numeric = _numeric_columns(intake)
-    banned = _time_like_columns(intake)
-    if declared is not None:
-        banned |= {c for c in (declared.time, declared.unit) if c is not None}
-    for unit_col, time_col in intake.profile.panel_candidates:
-        banned |= {unit_col, time_col}
-    for structure in intake.understanding.did_structures:
-        banned |= {structure.unit, structure.time}
-    banned |= {
-        c.name
-        for c in intake.profile.columns
-        if c.is_monotone and str(c.dtype).lower().startswith(("int", "uint"))
-    }
-    return [
-        g.column for g in intake.understanding.outcomes
-        if g.column not in banned and g.column in df.columns and g.column in numeric
-    ]
+    """Every numeric outcome guess that survives the issue-#52 role bans (plus
+    the declared time/unit), in guess order — the outcomes each discovered rdd
+    boundary is estimated against (the scan never reads any of them)."""
+    extra = () if declared is None else (declared.time, declared.unit)
+    return outcome_candidates(intake.profile, intake.understanding, df, extra_banned=extra)
+
+
+def _declared_outcomes(intake: IntakeReport) -> set[str]:
+    """Prep-plan-declared outcome columns: the only outcomes reserved from
+    the forcing space (a search-plan candidate's outcome is a guess)."""
+    return {col for col, role in intake.prep_plan.column_roles.items() if role == "outcome"}
 
 
 def _best_effects_by_outcome(rep: DiscoverReport) -> dict:
@@ -370,14 +361,14 @@ def _run_rdd(
     artifacts: dict,
 ) -> FamilyResult:
     ds = _rdd_dataset(df, intake)
-    # The bound outcome is a heuristic/analyst GUESS here, never a declared
-    # fact, so it stays in the forcing space (known_outcomes=set()) and is
-    # estimated as an outcome wherever it is not a role.
+    # The bound outcome is a search-plan GUESS, not a declared fact, so it
+    # stays in the forcing space and is estimated as an outcome wherever it
+    # is not a role; only prep-plan-declared outcomes are reserved.
     rep = discover(
         ds, design="rdd", search_plan=intake.search_plan, rng=fam_rng,
         budget=budget, out=fam_dir, profile=intake.profile,
         outcome_candidates=_outcome_candidates(intake, df, declared),
-        known_outcomes=set(),
+        known_outcomes=_declared_outcomes(intake),
     )
     diagnostics = {"caveats": [FAMILIES["rdd"].caveat], "searched": rep.searched}
     best = rep.best()
@@ -476,7 +467,8 @@ def _run_did(
     ds = _did_dataset(df, intake, declared)
     rep = discover(
         ds, design="did", search_plan=intake.search_plan, rng=fam_rng,
-        budget=budget, out=fam_dir, profile=intake.profile, known_outcomes=set(),
+        budget=budget, out=fam_dir, profile=intake.profile,
+        known_outcomes=_declared_outcomes(intake),
     )
     diagnostics = {"caveats": [FAMILIES["did"].caveat], "searched": rep.searched}
     best = rep.best()

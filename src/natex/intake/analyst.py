@@ -117,6 +117,16 @@ class IntakeReport:
             prep_log=list(d.get("prep_log", [])),
         )
 
+    def known_outcomes(self) -> set[str]:
+        """Columns an analyst DECLARED as outcomes (prep-plan roles). Only these
+        are reserved from the scan's forcing space; a search-plan candidate's
+        outcome is a guess and stays scannable (``discover(known_outcomes=)``)."""
+        return {col for col, role in self.prep_plan.column_roles.items() if role == "outcome"}
+
+    def outcome_candidates(self, df: pd.DataFrame) -> list[str]:
+        """See :func:`outcome_candidates`; the frame is the prepared one."""
+        return outcome_candidates(self.profile, self.understanding, df)
+
     def prepare(self, df: pd.DataFrame | None = None, candidate: int = 0) -> Dataset:
         """Re-apply the prep plan and build a :class:`Dataset` for one candidate.
 
@@ -189,6 +199,35 @@ class IntakeReport:
         # Dataset's constructor enforces numeric forcing/time etc. — errors
         # propagate: they are real spec bugs, never silently absorbed.
         return Dataset(df2, spec)
+
+
+def outcome_candidates(
+    profile: IntakeProfile,
+    understanding: Understanding,
+    df: pd.DataFrame,
+    extra_banned=(),
+) -> list[str]:
+    """Numeric outcome guesses that survive the issue-#52 role bans, in guess
+    order: never a time-like column, a profiled or proposed panel unit/time
+    column, a monotone integer counter, or anything in ``extra_banned``.
+    These are the outcomes a discovered boundary is estimated against; the
+    scan itself never reads them."""
+    numeric = {c.name for c in profile.columns if c.is_numeric}
+    banned = {c.name for c in profile.columns if c.is_time_like}
+    banned |= {c for c in extra_banned if c is not None}
+    for unit_col, time_col in profile.panel_candidates:
+        banned |= {unit_col, time_col}
+    for structure in understanding.did_structures:
+        banned |= {structure.unit, structure.time}
+    banned |= {
+        c.name
+        for c in profile.columns
+        if c.is_monotone and str(c.dtype).lower().startswith(("int", "uint"))
+    }
+    return [
+        g.column for g in understanding.outcomes
+        if g.column not in banned and g.column in df.columns and g.column in numeric
+    ]
 
 
 def _candidate_columns(c: DesignCandidate) -> list[str]:
