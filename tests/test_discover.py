@@ -779,3 +779,110 @@ def test_issue_1_row_loss_reports_top3_columns():
     assert rec.status == "scanned"
     assert rec.n_rows_input == n and rec.n_rows_used == n - 4
     assert rec.row_loss == {"c1": 4, "c2": 3, "c3": 2}
+
+
+# ---------------------------------------------------------------------------
+# exhaustive role enumeration (profile-driven): every binary treatment x every
+# single non-time forcing column is scanned, and every candidate outcome is
+# estimated at each discovered boundary. The plan ORDERS; it never truncates.
+# ---------------------------------------------------------------------------
+
+
+def test_profile_enumerates_every_treatment_by_forcing_pair_and_every_outcome():
+    from natex.intake.profiler import profile
+
+    ds = _rdd_dataset_with_decoy()  # T + decoy 'holiday'; forcing x0, x1; outcome y
+    prof = profile(ds.df)
+    rep = discover(ds, rng=np.random.default_rng(2), budget=SMALL, profile=prof,
+                   outcome_candidates=["x0", "x1", "y"])
+    keys = {(r.candidate.treatment, tuple(r.candidate.forcing)) for r in rep.configs}
+    assert ("T", ("x0", "x1")) in keys  # the bound spec, scanned first
+    for t in ("T", "holiday"):
+        for z in ("x0", "x1"):
+            assert (t, (z,)) in keys, (t, z)
+    assert ("holiday", ("x0", "x1")) in keys
+    # the bound outcome is never recycled as a forcing column (issue #7 lineage)
+    assert all("y" not in r.candidate.forcing for r in rep.configs)
+    assert rep.searched["exhaustive_candidates"] == 6
+    assert rep.searched["role_space"]["treatments"] == ["T", "holiday"]
+    assert rep.searched["role_space"]["forcing"] == ["x0", "x1"]
+    assert all(r.status == "scanned" for r in rep.configs)
+    assert rep.best().candidate.treatment == "T"  # planted jump still wins on LLR
+
+    # per-outcome effects at the discovered boundary: every candidate outcome
+    # that is not one of the config's own roles, each with both estimators
+    single = next(r for r in rep.configs if r.candidate.forcing == ["x0"]
+                  and r.candidate.treatment == "T")
+    by_outcome = single.summary["effects_by_outcome"]
+    assert set(by_outcome) == {"x1", "y"}
+    for block in by_outcome.values():
+        assert set(block) == {"2sls", "wald"}
+        assert "tau" in block["2sls"] and "weak_instrument" in block["2sls"]
+    bound = rep.configs[0]
+    assert set(bound.summary["effects_by_outcome"]) == {"y"}
+
+
+def test_profile_enumeration_excludes_mechanical_time_steps_and_time_like_forcing():
+    from natex.intake.profiler import profile
+
+    rng = np.random.default_rng(5)
+    year = np.repeat(np.arange(2000, 2060), 4).astype(float)
+    n = year.size
+    df = pd.DataFrame({
+        "year": year,
+        "post": (year >= 2030.0).astype(int),  # global deterministic step in time
+        "T": rng.integers(0, 2, n),
+        "x": rng.normal(size=n),
+        "y": rng.normal(size=n),
+    })
+    ds = Dataset(df, DatasetSpec(treatment="T", outcome="y", forcing=["x"], covariates=["x"]))
+    rep = discover(ds, design="rdd", rng=np.random.default_rng(1), budget=SMALL,
+                   profile=profile(df))
+    assert "post" not in {r.candidate.treatment for r in rep.configs}
+    assert all("year" not in r.candidate.forcing for r in rep.configs)
+    excluded = rep.searched["excluded"]
+    assert any(e["column"] == "post" and "deterministic step" in e["reason"] for e in excluded)
+    assert any(e["column"] == "year" and "time" in e["reason"] for e in excluded)
+
+
+def test_discover_without_profile_is_unchanged():
+    rep = discover(_rdd_dataset(), rng=np.random.default_rng(0), budget=SMALL)
+    assert rep.searched["n_total"] == 1
+    assert rep.searched["excluded"] == []
+    assert rep.searched["role_space"] is None
+
+
+def test_known_outcomes_empty_keeps_a_guessed_outcome_in_the_forcing_space():
+    """A heuristic outcome guess is not a known outcome: with
+    ``known_outcomes=set()`` it is scanned as a running variable (outcome
+    None in that config) and estimated as an outcome wherever it is not a
+    role — so a wrong guess can never hide the planted boundary."""
+    from natex.intake.profiler import profile
+
+    ds = _rdd_dataset_with_decoy()
+    rep = discover(ds, design="rdd", rng=np.random.default_rng(2), budget=SMALL,
+                   profile=profile(ds.df), outcome_candidates=["x0", "x1", "y"],
+                   known_outcomes=set())
+    y_as_forcing = [r for r in rep.configs if r.candidate.forcing == ["y"]]
+    assert {r.candidate.treatment for r in y_as_forcing} == {"T", "holiday"}
+    assert all(r.candidate.outcome is None for r in y_as_forcing)
+    assert all("y" not in r.summary["effects_by_outcome"] for r in y_as_forcing)
+    assert not any(e["column"] == "y" for e in rep.searched["excluded"])
+    assert rep.best().candidate.treatment == "T"
+
+
+def test_best_ranks_calibrated_p_before_raw_llr():
+    """Raw LLRs are not comparable across forcing dimensions; the calibrated
+    p ranks first and LLR only breaks ties."""
+    from natex.discover import ConfigRecord, DiscoverReport
+
+    def rec(treatment, llr, p):
+        c = DesignCandidate(design="rdd", treatment=treatment, forcing=["x0"])
+        return ConfigRecord(candidate=c, source="plan", status="scanned", llr=llr, p_value=p)
+
+    records = [rec("decoy", 40.0, 0.4), rec("T", 12.0, 0.1), rec("tie", 9.0, 0.1)]
+    rep = DiscoverReport(configs=records, searched={}, best_index=None,
+                         guidance_log_path=None)
+    # the same ranking discover() applies
+    rep.best_index = min(range(3), key=lambda i: (records[i].p_value, -records[i].llr))
+    assert rep.best().candidate.treatment == "T"

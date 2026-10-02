@@ -53,6 +53,10 @@ class PlaceboKinkGrid:
     n_evaluated: int
     n_significant: int
     empirical_size: float
+    # Smallest placebo-calibrated p this grid can return, 1/(n_evaluated+1):
+    # a 7-placebo grid bottoms out at 0.125, so "0 of 7 reject" is the floor
+    # of the test, never evidence at the 5% level. NaN when nothing evaluated.
+    min_attainable_p: float = float("nan")
 
 
 @dataclass
@@ -348,12 +352,14 @@ def placebo_kinks(
             )
         )
     empirical_size = n_significant / n_evaluated if n_evaluated else float("nan")
+    min_attainable_p = 1.0 / (n_evaluated + 1) if n_evaluated else float("nan")
     return PlaceboKinkGrid(
         placebos=placebos,
         alpha=alpha,
         n_evaluated=n_evaluated,
         n_significant=n_significant,
         empirical_size=float(empirical_size),
+        min_attainable_p=float(min_attainable_p),
     )
 
 

@@ -33,7 +33,8 @@ including reasoned SKIPs. The seven families:
 What lands under `--out out/survey`:
 
 - `survey.json` — machine-readable verdicts: per-family status (`credible`, `null`,
-  `skipped`, `needs_input`, `failed`), reason, key numbers, coverage counts.
+  `inconclusive`, `skipped`, `needs_input`, `failed`), reason, key numbers, coverage counts
+  (for rdd/did: the role space scanned and the columns excluded, with reasons).
 - `report.html` (with the `[report]` extra) and `report.md` (always) — the report.
 - `families/<name>.json` — full per-family detail.
 - `figures/` — per-family PNGs (with the `[plot]` extra); a missing figure is
@@ -107,19 +108,29 @@ with deterministic heuristics: no files to serve.
 
 - Keep the banner: **AI-generated — verify before citing**. Never drop it when
   summarizing, quoting, or converting the report.
-- Always quote the per-family caveat line shown in each family's section whenever
-  you summarize that family (e.g. rdd/did scan p-values are fitted-null Monte Carlo
-  p-values, not exact; sc placebo p-values have granularity 1/(n_used+1); iv
-  exclusion is untestable from data).
+- State each family's caveat line ONCE, in a short "Inference notes" paragraph at the
+  end of your summary — not inside every sentence about that family. The report
+  already carries the caveats verbatim; your job is the findings.
 - `credible` means the design survived that family's validation battery (placebo,
-  density, composition checks) — a strong scan score alone is never a finding.
+  density, composition checks) — a strong scan score alone is never a finding. For
+  the rdd family, lead with the "Effects by outcome" table: it says which outcome
+  jumps at the best boundary that could estimate it, which is the question the
+  exhaustive scan exists to answer.
+- `inconclusive` means the design could NOT be validly tested (too few placebos, a
+  mechanical rediscovery of a constructed time step, a calendar-time kink with fewer
+  than 19 placebo positions). Report it as "not testable here" with the reason;
+  never as a null result and never as evidence for either side.
 - Skipped families are reasoned decisions listed in the verdict table (heuristic or
   analyst reason, with any override, recorded) — present the reason, keep the row.
-- NEVER call a `null` or `needs_input` family a negative finding: `null` means no
-  credible design surfaced under this configuration (often underpowered), and
-  `needs_input` means a declared input is missing. A `null`/"—" in any field means
-  the computation failed or was underpowered — report it as such and never
-  substitute a number.
+- NEVER call a `null` or `needs_input` family a negative finding: `null` means the
+  design was tested and no credible design surfaced under this configuration (often
+  underpowered), and `needs_input` means a declared input is missing. A "—" in any
+  field means the computation failed or was underpowered — report it as such and
+  never substitute a number.
+- A calendar-time kink verdict rests on the placebo-calibrated p (`placebo_calibrated_p`,
+  `n_placebos`, `min_attainable_p` in the family's numbers); quote that p, not the
+  nominal HC1 p, and never describe placebo rejections elsewhere in the series as
+  evidence that the test "has power".
 
 ## 4. Declared-input flags for non-LLM runs
 

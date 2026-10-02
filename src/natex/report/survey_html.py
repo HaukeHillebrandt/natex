@@ -38,6 +38,7 @@ _REPORT_EXTRA_MSG = (
 _BADGES = {
     "credible": ("#009E73", "✓"),
     "null": ("#999999", "○"),
+    "inconclusive": ("#56B4E9", "◌"),
     "skipped": ("#0072B2", "–"),
     "needs_input": ("#E69F00", "⚠"),
     "failed": ("#D55E00", "✗"),
@@ -105,6 +106,43 @@ def _figure_entries(fam: dict, out_dir: Path | None) -> list[dict]:
     return entries
 
 
+_EFFECT_COLUMNS = (
+    "outcome", "treatment", "forcing", "LLR", "scan p",
+    "2SLS tau", "se", "weak IV", "Wald tau",
+)
+_HIDDEN_DIAGNOSTICS = ("caveats", "traceback", "effects_by_outcome")
+
+
+def _yes_no(v) -> str:
+    return "yes" if v is True else "no" if v is False else _EM
+
+
+def _effect_rows(table) -> list[list[str]]:
+    """Per-outcome effects table rows (``_EFFECT_COLUMNS`` order); every
+    number via ``_fmt`` so missing values are the em dash."""
+    rows: list[list[str]] = []
+    if not isinstance(table, dict):
+        return rows
+    for outcome, block in table.items():
+        if not isinstance(block, dict):
+            continue
+        two = block.get("2sls") or {}
+        wald = block.get("wald") or {}
+        forcing = block.get("forcing")
+        rows.append([
+            str(outcome),
+            str(block.get("treatment") or _EM),
+            ", ".join(str(f) for f in forcing) if isinstance(forcing, list) and forcing else _EM,
+            _fmt(block.get("llr")),
+            _fmt(block.get("p_value")),
+            _fmt(two.get("tau")),
+            _fmt(two.get("se")),
+            _yes_no(two.get("weak_instrument")),
+            _fmt(wald.get("tau")),
+        ])
+    return rows
+
+
 def _family_context(name: str, fam: dict, out_dir: Path | None) -> dict:
     reg = FAMILIES.get(name)
     status = str(fam.get("status") or "unknown")
@@ -127,12 +165,15 @@ def _family_context(name: str, fam: dict, out_dir: Path | None) -> dict:
         "override_line": over_line,
         "guidance_error": guidance_err,
         "key_numbers": [(str(k), _fmt(v)) for k, v in (fam.get("key_numbers") or {}).items()],
+        "effect_columns": list(_EFFECT_COLUMNS),
+        "effect_rows": _effect_rows(diagnostics.get("effects_by_outcome")),
         "figures": _figure_entries(fam, out_dir),
         "no_figure_reason": str(fam.get("no_figure_reason") or ""),
         "diagnostics": [
             (str(k), _value_text(v))
             for k, v in diagnostics.items()
-            if k not in ("caveats", "traceback")  # caveats shown apart; tracebacks stay in json
+            # caveats and the effects table render apart; tracebacks stay in json
+            if k not in _HIDDEN_DIAGNOSTICS
         ],
         "caveats": caveats,
         "error": str(fam.get("error") or ""),
@@ -215,6 +256,14 @@ def render_survey_md(result: dict, out_dir: str | Path) -> Path:
             lines += ["", "| quantity | value |", "|---|---|"]
             for k, v in fam["key_numbers"]:
                 lines.append(f"| {_cell(k)} | {_cell(v)} |")
+        if fam["effect_rows"]:
+            lines += [
+                "", "Effects by outcome (at the best boundary that could estimate each):", "",
+                "| " + " | ".join(fam["effect_columns"]) + " |",
+                "|" + "---|" * len(fam["effect_columns"]),
+            ]
+            for row in fam["effect_rows"]:
+                lines.append("| " + " | ".join(_cell(v) for v in row) + " |")
         if fam["figures"]:
             lines += ["", "Figures (paths relative to this report's directory):", ""]
             for fig in fam["figures"]:

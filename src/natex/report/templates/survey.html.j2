@@ -20,6 +20,7 @@ th { background: #f5f5f5; }
          font-weight: 600; font-size: .85em; white-space: nowrap; }
 .badge-credible { background: #009E73; }
 .badge-null { background: #999999; }
+.badge-inconclusive { background: #56B4E9; }
 .badge-skipped { background: #0072B2; }
 .badge-needs_input { background: #E69F00; }
 .badge-failed { background: #D55E00; }
@@ -86,6 +87,15 @@ figcaption { color: #555; font-size: .9em; }
 <tr><th>quantity</th><th>value</th></tr>
 {% for k, v in fam.key_numbers %}
 <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% if fam.effect_rows %}
+<p><strong>Effects by outcome</strong> (at the best boundary that could estimate each):</p>
+<table class="numbers">
+<tr>{% for c in fam.effect_columns %}<th>{{ c }}</th>{% endfor %}</tr>
+{% for row in fam.effect_rows %}
+<tr>{% for v in row %}<td>{{ v }}</td>{% endfor %}</tr>
 {% endfor %}
 </table>
 {% endif %}

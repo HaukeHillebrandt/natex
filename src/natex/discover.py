@@ -30,6 +30,7 @@ from natex.did.panel import build_panel
 from natex.did.suddds import resolve_default_model, suddds_scan
 from natex.estimate.local2sls import local_2sls, wald_estimate
 from natex.intake.plans import DesignCandidate, SearchPlan
+from natex.intake.profiler import IntakeProfile, mechanical_step_column
 from natex.jsonutil import jsonable
 from natex.llm import GuidanceBackend, GuidanceLog, GuidanceRequest, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
@@ -171,6 +172,10 @@ class DiscoverReport:
     guidance_log_path: str | None
 
     def best(self) -> ConfigRecord | None:
+        """The scanned config with the smallest fitted-null p, ties broken by
+        LLR. Raw LLRs are not comparable across configurations with different
+        forcing dimensions (a random decoy in one dimension can out-score a
+        real jump in three), so the calibrated p ranks first."""
         return None if self.best_index is None else self.configs[self.best_index]
 
     def to_json(self) -> str:
@@ -211,6 +216,127 @@ def enumerate_configs(data: Dataset, design: str = "auto") -> list[DesignCandida
             unit=spec.unit, time=spec.time, rationale="bound dataset spec (exhaustive)",
         ))
     return out
+
+
+def enumerate_role_configs(
+    data: Dataset,
+    profile: IntakeProfile,
+    design: str = "auto",
+    known_outcomes: set[str] | None = None,
+) -> tuple[list[DesignCandidate], dict]:
+    """Exhaustive role enumeration from the intake profile (spec 6b made literal).
+
+    rdd: every profiled binary treatment candidate (the bound treatment first)
+    x every single non-time-like forcing candidate, plus the joint all-forcing
+    candidate per treatment when more than one forcing column survives. did:
+    every treatment x every profiled ``(unit, time)`` panel candidate. The
+    outcome is the bound spec's outcome unless the candidate uses that column
+    in another role.
+
+    ``known_outcomes`` (default: the bound spec's outcome) are never recycled
+    as forcing columns (issue #7). Pass an empty set when the bound outcome is
+    only a heuristic guess — the survey's automatic role assignment — so the
+    guess is still scanned as a running variable and estimated as an outcome
+    wherever it is not a role (``effects_by_outcome``).
+
+    Also excluded, with the reason recorded in the returned role-space dict:
+    time-like forcing columns (calendar time is a before/after contrast, not
+    a scannable running variable) and treatments that are a global
+    deterministic step in a time column (:func:`mechanical_step_column`: the
+    scan would re-find the design's own adoption boundary, issue #52). The
+    bound configuration from :func:`enumerate_configs` is always scanned
+    regardless; this function only widens the search beyond it.
+    """
+    if design not in _DESIGNS:
+        raise ValueError(f"design must be one of {_DESIGNS}, got {design!r}")
+    spec = data.spec
+    df = data.df_input
+    if known_outcomes is None:
+        known_outcomes = {spec.outcome} if spec.outcome is not None else set()
+    time_cols = {c.name for c in profile.columns if c.is_time_like}
+    excluded: list[dict] = []
+
+    treatments: list[str] = []
+    for t in dict.fromkeys([spec.treatment, *profile.treatment_candidates]):
+        if t not in df.columns:
+            continue
+        step_col = mechanical_step_column(df, t, time_cols)
+        if step_col is not None:
+            excluded.append({
+                "column": t, "role": "treatment",
+                "reason": (
+                    f"global deterministic step in the time column {step_col!r}: the scan "
+                    "would re-find the design's own adoption boundary (issue #52)"
+                ),
+            })
+            continue
+        treatments.append(t)
+
+    forcing: list[str] = []
+    for z in dict.fromkeys(profile.forcing_candidates):
+        if z not in df.columns or z in treatments:
+            continue
+        if z in time_cols:
+            excluded.append({
+                "column": z, "role": "forcing",
+                "reason": (
+                    "time-like column: calendar time is a before/after contrast, "
+                    "not a scannable running variable"
+                ),
+            })
+            continue
+        if z in known_outcomes:
+            excluded.append({
+                "column": z, "role": "forcing",
+                "reason": "known outcome column is never a forcing variable (issue #7)",
+            })
+            continue
+        if not pd.api.types.is_numeric_dtype(df[z]):
+            continue
+        forcing.append(z)
+
+    def outcome_for(roles: set[str]) -> str | None:
+        return spec.outcome if spec.outcome not in roles else None
+
+    out: list[DesignCandidate] = []
+    if design in ("auto", "rdd"):
+        for t in treatments:
+            singles = [z for z in forcing if z != t]
+            for z in singles:
+                out.append(DesignCandidate(
+                    design="rdd", treatment=t, outcome=outcome_for({t, z}), forcing=[z],
+                    rationale=f"exhaustive role enumeration: treatment {t!r} x forcing {z!r}",
+                ))
+            if len(singles) > 1:
+                out.append(DesignCandidate(
+                    design="rdd", treatment=t, outcome=outcome_for({t, *singles}),
+                    forcing=list(singles),
+                    rationale=(
+                        f"exhaustive role enumeration: treatment {t!r} x all "
+                        "non-time forcing columns"
+                    ),
+                ))
+    panels = [tuple(p) for p in profile.panel_candidates]
+    if design in ("auto", "did"):
+        for t in treatments:
+            for unit, time in panels:
+                if t in (unit, time):
+                    continue
+                out.append(DesignCandidate(
+                    design="did", treatment=t, outcome=outcome_for({t, unit, time}),
+                    forcing=[], unit=unit, time=time,
+                    rationale=(
+                        f"exhaustive role enumeration: treatment {t!r} x panel "
+                        f"({unit!r}, {time!r})"
+                    ),
+                ))
+    role_space = {
+        "treatments": treatments,
+        "forcing": forcing,
+        "panels": [list(p) for p in panels],
+        "excluded": excluded,
+    }
+    return out, role_space
 
 
 def _effective_budget(search_plan: SearchPlan | None, budget: dict | None) -> dict:
@@ -292,8 +418,37 @@ def _dataset_for(data: Dataset, c: DesignCandidate, known_outcomes: set[str]) ->
     return Dataset(data.df_input, new_spec)
 
 
+def _effects_for(ds: Dataset, top) -> dict:
+    """``{method: {tau, se, ci, first_stage_t, weak_instrument}}`` at ``top``."""
+    effects: dict = {}
+    for est in (local_2sls(ds, top), wald_estimate(ds, top)):
+        effects[est.method] = {
+            "tau": est.tau, "se": est.se, "ci": list(est.ci),
+            "first_stage_t": est.first_stage_t,
+            "weak_instrument": est.weak_instrument,
+        }
+    return effects
+
+
+def _effects_by_outcome(ds: Dataset, top, outcome_candidates) -> dict:
+    """Effects at ONE discovered boundary for every candidate outcome that is
+    not one of the configuration's own roles — the scan is outcome-blind, so
+    one boundary can be estimated against every outcome without rescanning.
+    A failing outcome records its error; it never aborts the config."""
+    roles = {ds.spec.treatment, *ds.spec.forcing}
+    by_outcome: dict = {}
+    for col in dict.fromkeys(outcome_candidates or ()):
+        if col in roles or col not in ds.df.columns:
+            continue
+        try:
+            by_outcome[col] = _effects_for(ds.with_outcome(col), top)
+        except _CONFIG_EXCEPTIONS as exc:
+            by_outcome[col] = {"error": str(exc)}
+    return by_outcome
+
+
 def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
-             hooks: _GuidanceHooks) -> tuple:
+             hooks: _GuidanceHooks, outcome_candidates=()) -> tuple:
     """LoRD3 scan + randomization/placebo/density + local 2SLS effects."""
     k, q, degree = int(budget["k"]), int(budget["q"]), int(budget["degree"])
     coarse_block, geometry, search = None, None, None
@@ -364,20 +519,13 @@ def _run_rdd(ds: Dataset, budget: dict, rng: np.random.Generator,
         }
         for d in res.top(int(budget["report_top_m"]))
     ]
-    effects: dict = {}
-    if ds.y is not None:
-        for est in (local_2sls(ds, top), wald_estimate(ds, top)):
-            effects[est.method] = {
-                "tau": est.tau, "se": est.se, "ci": list(est.ci),
-                "first_stage_t": est.first_stage_t,
-                "weak_instrument": est.weak_instrument,
-            }
-    summary["effects"] = effects
+    summary["effects"] = _effects_for(ds, top) if ds.y is not None else {}
+    summary["effects_by_outcome"] = _effects_by_outcome(ds, top, outcome_candidates)
     return float(rand.observed_max_llr), float(rand.p_value), len(res.discoveries), summary
 
 
 def _run_did(ds: Dataset, budget: dict, rng: np.random.Generator,
-             hooks: _GuidanceHooks) -> tuple:
+             hooks: _GuidanceHooks, outcome_candidates=()) -> tuple:
     """SuDDDS scan + panel randomization/composition/anticipation + effects."""
     q, degree, bins = int(budget["q"]), int(budget["degree"]), int(budget["bins"])
     windows = budget["windows"]
@@ -471,8 +619,23 @@ def discover(
     rng: np.random.Generator | None = None,
     budget: dict | None = None,
     out: str | Path | None = None,
+    *,
+    profile: IntakeProfile | None = None,
+    outcome_candidates: list[str] | None = None,
+    known_outcomes: set[str] | None = None,
 ) -> DiscoverReport:
     """Scan every enumerated configuration: plan-ranked first, exhaustive still.
+
+    With ``profile`` (the intake profile of the same frame) the exhaustive
+    remainder is the full role space of :func:`enumerate_role_configs` —
+    every binary treatment x every single non-time forcing column (and the
+    joint), every treatment x panel for did — not just the one configuration
+    the bound spec names; excluded columns are listed with reasons in
+    ``searched["excluded"]`` and the enumerated roles in
+    ``searched["role_space"]``. With ``outcome_candidates`` every scanned rdd
+    boundary is additionally estimated against each candidate outcome that
+    is not one of the configuration's roles (``summary["effects_by_outcome"]``);
+    the scan itself never reads any of them.
 
     Effective budget = ``_BUDGET_DEFAULTS`` <- ``search_plan.budget`` (hints;
     unknown keys ignored per the open schema_hint) <- ``budget`` arg (explicit
@@ -541,7 +704,14 @@ def discover(
                 status="invalid" if err else "pending", error=err,
             ))
     n_exhaustive = 0
-    for c in enumerate_configs(data, design):
+    role_space: dict | None = None
+    exhaustive: list[DesignCandidate] = enumerate_configs(data, design)
+    if profile is not None:
+        role_configs, role_space = enumerate_role_configs(
+            data, profile, design, known_outcomes=known_outcomes
+        )
+        exhaustive = [*exhaustive, *role_configs]
+    for c in exhaustive:
         if (c.key(), c.outcome) in seen:
             continue  # absorbed by an identical plan candidate (same outcome)
         n_exhaustive += 1
@@ -579,7 +749,9 @@ def discover(
             rec.n_rows_used = ds.n_rows_used
             rec.row_loss = ds.top_row_loss()
             runner = _run_rdd if rec.candidate.design == "rdd" else _run_did
-            llr, p_value, n_disc, summary = runner(ds, eff_budget, rng, hooks)
+            llr, p_value, n_disc, summary = runner(
+                ds, eff_budget, rng, hooks, outcome_candidates or ()
+            )
         except _CONFIG_EXCEPTIONS as exc:
             rec.status = "failed"
             rec.error = str(exc)  # llr/p stay None — never fabricated
@@ -599,16 +771,25 @@ def discover(
         "budget": eff_budget,
         "plan_candidates": n_plan,
         "exhaustive_candidates": n_exhaustive,
+        # Role-space coverage (always present): what was enumerated beyond the
+        # bound spec and what was excluded, with reasons — never silent.
+        "role_space": (
+            {k: v for k, v in role_space.items() if k != "excluded"}
+            if role_space is not None else None
+        ),
+        "excluded": list(role_space["excluded"]) if role_space is not None else [],
     }
 
     scanned_idx = [i for i, r in enumerate(records) if r.status == "scanned"]
     best_index = None
     if scanned_idx:
-        def _llr_key(i: int) -> float:
-            v = records[i].llr
-            return v if v is not None and np.isfinite(v) else float("-inf")
+        def _rank_key(i: int) -> tuple[float, float]:
+            p, v = records[i].p_value, records[i].llr
+            p = p if p is not None and np.isfinite(p) else float("inf")
+            v = v if v is not None and np.isfinite(v) else float("-inf")
+            return (p, -v)
 
-        best_index = max(scanned_idx, key=_llr_key)
+        best_index = min(scanned_idx, key=_rank_key)
 
     report = DiscoverReport(
         configs=records,

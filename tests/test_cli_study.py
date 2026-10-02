@@ -279,3 +279,26 @@ def test_discover_bad_plan_path_exit_2(tmp_path):
     )
     assert result.exit_code == 2
     assert "missing.json" in result.output
+
+
+def test_discover_plan_scans_the_full_role_space_and_reports_effects_by_outcome(tmp_path):
+    """Plan mode must not stop at the plan's candidates: the intake profile
+    drives exhaustive role enumeration and every scanned rdd boundary is
+    estimated against every candidate outcome."""
+    csv = _write_synthetic_csv(tmp_path)
+    out1, out2 = tmp_path / "out1", tmp_path / "out2"
+    res1 = runner.invoke(app, ["study", str(csv), "--seed", "0", "--out", str(out1)])
+    assert res1.exit_code == 0, res1.output
+    res2 = runner.invoke(
+        app,
+        ["discover", "--plan", str(out1 / "intake_report.json"), str(csv),
+         "--q", "9", "--k", "25", "--seed", "0", "--out", str(out2)],
+    )
+    assert res2.exit_code == 0, res2.output
+    payload = json.loads((out2 / "discover_report.json").read_text())
+    searched = payload["searched"]
+    assert searched["role_space"] is not None
+    assert searched["exhaustive_candidates"] >= 4
+    scanned = [c for c in payload["configs"] if c["status"] == "scanned"]
+    assert scanned and all("effects_by_outcome" in c["summary"] for c in scanned)
+    assert any(c["summary"]["effects_by_outcome"] for c in scanned)

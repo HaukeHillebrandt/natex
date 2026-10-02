@@ -32,7 +32,7 @@ from natex.scan.coarse import CoarseToFineResult, coarse_to_fine_scan
 # attribute — same module/function precedent as ``discover`` above.
 from natex.survey.runner import FamilyResult, SurveyResult, survey
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "CoarseToFineResult",
     "ConfigRecord",

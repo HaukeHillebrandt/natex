@@ -200,14 +200,15 @@ def test_bunching_small_side_refusal_surfaces_counts(tmp_path):
     """Issue #44: a declared threshold with almost all mass on one side
     (67/3, above the family's 60-row applicability floor) must refuse with
     NaN — surfaced per threshold as n_left/n_right and a note — and the
-    family lands on the degenerate-fit null, never a fabricated verdict from
-    a 4-parameter GLM on <= 2 informative bins."""
+    family lands on the degenerate-fit inconclusive verdict (a refusal is
+    not a null result), never a fabricated verdict from a 4-parameter GLM on
+    <= 2 informative bins."""
     rng = np.random.default_rng(2)
     x = np.concatenate([rng.uniform(20.0, 24.9, 67), rng.uniform(25.0, 26.0, 3)])
     res = survey(pd.DataFrame({"v": x}), rng=np.random.default_rng(0),
                  out_dir=tmp_path / "small", thresholds={"v": 25.0})
     b = res.families["bunching"]
-    assert b.status == "null"
+    assert b.status == "inconclusive"
     assert "degenerate" in b.reason
     detail = b.diagnostics["per_threshold"]["v"]
     assert detail["p_value"] is None  # NaN -> None via jsonable
@@ -293,9 +294,12 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
         search_plan=SimpleNamespace(ranked=lambda: [], budget={}),
         prep_plan=SimpleNamespace(apply=lambda frame: (frame, []), column_roles={}),
         profile=SimpleNamespace(
-            treatment_candidates=["T"], forcing_candidates=["z"], columns=[]
+            treatment_candidates=["T"], forcing_candidates=["z"], columns=[],
+            panel_candidates=[],
         ),
-        understanding=SimpleNamespace(outcomes=[SimpleNamespace(column="y")]),
+        understanding=SimpleNamespace(
+            outcomes=[SimpleNamespace(column="y")], did_structures=[]
+        ),
     )
     summary = {
         "placebo_passed": None,
@@ -310,7 +314,7 @@ def test_issue_34_vacuous_placebo_battery_not_demoted(monkeypatch, tmp_path):
             model_dump=lambda: {"design": "rdd"}, treatment="T"
         ),
     )
-    rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best)
+    rep = SimpleNamespace(searched={"n_scanned": 1}, best=lambda: best, configs=[])
     monkeypatch.setattr(runner_mod, "discover", lambda *a, **k: rep)
     res = runner_mod._run_rdd(
         df, intake, None, None, None, np.random.default_rng(0), tmp_path, {},
@@ -364,7 +368,8 @@ def test_dee_runs_after_credible_rdd(tmp_path):
                  budget={"q": 19, "k": 30})
     assert res.families["rdd"].status == "credible", res.families["rdd"].reason
     dee = res.families["dee"]
-    assert dee.status in {"credible", "null"}, dee.reason
+    # a degenerate experiment ensemble is "could not fit", never a null
+    assert dee.status in {"credible", "inconclusive"}, dee.reason
     assert "w_debias" in dee.key_numbers
     assert dee.key_numbers["n_experiments"] >= 0
 

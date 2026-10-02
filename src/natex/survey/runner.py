@@ -53,11 +53,12 @@ from natex.dee.debias import dee_debias
 # hints <- explicit dict); dee reuses it so its scan k matches the rdd
 # family's effective budget exactly.
 from natex.discover import DiscoverReport, _effective_budget, discover
-from natex.intake.analyst import IntakeReport, study
+from natex.intake.analyst import IntakeReport, outcome_candidates, study
+from natex.intake.profiler import mechanical_step_column
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
-from natex.kink import regression_kink, sensitivity_grid
+from natex.kink import placebo_calibrated_p, placebo_kinks, regression_kink, sensitivity_grid
 from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.report.survey_html import render_survey_html, render_survey_md
@@ -75,12 +76,24 @@ ALPHA = 0.05  # verdict gate for scan/kink/bunching p-values
 # sc placebo gate: the in-space +1-rank test has granularity 1/(n_used+1), so
 # 0.05 is often unattainable with few donors — documented coarser gate.
 SC_ALPHA = 0.10
+# Calendar-time kinks are gated on the placebo-calibrated p (kink method
+# card, "Time as the running variable"): with N shifted cutoffs the smallest
+# attainable p is 1/(N+1), so fewer than 19 positions cannot clear ALPHA.
+MIN_PLACEBO_CUTOFFS = 19
+_PLACEBO_GRID_TARGET = 49  # at most this many shifted cutoffs per declared cutoff
 
 
 @dataclass
 class FamilyResult:
     family: str
-    status: str  # credible|null|skipped|needs_input|failed
+    # credible: ran and cleared the family's gate.
+    # null: ran, was testable, and no credible design surfaced.
+    # inconclusive: ran but could not be validly tested — refused inference
+    #   (too few placebos), a degenerate or vacuous configuration (mechanical
+    #   rediscovery of a constructed step, no scannable config, a placebo
+    #   floor above alpha). Never a negative finding.
+    # skipped | needs_input: did not run.  failed: raised.
+    status: str  # credible|null|inconclusive|skipped|needs_input|failed
     reason: str  # one sentence, always set
     applicability: dict = field(default_factory=dict)  # FamilyPlan serialized
     key_numbers: dict = field(default_factory=dict)  # flat name->number (NaN -> null)
@@ -274,7 +287,8 @@ def _did_dataset(df: pd.DataFrame, intake: IntakeReport, declared: DeclaredInput
 
 def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> FamilyResult:
     """No scanned config: failed with the first config error verbatim, unless
-    every enumerated config was invalid — then null with a coverage reason."""
+    every enumerated config was invalid — then inconclusive (nothing was
+    tested, so there is no null result to report) with a coverage reason."""
     searched = rep.searched
     first_error = next(
         (r.error for r in rep.configs if r.status == "failed" and r.error), None
@@ -290,9 +304,50 @@ def _scanless_result(family: str, rep: DiscoverReport, diagnostics: dict) -> Fam
         f"({searched['n_invalid']} invalid of {searched['n_total']} enumerated)"
     )
     return FamilyResult(
-        family=family, status="null", reason=reason, diagnostics=diagnostics,
+        family=family, status="inconclusive", reason=reason, diagnostics=diagnostics,
         no_figure_reason=f"no figure: no {family} configuration scanned",
     )
+
+
+def _outcome_candidates(
+    intake: IntakeReport, df: pd.DataFrame, declared: DeclaredInputs | None = None
+) -> list[str]:
+    """Every numeric outcome guess that survives the issue-#52 role bans (plus
+    the declared time/unit), in guess order — the outcomes each discovered rdd
+    boundary is estimated against (the scan never reads any of them)."""
+    extra = () if declared is None else (declared.time, declared.unit)
+    return outcome_candidates(intake.profile, intake.understanding, df, extra_banned=extra)
+
+
+def _declared_outcomes(intake: IntakeReport) -> set[str]:
+    """Prep-plan-declared outcome columns: the only outcomes reserved from
+    the forcing space (a search-plan candidate's outcome is a guess)."""
+    return {col for col, role in intake.prep_plan.column_roles.items() if role == "outcome"}
+
+
+def _best_effects_by_outcome(rep: DiscoverReport) -> dict:
+    """Per candidate outcome, the effects at the highest-LLR scanned boundary
+    that could estimate it (an outcome used as a forcing column in one
+    configuration is estimable in another) — the "which outcome jumps where"
+    table an exhaustive scan exists to answer."""
+    table: dict = {}
+    for rec in rep.configs:
+        if rec.status != "scanned" or rec.llr is None or not np.isfinite(rec.llr):
+            continue
+        for col, block in (rec.summary.get("effects_by_outcome") or {}).items():
+            if "error" in block:
+                continue
+            current = table.get(col)
+            if current is not None and current["llr"] >= rec.llr:
+                continue
+            table[col] = {
+                "treatment": rec.candidate.treatment,
+                "forcing": list(rec.candidate.forcing),
+                "llr": rec.llr,
+                "p_value": rec.p_value,
+                **block,
+            }
+    return table
 
 
 def _run_rdd(
@@ -306,15 +361,21 @@ def _run_rdd(
     artifacts: dict,
 ) -> FamilyResult:
     ds = _rdd_dataset(df, intake)
+    # The bound outcome is a search-plan GUESS, not a declared fact, so it
+    # stays in the forcing space and is estimated as an outcome wherever it
+    # is not a role; only prep-plan-declared outcomes are reserved.
     rep = discover(
         ds, design="rdd", search_plan=intake.search_plan, rng=fam_rng,
-        budget=budget, out=fam_dir,
+        budget=budget, out=fam_dir, profile=intake.profile,
+        outcome_candidates=_outcome_candidates(intake, df, declared),
+        known_outcomes=_declared_outcomes(intake),
     )
     diagnostics = {"caveats": [FAMILIES["rdd"].caveat], "searched": rep.searched}
     best = rep.best()
     if best is None:
         return _scanless_result("rdd", rep, diagnostics)
     s = best.summary
+    diagnostics["effects_by_outcome"] = _best_effects_by_outcome(rep)
     mechanical = _mechanical_step_column(df, best.candidate.treatment, declared, intake)
     if mechanical is not None:
         diagnostics["mechanical_step"] = {
@@ -334,8 +395,14 @@ def _run_rdd(
         rng=fam_rng, summary=s,
     )
     p, density_p = best.p_value, s.get("density_p")
-    if not _finite(p):
-        status, reason = "null", "scan p-value unavailable — no credible discovery"
+    if mechanical is not None:
+        # The configuration is vacuous, whatever its p: nothing was tested.
+        status, reason = "inconclusive", (
+            f"mechanical rediscovery — treatment {best.candidate.treatment!r} is a "
+            f"deterministic step in the time column {mechanical!r}, not a natural experiment"
+        )
+    elif not _finite(p):
+        status, reason = "inconclusive", "scan p-value unavailable — the design was not tested"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
     elif s.get("placebo_passed") is False:
@@ -344,14 +411,11 @@ def _run_rdd(
         # only an actual False is a failure.
         status, reason = "null", "descriptive only — placebo battery failed"
     elif not _finite(density_p):
-        status, reason = "null", "density diagnostic unavailable — manipulation check inconclusive"
+        status, reason = (
+            "inconclusive", "density diagnostic unavailable — manipulation check not run"
+        )
     elif density_p <= ALPHA:
         status, reason = "null", f"density test rejects (p={density_p:.3f}) — manipulation risk"
-    elif mechanical is not None:
-        status, reason = "null", (
-            f"mechanical rediscovery — treatment {best.candidate.treatment!r} is a "
-            f"deterministic step in the time column {mechanical!r}, not a natural experiment"
-        )
     else:
         status = "credible"
         placebo_txt = (
@@ -403,7 +467,8 @@ def _run_did(
     ds = _did_dataset(df, intake, declared)
     rep = discover(
         ds, design="did", search_plan=intake.search_plan, rng=fam_rng,
-        budget=budget, out=fam_dir,
+        budget=budget, out=fam_dir, profile=intake.profile,
+        known_outcomes=_declared_outcomes(intake),
     )
     diagnostics = {"caveats": [FAMILIES["did"].caveat], "searched": rep.searched}
     best = rep.best()
@@ -418,7 +483,7 @@ def _run_did(
     )
     p = best.p_value
     if not _finite(p):
-        status, reason = "null", "scan p-value unavailable — no credible discovery"
+        status, reason = "inconclusive", "scan p-value unavailable — the design was not tested"
     elif p > ALPHA:
         status, reason = "null", f"scan p={p:.2f} above {ALPHA}"
     elif not s.get("composition_passed"):
@@ -470,9 +535,33 @@ _AUDIT18_CAVEAT = (
 
 _CALENDAR_KINK_CAVEAT = (
     "the running variable {col!r} is calendar time: this kink is a before/after "
-    "slope contrast, so composition and anticipation caveats apply — not a "
-    "density test (audit 18)"
+    "slope contrast gated on the placebo-calibrated p over shifted cutoffs — the "
+    "nominal HC1 p is oversized on serially correlated series (issue #51) and is "
+    "reported for reference only; composition and anticipation caveats apply, "
+    "not a density test (audit 18)"
 )
+
+
+def _placebo_cutoff_grid(
+    r: np.ndarray, cutoff: float, bandwidth: float,
+    n_target: int = _PLACEBO_GRID_TARGET, exclusion_frac: float = 0.25,
+) -> list[float]:
+    """Shifted placebo cutoffs for one declared cutoff: distinct running values
+    inside the central 10–90% of the support, excluding a quarter-bandwidth
+    around the true cutoff (placebos must sit away from the hypothesized
+    kink), thinned evenly to at most ``n_target``. Distinct values only —
+    two cutoffs between the same observations would be one placebo twice."""
+    finite = r[np.isfinite(r)]
+    if finite.size == 0:
+        return []
+    lo, hi = np.quantile(finite, (0.1, 0.9))
+    values = np.unique(finite)
+    keep = (values >= lo) & (values <= hi) & (np.abs(values - cutoff) > exclusion_frac * bandwidth)
+    inside = values[keep]
+    if inside.size > n_target:
+        idx = np.unique(np.linspace(0, inside.size - 1, n_target).round().astype(int))
+        inside = inside[idx]
+    return [float(v) for v in inside]
 
 
 def _numeric_columns(intake: IntakeReport) -> set[str]:
@@ -532,26 +621,10 @@ def _mechanical_step_column(
     Staggered (unit-specific) adoption is deliberately NOT flagged — the
     per-time treated share is then strictly between 0 and 1.
     """
-    if treatment not in df.columns or not pd.api.types.is_numeric_dtype(df[treatment]):
-        return None
     candidates = _time_like_columns(intake)
     if declared is not None and declared.time is not None:
         candidates = candidates | {declared.time}
-    for col in sorted(candidates - {treatment}):
-        if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):
-            continue
-        sub = df[[col, treatment]].dropna()
-        if len(sub) < 2:
-            continue
-        share = sub.groupby(col)[treatment].mean().to_numpy(dtype=float)
-        if share.size < 2 or not np.isin(share, (0.0, 1.0)).all():
-            continue
-        if share.min() == share.max():
-            continue
-        steps = np.diff(share)
-        if bool((steps >= 0).all() or (steps <= 0).all()):
-            return col
-    return None
+    return mechanical_step_column(df, treatment, candidates)
 
 
 def _two_sided_p(tau: float, se: float) -> float:
@@ -632,12 +705,44 @@ def _run_kink(
             used_cutoffs[key] = c
             # With policy_kink=1, tau IS the reduced-form outcome slope kink
             # (right-minus-left, kink-card convention).
-            p = _two_sided_p(est.tau, est.se)
-            p_values[key] = p
+            nominal_p = _two_sided_p(est.tau, est.se)
             per_cutoff[key] = {
                 "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
-                "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
+                "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used,
+                "p_value": nominal_p, "nominal_p": nominal_p, "inference": "nominal_hc1",
             }
+            if col in time_like:
+                # Calendar time: the gate is the placebo-calibrated p over
+                # shifted cutoffs (kink method card); HC1 is nominal only.
+                grid_cutoffs = _placebo_cutoff_grid(r, c, bw)
+                calibrated = float("nan")
+                n_placebos, floor, size = 0, float("nan"), float("nan")
+                if grid_cutoffs:
+                    try:
+                        grid = placebo_kinks(y, r, grid_cutoffs, bandwidth=bw)
+                    except (ValueError, np.linalg.LinAlgError) as exc:
+                        per_cutoff[key]["placebo_error"] = str(exc)
+                    else:
+                        n_placebos = grid.n_evaluated
+                        floor, size = grid.min_attainable_p, grid.empirical_size
+                        if n_placebos >= MIN_PLACEBO_CUTOFFS:
+                            calibrated = placebo_calibrated_p(est, grid)
+                per_cutoff[key].update({
+                    "inference": "placebo_calibrated",
+                    "p_value": calibrated,
+                    "placebo_calibrated_p": calibrated,
+                    "n_placebos": n_placebos,
+                    "min_attainable_p": floor,
+                    "placebo_rejection_rate": size,  # empirical size at nominal ALPHA
+                })
+                if n_placebos < MIN_PLACEBO_CUTOFFS:
+                    per_cutoff[key]["inference_note"] = (
+                        f"only {n_placebos} usable placebo cutoff positions: the calibrated "
+                        f"floor 1/(n+1) sits above {ALPHA}, so this cutoff is not gateable"
+                    )
+                p_values[key] = calibrated
+            else:
+                p_values[key] = nominal_p
             # Figure payload (task 7): kink_fit_plot per usable cutoff.
             artifacts.setdefault("cutoffs", []).append({
                 "key": key, "column": col, "running": r, "outcome_values": y, "cutoff": c,
@@ -691,19 +796,34 @@ def _run_kink(
     p_holm, min_holm = _min_holm(p_values)
     diagnostics["p_holm"] = p_holm
     m = len(p_values)
+    calibrated_keys = [k for k, d in per_cutoff.items() if d["inference"] == "placebo_calibrated"]
+    label = "placebo-calibrated kink p" if calibrated_keys else "kink p"
+    floored = {
+        k: per_cutoff[k]["n_placebos"]
+        for k in calibrated_keys
+        if per_cutoff[k]["n_placebos"] < MIN_PLACEBO_CUTOFFS
+    }
     if not np.isfinite(min_holm):
-        status = "null"
-        reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
+        status = "inconclusive"
+        if floored:
+            detail = ", ".join(f"{k}: {n}" for k, n in floored.items())
+            reason = (
+                "calendar-time kink not gateable: too few placebo cutoff positions for a "
+                f"placebo-calibrated p at or below {ALPHA} ({detail}; {MIN_PLACEBO_CUTOFFS} "
+                "needed) — the nominal HC1 p is not trusted on a calendar-time running variable"
+            )
+        else:
+            reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
     elif min_holm <= ALPHA:
         status = "credible"
         reason = (
-            f"min Holm-adjusted kink p={min_holm:.3g} at or below {ALPHA} "
+            f"min Holm-adjusted {label}={min_holm:.3g} at or below {ALPHA} "
             f"across {m} declared cutoff(s)"
         )
     else:
         status = "null"
         reason = (
-            f"min Holm-adjusted kink p={min_holm:.2f} above {ALPHA} "
+            f"min Holm-adjusted {label}={min_holm:.2f} above {ALPHA} "
             f"across {m} declared cutoff(s)"
         )
         if group_columns:
@@ -715,6 +835,12 @@ def _run_kink(
         "bandwidth": first["bandwidth"], "n_used": first["n_used"],
         "p_value": first["p_value"], "min_holm_p": min_holm,
     }
+    if first["inference"] == "placebo_calibrated":
+        key_numbers.update(
+            nominal_p=first["nominal_p"],
+            placebo_calibrated_p=first["placebo_calibrated_p"],
+            n_placebos=first["n_placebos"],
+        )
     return FamilyResult(
         family="kink", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,
@@ -949,7 +1075,10 @@ def _run_sc(
     }
     p = rep.p_value  # audit 5: the +1-rank RMSPE-ratio p, verbatim
     if not _finite(p):
-        status, reason = "null", "too few usable placebos (<5) for the ratio test"
+        status, reason = (
+            "inconclusive",
+            "too few usable placebos (<5) for the RMSPE-ratio placebo test — not tested",
+        )
     elif p <= SC_ALPHA:
         status = "credible"
         reason = f"in-space placebo RMSPE-ratio p={p:.3f} at or below {SC_ALPHA}"
@@ -1027,7 +1156,7 @@ def _run_bunching(
     p_holm, min_holm = _min_holm(p_values)
     diagnostics["p_holm"] = p_holm
     if not np.isfinite(min_holm):
-        status = "null"
+        status = "inconclusive"
         reason = "density fits degenerate at every declared threshold"
     elif min_holm <= ALPHA:
         status = "credible"
@@ -1105,7 +1234,8 @@ def _run_dee(
         "dropped_experiments": res.diagnostics.get("dropped"),
     }
     if "reason" in res.diagnostics:
-        status, reason = "null", str(res.diagnostics["reason"])
+        # A degenerate experiment ensemble is a surface that could not be fitted.
+        status, reason = "inconclusive", str(res.diagnostics["reason"])
     else:
         # Documented status-semantics stretch: dee is a surface fit, not a
         # hypothesis test — "credible" here means the fit completed with a

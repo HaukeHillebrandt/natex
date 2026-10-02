@@ -86,11 +86,17 @@ open out/survey/report.html    # report.md is always written alongside as a fall
 ```
 
 The report opens with the banner "AI-generated — verify before citing", then shows a
-verdict table (credible / null / skipped / needs_input / failed, one row per family with a
-one-sentence reason) and a per-family section with a plain-language description, key
-numbers, figures, and the family's honest-inference caveats. Families needing inputs you
-didn't declare (kink cutoffs, IV instruments, bunching thresholds) are reported as
-`needs_input` rather than silently dropped. Details: the
+verdict table (credible / null / inconclusive / skipped / needs_input / failed, one row per
+family with a one-sentence reason) and a per-family section with a plain-language
+description, key numbers, the per-outcome effects table for rdd, figures, and the
+family's caveats. `null` means the design was tested and nothing credible surfaced;
+`inconclusive` means it could not be validly tested (a refused placebo test, a mechanical
+rediscovery of a constructed time step, too few placebo positions for a calendar-time
+kink) and is never a negative finding. Families needing inputs you didn't declare (kink
+cutoffs, IV instruments, bunching thresholds) are reported as `needs_input` rather than
+silently dropped. The rdd and did families scan the full role space — every binary
+column x every single non-time forcing column — not just the plan's candidates, and the
+report records what was excluded and why. Details: the
 [survey method card](docs/method_cards/survey.md) and the
 [natex-survey skill](skills/natex-survey/SKILL.md).
 
