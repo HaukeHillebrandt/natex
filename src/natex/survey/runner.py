@@ -58,7 +58,7 @@ from natex.intake.profiler import mechanical_step_column
 from natex.iv.donors import sc_placebo_test, select_donors, unit_time_matrix
 from natex.iv.pipeline import discover_instruments
 from natex.jsonutil import jsonable
-from natex.kink import regression_kink, sensitivity_grid
+from natex.kink import placebo_calibrated_p, placebo_kinks, regression_kink, sensitivity_grid
 from natex.llm import GuidanceBackend, GuidanceLog, LoggedBackend
 from natex.rdd.lord3 import lord3_scan
 from natex.report.survey_html import render_survey_html, render_survey_md
@@ -76,6 +76,11 @@ ALPHA = 0.05  # verdict gate for scan/kink/bunching p-values
 # sc placebo gate: the in-space +1-rank test has granularity 1/(n_used+1), so
 # 0.05 is often unattainable with few donors — documented coarser gate.
 SC_ALPHA = 0.10
+# Calendar-time kinks are gated on the placebo-calibrated p (kink method
+# card, "Time as the running variable"): with N shifted cutoffs the smallest
+# attainable p is 1/(N+1), so fewer than 19 positions cannot clear ALPHA.
+MIN_PLACEBO_CUTOFFS = 19
+_PLACEBO_GRID_TARGET = 49  # at most this many shifted cutoffs per declared cutoff
 
 
 @dataclass
@@ -538,9 +543,33 @@ _AUDIT18_CAVEAT = (
 
 _CALENDAR_KINK_CAVEAT = (
     "the running variable {col!r} is calendar time: this kink is a before/after "
-    "slope contrast, so composition and anticipation caveats apply — not a "
-    "density test (audit 18)"
+    "slope contrast gated on the placebo-calibrated p over shifted cutoffs — the "
+    "nominal HC1 p is oversized on serially correlated series (issue #51) and is "
+    "reported for reference only; composition and anticipation caveats apply, "
+    "not a density test (audit 18)"
 )
+
+
+def _placebo_cutoff_grid(
+    r: np.ndarray, cutoff: float, bandwidth: float,
+    n_target: int = _PLACEBO_GRID_TARGET, exclusion_frac: float = 0.25,
+) -> list[float]:
+    """Shifted placebo cutoffs for one declared cutoff: distinct running values
+    inside the central 10–90% of the support, excluding a quarter-bandwidth
+    around the true cutoff (placebos must sit away from the hypothesized
+    kink), thinned evenly to at most ``n_target``. Distinct values only —
+    two cutoffs between the same observations would be one placebo twice."""
+    finite = r[np.isfinite(r)]
+    if finite.size == 0:
+        return []
+    lo, hi = np.quantile(finite, (0.1, 0.9))
+    values = np.unique(finite)
+    keep = (values >= lo) & (values <= hi) & (np.abs(values - cutoff) > exclusion_frac * bandwidth)
+    inside = values[keep]
+    if inside.size > n_target:
+        idx = np.unique(np.linspace(0, inside.size - 1, n_target).round().astype(int))
+        inside = inside[idx]
+    return [float(v) for v in inside]
 
 
 def _numeric_columns(intake: IntakeReport) -> set[str]:
@@ -684,12 +713,44 @@ def _run_kink(
             used_cutoffs[key] = c
             # With policy_kink=1, tau IS the reduced-form outcome slope kink
             # (right-minus-left, kink-card convention).
-            p = _two_sided_p(est.tau, est.se)
-            p_values[key] = p
+            nominal_p = _two_sided_p(est.tau, est.se)
             per_cutoff[key] = {
                 "cutoff": c, "outcome": outcome, "tau": est.tau, "se": est.se,
-                "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used, "p_value": p,
+                "ci": list(est.ci), "bandwidth": bw, "n_used": est.n_used,
+                "p_value": nominal_p, "nominal_p": nominal_p, "inference": "nominal_hc1",
             }
+            if col in time_like:
+                # Calendar time: the gate is the placebo-calibrated p over
+                # shifted cutoffs (kink method card); HC1 is nominal only.
+                grid_cutoffs = _placebo_cutoff_grid(r, c, bw)
+                calibrated = float("nan")
+                n_placebos, floor, size = 0, float("nan"), float("nan")
+                if grid_cutoffs:
+                    try:
+                        grid = placebo_kinks(y, r, grid_cutoffs, bandwidth=bw)
+                    except (ValueError, np.linalg.LinAlgError) as exc:
+                        per_cutoff[key]["placebo_error"] = str(exc)
+                    else:
+                        n_placebos = grid.n_evaluated
+                        floor, size = grid.min_attainable_p, grid.empirical_size
+                        if n_placebos >= MIN_PLACEBO_CUTOFFS:
+                            calibrated = placebo_calibrated_p(est, grid)
+                per_cutoff[key].update({
+                    "inference": "placebo_calibrated",
+                    "p_value": calibrated,
+                    "placebo_calibrated_p": calibrated,
+                    "n_placebos": n_placebos,
+                    "min_attainable_p": floor,
+                    "placebo_rejection_rate": size,  # empirical size at nominal ALPHA
+                })
+                if n_placebos < MIN_PLACEBO_CUTOFFS:
+                    per_cutoff[key]["inference_note"] = (
+                        f"only {n_placebos} usable placebo cutoff positions: the calibrated "
+                        f"floor 1/(n+1) sits above {ALPHA}, so this cutoff is not gateable"
+                    )
+                p_values[key] = calibrated
+            else:
+                p_values[key] = nominal_p
             # Figure payload (task 7): kink_fit_plot per usable cutoff.
             artifacts.setdefault("cutoffs", []).append({
                 "key": key, "column": col, "running": r, "outcome_values": y, "cutoff": c,
@@ -743,19 +804,34 @@ def _run_kink(
     p_holm, min_holm = _min_holm(p_values)
     diagnostics["p_holm"] = p_holm
     m = len(p_values)
+    calibrated_keys = [k for k, d in per_cutoff.items() if d["inference"] == "placebo_calibrated"]
+    label = "placebo-calibrated kink p" if calibrated_keys else "kink p"
+    floored = {
+        k: per_cutoff[k]["n_placebos"]
+        for k in calibrated_keys
+        if per_cutoff[k]["n_placebos"] < MIN_PLACEBO_CUTOFFS
+    }
     if not np.isfinite(min_holm):
         status = "inconclusive"
-        reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
+        if floored:
+            detail = ", ".join(f"{k}: {n}" for k, n in floored.items())
+            reason = (
+                "calendar-time kink not gateable: too few placebo cutoff positions for a "
+                f"placebo-calibrated p at or below {ALPHA} ({detail}; {MIN_PLACEBO_CUTOFFS} "
+                "needed) — the nominal HC1 p is not trusted on a calendar-time running variable"
+            )
+        else:
+            reason = "kink fits degenerate — no finite kink p-value at any declared cutoff"
     elif min_holm <= ALPHA:
         status = "credible"
         reason = (
-            f"min Holm-adjusted kink p={min_holm:.3g} at or below {ALPHA} "
+            f"min Holm-adjusted {label}={min_holm:.3g} at or below {ALPHA} "
             f"across {m} declared cutoff(s)"
         )
     else:
         status = "null"
         reason = (
-            f"min Holm-adjusted kink p={min_holm:.2f} above {ALPHA} "
+            f"min Holm-adjusted {label}={min_holm:.2f} above {ALPHA} "
             f"across {m} declared cutoff(s)"
         )
         if group_columns:
@@ -767,6 +843,12 @@ def _run_kink(
         "bandwidth": first["bandwidth"], "n_used": first["n_used"],
         "p_value": first["p_value"], "min_holm_p": min_holm,
     }
+    if first["inference"] == "placebo_calibrated":
+        key_numbers.update(
+            nominal_p=first["nominal_p"],
+            placebo_calibrated_p=first["placebo_calibrated_p"],
+            n_placebos=first["n_placebos"],
+        )
     return FamilyResult(
         family="kink", status=status, reason=reason,
         key_numbers=key_numbers, diagnostics=diagnostics,

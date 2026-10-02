@@ -25,6 +25,7 @@ from natex.data.synthetic import make_synthetic
 from natex.llm import MockBackend
 from natex.survey import SurveyResult, survey
 from natex.survey.registry import FAMILY_ORDER
+from natex.survey.runner import ALPHA
 
 _BUDGET = {"q": 9, "k": 25}  # small explicit test budget (plan task 5)
 
@@ -407,3 +408,57 @@ def test_scanless_rdd_family_is_inconclusive_not_null(tmp_path):
     res = runner_mod._scanless_result("rdd", _Rep(), {"caveats": []})
     assert res.status == "inconclusive"
     assert "2 invalid of 2 enumerated" in res.reason
+
+
+def _calendar_series(n=240, kink=0.0, curve=0.0, seed=0):
+    """Monthly calendar-time series ('year' is time-like by name): optional
+    convex curvature (an exponential with no event anywhere) and/or a real
+    slope change of ``kink`` per year at 2015."""
+    rng = np.random.default_rng(seed)
+    t = 2005.0 + np.arange(n) / 12.0
+    y = 0.1 * (t - 2005.0) + kink * np.maximum(t - 2015.0, 0.0)
+    if curve:
+        y = y + np.exp(curve * (t - 2005.0))
+    return pd.DataFrame({"year": t, "y": y + 0.1 * rng.standard_normal(n)})
+
+
+def test_calendar_time_kink_is_gated_by_placebo_calibration_not_hc1(tmp_path):
+    """Issue #51: on a smooth convex series HC1 finds a 'kink' at almost any
+    date. The gate for a calendar-time running variable is the placebo-
+    calibrated p over shifted cutoffs; the HC1 p is reported as nominal only."""
+    res = survey(_calendar_series(curve=0.25), rng=np.random.default_rng(0),
+                 out_dir=tmp_path / "out", cutoffs={"year": 2015.0})
+    kink = res.families["kink"]
+    pc = kink.diagnostics["per_cutoff"]["year"]
+    assert pc["inference"] == "placebo_calibrated"
+    assert pc["n_placebos"] >= 19
+    assert pc["nominal_p"] < 0.05  # the oversized HC1 p
+    assert pc["placebo_calibrated_p"] > 0.05  # the honest one
+    assert kink.status == "null", (kink.status, kink.reason)
+    assert "placebo" in kink.reason
+    assert kink.key_numbers["placebo_calibrated_p"] == pc["placebo_calibrated_p"]
+
+
+def test_calendar_time_kink_with_a_real_bend_stays_credible(tmp_path):
+    res = survey(_calendar_series(kink=2.0), rng=np.random.default_rng(0),
+                 out_dir=tmp_path / "out", cutoffs={"year": 2015.0})
+    kink = res.families["kink"]
+    pc = kink.diagnostics["per_cutoff"]["year"]
+    assert pc["placebo_calibrated_p"] <= 0.05
+    assert kink.status == "credible", (kink.status, kink.reason)
+
+
+def test_calendar_time_kink_with_too_few_placebo_positions_is_inconclusive(tmp_path):
+    """16 quarterly values (4 rows each) cannot host 19 placebo cutoffs: the
+    floor 1/(n+1) sits above alpha, so the cutoff is not gateable."""
+    rng = np.random.default_rng(1)
+    q = np.repeat(2020.0 + np.arange(16) / 4.0, 4)
+    df = pd.DataFrame({"year": q, "y": 0.5 * (q - 2020.0) + 0.05 * rng.standard_normal(q.size)})
+    res = survey(df, rng=np.random.default_rng(0), out_dir=tmp_path / "out",
+                 cutoffs={"year": 2022.0})
+    kink = res.families["kink"]
+    pc = kink.diagnostics["per_cutoff"]["year"]
+    assert pc["n_placebos"] < 19
+    assert pc["min_attainable_p"] > ALPHA
+    assert kink.status == "inconclusive", (kink.status, kink.reason)
+    assert "placebo" in kink.reason
