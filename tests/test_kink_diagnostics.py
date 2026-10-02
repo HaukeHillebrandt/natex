@@ -399,3 +399,18 @@ def test_diagnostics_battery_rejects_conflicting_post_and_group():
     with pytest.raises(ValueError, match="supply exactly one of post"):
         density_kink_difference(x, post=post, group=group, bandwidth=1.0)
 
+
+
+def test_placebo_kink_grid_reports_its_minimum_attainable_calibrated_p():
+    """A grid of N evaluable placebos cannot calibrate below 1/(N+1): the floor
+    is part of the result so a '0 of 7 reject' grid is never read as p < 0.05."""
+    rng = np.random.default_rng(3)
+    x = rng.uniform(-2.0, 2.0, 400)
+    y = 0.5 * x + rng.normal(0.0, 0.1, 400)
+    grid = placebo_kinks(y, x, (-1.0, -0.5, 0.5, 1.0), bandwidth=0.6)
+    assert grid.n_evaluated == 4
+    assert grid.min_attainable_p == pytest.approx(1.0 / 5.0)
+
+    nothing = placebo_kinks(y, x, (9.0,), bandwidth=0.6)  # no data near the cutoff
+    assert nothing.n_evaluated == 0
+    assert np.isnan(nothing.min_attainable_p)
