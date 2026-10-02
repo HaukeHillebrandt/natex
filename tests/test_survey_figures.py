@@ -133,3 +133,33 @@ def test_figure_failure_is_isolated(monkeypatch, tmp_path):
     assert kink.figures == {}
     assert kink.no_figure_reason.startswith("figure rendering failed:")
     assert "boom-fig" in kink.no_figure_reason
+
+
+def test_multi_cutoff_figures_do_not_overwrite(tmp_path):
+    """Multiple cutoffs or thresholds on one column produce distinct figure keys and files."""
+    pytest.importorskip("matplotlib")
+    out = tmp_path / "out"
+    res = survey(
+        _kink_df(),
+        rng=np.random.default_rng(0),
+        out_dir=out,
+        cutoffs={"z": [1.5, 2.5]},
+        thresholds={"z": [1.5, 2.5]},
+    )
+
+    kink = res.families["kink"]
+    assert kink.status in {"credible", "null"}, kink.reason
+    assert "fit_z=1.5" in kink.figures
+    assert "fit_z=2.5" in kink.figures
+    assert (out / kink.figures["fit_z=1.5"]).exists()
+    assert (out / kink.figures["fit_z=2.5"]).exists()
+    assert kink.figures["fit_z=1.5"] != kink.figures["fit_z=2.5"]
+
+    b = res.families["bunching"]
+    assert b.status in {"credible", "null"}, b.reason
+    assert "hist_z=1.5" in b.figures
+    assert "hist_z=2.5" in b.figures
+    assert (out / b.figures["hist_z=1.5"]).exists()
+    assert (out / b.figures["hist_z=2.5"]).exists()
+    assert b.figures["hist_z=1.5"] != b.figures["hist_z=2.5"]
+

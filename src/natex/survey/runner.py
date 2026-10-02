@@ -640,7 +640,7 @@ def _run_kink(
             }
             # Figure payload (task 7): kink_fit_plot per usable cutoff.
             artifacts.setdefault("cutoffs", []).append({
-                "column": col, "running": r, "outcome_values": y, "cutoff": c,
+                "key": key, "column": col, "running": r, "outcome_values": y, "cutoff": c,
                 "bandwidth": bw, "estimate": est,
             })
             bws = [0.5 * bw, bw, 2.0 * bw]
@@ -1005,7 +1005,7 @@ def _run_bunching(
             }
             # Figure payload (task 7): bunching_hist per usable threshold.
             artifacts.setdefault("thresholds", []).append({
-                "column": col, "values": df[col].to_numpy(dtype=float),
+                "key": key, "column": col, "values": df[col].to_numpy(dtype=float),
                 "threshold": t, "p_value": rep.p_value,
             })
         if col in time_like:
