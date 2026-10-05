@@ -1,96 +1,84 @@
-# Case study — kink designs on Epoch AI datasets (July 2026 field pass)
+# Case study: kink designs on Epoch AI datasets
 
-> Paper version: [HTML](https://haukehillebrandt.github.io/natex/paper/)
+> Paper: [HTML](https://haukehillebrandt.github.io/natex/paper/)
 > ([PDF](https://haukehillebrandt.github.io/natex/main.pdf)), source in
-> [`paper/`](../../paper/). This file remains the numbers of record.
+> [`paper/`](../../paper/). This file is the numbers of record.
 
-Four formal results from running `natex kink` (v0.2.0) over Epoch AI's open datasets
-(CC-BY 4.0, [epoch.ai/data](https://epoch.ai/data)). Two calendar-time RKDs, one
-falsification companion, one group difference-in-kinks. All candidates had externally
-dated cutoffs — none was searched for. Calendar-time runs use a dummy unit denominator
-(`--policy-kink 1.0`), so tau is a descriptive slope change (outcome units/day), not a
-marginal causal response; see the method card's
-[Time as the running variable](../method_cards/kink.md#time-as-the-running-variable).
-**No data files are committed here** — sources below are public.
+Point estimates: `natex kink` v0.2.0, analysis pass of 2026-07-16. Placebo grids and
+calibrated p-values: natex v0.3.0 on the same extracts, 2026-10-05. Calendar-time runs use
+a unit policy denominator, so the kink is a descriptive slope change per day. The
+inference of record is the placebo-calibrated p (add-one rank of the declared date's |z|
+among up to 49 shifted placebo cutoffs); nominal HC1 p-values are reported only as a size
+diagnostic. Data: Epoch AI, CC-BY 4.0, not committed.
 
-| # | Series (source) | Design / cutoff | Headline (HC1) | Verdict |
-|---|---|---|---|---|
-| 1 | GPQA-diamond, logit(mean score), 180 models | sharp RKD-in-time at o1-preview, 2024-09-12 | +0.00258/day, se 0.00078, t = 3.32 (bw540 tri) | **Credible kink, date-localized** |
-| 2 | METR 50% time horizon, log2 minutes, 48 models | sharp RKD-in-time at o1-preview, 2024-09-12 | +0.00601/day, se 0.00282, t = 2.13 (bw720 tri) | **Credible era bend, date attribution fails** |
-| 3 | Epoch Capabilities Index, all models | sharp RKD-in-time at o1-preview (falsification) | −0.00725 pts/day, se 0.00895, t = −0.81 (bw540 tri) | **Clean null — the guard the other two need** |
-| 4 | China vs hyperscaler ln cumulative H100e stock | sharp group-DiK at export controls, 2023-10-17 | −0.00154/day, se 0.00047, t = −3.30 (bw548 tri) | **Credible kink with a magnitude honesty band** |
+## Headline table
 
-## 1. GPQA-diamond at o1-preview — the cleanest result
+| Series | Cutoff | bw (d) | kink / day | nominal z | placebos | nominal rejection rate | calibrated p | verdict |
+|---|---|---|---|---|---|---|---|---|
+| GPQA-Diamond, logit(mean score), 180 models | o1-preview 2024-09-12 | 540 | +0.00258 (se 0.00078) | 3.32 | 49 | 14% | 0.020 | dated bend |
+| METR 50% time horizon, log2 min, 48 models | o1-preview | 720 | +0.00601 (se 0.00282) | 2.13 | 17 | 24% | 0.278 | era bend, not dated |
+| Epoch Capabilities Index, all 455 models | o1-preview | 540 | -0.00725 (se 0.00895) | -0.81 | 49 | 55% | 0.780 | null |
+| China legal vs hyperscaler ln H100e stock, group DiK | controls 2023-10-17 | 548 | -0.00154 (se 0.00047) | -3.30 | 7 | n/a | 0.125 (floor) | inconclusive |
 
-Source: Epoch Benchmarking Hub, `gpqa_diamond` (180 dated models, 45 pre / 135 post;
-sample starts 2023-03-14). Primary outcome logit(mean score) — the score ceiling bends raw
-slopes mechanically. Slope 0.00188 → 0.00446 logit/day (raw: **15 → 34 pp/yr, ~2.4x**).
-Diagnostics: positive in 8/8 bandwidth-donut cells (t 2.15–3.71, donut *strengthens* it);
-placebo-kink grid empirical size **0/7**; release-date density kink null (t = 0.76);
-compute-covariate kink null (p = 0.54). Degree-2 keeps sign and magnitude at 3x the SE.
-Standing caveat: composition — reasoning models entering the release stream — *is* the
-mechanism, so tau is a release-stream property, not per-model improvement.
+## Bandwidth grid (per-model and monthly series)
 
-## 2. METR 50% time horizon at o1-preview — bend exists, date does not
+| Series | bw | kink / day | z | placebos | nominal rejection rate | calibrated p |
+|---|---|---|---|---|---|---|
+| GPQA | 365 | +0.00313 | 2.96 | 49 | 0% | 0.020 |
+| GPQA | 540 | +0.00258 | 3.32 | 49 | 14% | 0.020 |
+| GPQA | 730 | +0.00261 | 4.05 | 46 | 4% | 0.021 |
+| METR 50% | 540 | +0.00507 | 1.41 | 19 | 16% | 0.350 |
+| METR 50% | 720 | +0.00601 | 2.13 | 17 | 24% | 0.278 |
+| METR 50% | 900 | +0.00627 | 2.37 | 14 | 29% | 0.200 |
+| ECI | 365 | -0.01190 | -0.72 | 49 | 39% | 0.660 |
+| ECI | 540 | -0.00725 | -0.81 | 49 | 55% | 0.780 |
+| ECI | 730 | -0.00463 | -0.70 | 49 | 67% | 0.820 |
+| GPU clusters at ChatGPT (graveyard) | 708 | +0.00080 | 8.95 | 49 | 88% | 0.620 |
 
-Source: `metr_time_horizons_external` via Epoch's benchmark data (METR's long-task suite;
-12 pre / 36 post models). Slope 0.00331 → 0.00932 log2/day at bw720 tri: doubling time
-**9.9 → 3.5 months** (full-sample uniform: +0.00491, se 0.00095, t = 5.17; 7.6 → 3.6 mo).
-Positive in 8/8 bandwidth-donut cells (0.0044–0.0085); 80%-horizon variant agrees
-(+0.00454, t = 4.08, only 3 pre points — directional only). But the **pre-side placebo
-grid smears**: at bw720, shifted cutoffs at −270/−180/−90 days all reject (p = 0.030,
-0.014, 0.004) with estimates the size of the headline; post-side shifts are clean nulls;
-empirical size 3/6. With 11–12 pre points, adjacent windows share most of their data.
-Verdict language used: *"credible slope change with failed date-localization — report as
-reasoning-era slope doubling, not 'o1-preview caused X'."* This is the era-bend vs
-event-bend contrast with case 1.
+## China group DiK (quarterly; 15 quarters per group)
 
-## 3. Epoch Capabilities Index — the sibling-series falsification
+| Contrast vs hyperscalers | bw | tau / day | t | positions / evaluable | calibrated p |
+|---|---|---|---|---|---|
+| China legal | 548 | -0.00154 | -3.30 | 10 / 7 | 0.125 (floor) |
+| China legal | 730 | -0.00114 | -2.85 | 9 / 6 | 0.143 (floor) |
+| China total incl. smuggled | 548 | -0.00076 | -1.54 | 10 / 7 | 0.125 |
+| China total incl. smuggled | 730 | -0.00046 | -1.10 | 9 / 6 | 0.429 |
+| Other buyers (placebo-treated group) | 548 | +0.00050 | 1.34 | 10 / 7 | 0.750 |
+| China legal vs neocloud controls | 548 | -0.00094 | -1.70 | 10 / 7 | 0.375 |
+| China legal, Oct-2022 round (-375 d) | 548 | +0.00182 | 1.46 | | |
 
-Source: `epoch_capabilities_index` (IRT-linked aggregate; 356 dated, scored models). Run
-*expecting* null, as the guard against "everything kinked in 2024": all-models kink null in
-8/8 grid cells (t −0.60 to −1.54; ~18 ECI pts/yr on both sides), while the placebo grid
-rejects at **4/7 shifted cutoffs** — the test has power in this data and still reads zero
-at the o1 date. So the per-benchmark bends (1, 2) are not a global measurement shift.
-Two recorded lessons: (a) an analyst-script frontier filter
-(`cummax().diff().fillna(1) > 0` over 231 NaN scores) manufactured 347 false "records" —
-the clean frontier has 25 points and is not an estimable design (4 left-cell points; fails
-donut, bandwidth-direction, and placebo checks in every direction; never quote it);
-(b) a side finding, compute-covariate kink −0.00265 log10/day at o1 (p = 0.021),
-corroborates the "pretraining-compute frontier stalls" story without being a design.
+The sign is negative in all 25 specifications of the July pass and the two falsifications
+behave (placebo group null, loophole round null). Quarterly data cannot host more than
+seven placebo positions, so no calibrated claim below p = 0.125 is possible: the result
+is sign-robust and inconclusive under the inference of record. The estimator's
+autocorrelation warning fires on most of these cells.
 
-## 4. China chip stock at the Oct-2023 export controls — group-DiK
+## Notes per series
 
-Source: `ai_chip_owners/cumulative_by_designer` (quarterly ln cumulative H100e; the
-`Incomplete` 2026-03-31 quarter, whose cumulative totals *decrease*, must be dropped).
-Böckerman–Jysmä–Kanninen DiK with periods aliased to **groups**: treated = China,
-control = hyperscalers (Amazon+Microsoft+Google+Meta), same calendar cutoff; the controls
-difference out the global supply bend (their own kink −0.00067/day). Legal-stock DiK
-−0.00154/day ≈ **−0.56 ln-units/yr** growth-rate change (CR1 by year: t = −5.15, G = 4 —
-few-cluster caveat); negative in **25/25 specifications**. Falsifications: the Oct-2022
-first-round placebo is null/positive (+0.0018, p = 0.15 — the A800/H800 loophole round);
-the placebo-treated group ("Other" vs hyperscalers) is clean at bw 548–730 but rejects at
-bw365 → defensible range bw548–730, DiK −0.0009 to −0.0015. **Total stock incl. smuggled
-is roughly half and fragile** (−0.00076, t = −1.54 at bw548): the smuggled series (starts
-2024-03-31, itself a treatment response) substitutes for lost legal supply. Serial
-dependence in a 6-points-per-cell cumulative series makes |t| optimistic; the sign
-stability is the real evidence. Verdict language used: *"the policy bent the legal channel
-≈ −0.3 to −0.56 ln-units/yr; the effect on China's actual compute stock is smaller and
-fragile."*
+- **GPQA.** Slopes 0.00188 -> 0.00446 logit/day (about 15 -> 34 raw pp/yr). Positive in
+  8/8 bandwidth-donut cells; release-density kink null (t = 0.76); compute-covariate kink
+  null (p = 0.54). Largest placebo |z| at bw 540: 2.78 at -142 days. Composition
+  (reasoning models entering the release stream) is the mechanism.
+- **METR.** Slopes 0.00331 -> 0.00932 log2/day (doubling 9.9 -> 3.5 months). A placebo at
+  -311 days gives |z| = 7.9; placebos at -196 and +455 days also exceed the declared
+  date. The 80% horizon has 3 pre-cutoff models and 9 placebo positions: not estimable.
+- **ECI.** About 18 points/yr on both sides. 38 of 49 placebo dates give a larger
+  statistic. The nominal rejection rate (55%) is a size diagnostic; the July text's
+  "null with power" reading of it is withdrawn.
+- **Graveyard.** GPU clusters at ChatGPT: curvature, calibrated p 0.62. Chinchilla:
+  sign-unstable null (t = -0.91, -0.05, +1.48 at bw 365/540/730). EU AI Act 1e25 line: a
+  level notch with sorting (Fisher OR 0.17, p = 0.007), analysed as bunching in the
+  companion note.
 
-## What transferred back into natex docs
+## What changed from the July version
 
-- The joint-cell HC1 dof convention (METR cross-check: kink identical to 10 decimals,
-  0.0067291763; SE 0.0023236 vs 0.0024334 per-side) — now in the method card's
-  [SE convention](../method_cards/kink.md#se-convention).
-- The placebo grid read as bend-existence vs date-attribution, and the sibling-series
-  falsification pattern — now in
-  [Time as the running variable](../method_cards/kink.md#time-as-the-running-variable).
-- Rejections are results: a GPU-cluster "kink" at ChatGPT with t = 12.9 was discarded
-  because its placebo grid rejected at **7/7** shifted cutoffs (empirical size 1.0) —
-  smooth super-exponential curvature bends everywhere. The EU AI Act threshold was
-  rejected as a *step* (level, not slope) with established bunching at 1e25 FLOP, which
-  violates any no-sorting requirement; the bunching test remains the right tool there.
+- Placebo grids went from 7 positions (floor 0.125) to up to 49 (floor 0.02).
+- GPQA: "credible, 0/7 placebos reject" became "most extreme of 49, calibrated p 0.02".
+- China: "credible with an honesty band" became "sign-robust, inconclusive (7 positions)".
+- ECI: the "test has power because placebos reject" claim was dropped; rejections
+  elsewhere measure the nominal test's size.
+- Nominal HC1 p-values are no longer used for any verdict.
 
-Reproduction: Epoch datasets above, `natex kink` CLI with the bandwidths/kernels listed,
-plus the `sensitivity_grid` / `placebo_kinks` diagnostics battery from the method card.
+Reproduction: `natex kink` at the bandwidths above, then `placebo_kinks` on the grid from
+`natex.survey.runner._placebo_cutoff_grid` and `placebo_calibrated_p`; see
+`docs/method_cards/kink.md`.

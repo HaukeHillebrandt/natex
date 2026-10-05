@@ -2,151 +2,166 @@
 
 # Introduction
 
-The public conversation about AI progress is full of dated trend breaks. Reasoning models “changed the slope” in late 2024; export controls “bent” China’s compute accumulation; the EU AI Act “chilled” large training runs. These claims are almost always established by drawing a line through a scatter plot and pointing at a date. Yet a slope change at a known cutoff is precisely the estimand of the regression kink design (RKD), and a slope change for one group relative to another at the same cutoff is the estimand of the difference-in-kinks (DiK) design formalized by Böckerman, Jysmä, and Kanninen . Treating eyeballed breaks as formal kink candidates buys three things: an explicit identifying assumption, a standard error, and — most importantly — a falsification battery that can *reject* the claim.
+Public discussion of AI progress is organised around dated events. Reasoning models are said to have changed the slope of capabilities in late 2024. Export controls are said to have bent China’s compute accumulation. Such claims are usually made by drawing a line through a scatter plot. A slope change at a known date is also a formal estimand: the regression kink design (RKD) of Card et al. , and for one group relative to another, the difference-in-kinks (DiK) design of Böckerman, Jysmä and Kanninen .
 
-This paper runs that battery on four trend-break claims drawn from Epoch AI’s public datasets . The tooling is `natex` v0.2.0 , an open-source natural-experiment toolkit in the lineage of automated discontinuity-design discovery , whose kink module implements sharp and fuzzy RKD and DiK estimators following . We emphasize that this is known-cutoff candidate *evaluation*, not unknown-kink discovery: every cutoff below is externally dated (a model release, a regulation date), and none was searched for. Searching for cutoffs would require search-calibrated selective inference beyond the scope of both the source paper and this exercise.
+This paper tests four such claims on Epoch AI’s public data with the `natex` kink module . Every cutoff is externally dated and none was searched for. The question is narrow: does the series bend at the named date, more than it bends at other dates?
 
-Why do eyeballed breaks need placebo grids? Because a calendar-time kink test asks a sharper question than the eye does. A series can genuinely accelerate over an *era* while providing no evidence that the bend happened at any particular *date*; conversely, a smoothly super-exponential series will show a nominally enormous “kink” at every date one tests. The shifted-cutoff placebo grid separates these cases: a significant kink at the true cutoff alongside significant kinks at shifted cutoffs means bend existence without date attribution, and rejections everywhere mean curvature masquerading as a kink. Our four headline results span this taxonomy almost perfectly — one date-localized kink, one era bend that fails date attribution, one clean null run deliberately as a falsification guard, and one difference-in-kinks with a passing placebo round — and the graveyard (Section <a href="#sec:graveyard" data-reference-type="ref" data-reference="sec:graveyard">5</a>) shows each failure mode in the wild.
+That last clause is the whole method. A calendar-time kink has no running-variable manipulation to test and one untestable identifying assumption, that nothing else bent the series at that date. What can be tested is whether the date is special. The same estimator is run at dozens of shifted placebo dates, and the declared date’s statistic is ranked among them. A series that accelerates over an era, or that is smoothly convex, rejects at many placebo dates and the declared date is not special. A series that bends once, at the date, is.
+
+An earlier version of this paper (July 2026) used seven placebo dates per series and nominal heteroskedasticity-robust $`p`$-values. Seven placebos cannot calibrate below $`p = 0.125`$, and the nominal $`p`$-values are badly oversized on these series. Both problems are repaired here. The point estimates are unchanged; two of the four verdicts are not.
 
 # Data
 
-All series are public Epoch AI datasets (CC-BY 4.0, <https://epoch.ai/data>) , retrieved July 2026; the analysis pass of record is dated 2026-07-16 and used `natex` v0.2.0. No data files ship with this paper; the figure pipeline (`paper/figures/make_figures.py` in the repository) reads a local extraction of the public CSVs, recomputes every headline estimate, and asserts it against the numbers of record before drawing.
+All series are Epoch AI datasets (CC-BY 4.0, <https://epoch.ai/data>), retrieved July 2026. No data ship with the paper. The figure script in the repository recomputes each headline estimate from the public files and asserts it against the numbers of record before drawing.
 
-GPQA-Diamond.  
-Benchmarking-Hub series `gpqa_diamond`: 180 dated models (45 pre / 135 post cutoff), sample starting 2023-03-14. Primary outcome is $`\operatorname{logit}(\text{mean score})`$: the score ceiling at 1 bends raw-score slopes mechanically near the top, and the logit removes that artifact. GPQA is the graduate-level science QA benchmark of .
+| Series | Outcome | Cutoff | Observations |
+|:---|:---|:---|:---|
+| GPQA-Diamond (Benchmarking Hub) | logit of mean score per model | o1-preview, 2024-09-12 | 180 models, 45 before |
+| METR 50% time horizon | $`\log_2`$ minutes per model | o1-preview, 2024-09-12 | 48 models, 12 before |
+| Epoch Capabilities Index | index points per model | o1-preview, 2024-09-12 | 455 models |
+| AI chip owners | $`\ln`$ cumulative H100-equivalents, quarterly, China vs US hyperscalers | export controls, 2023-10-17 | 15 quarters per group |
 
-METR 50% time horizon.  
-`metr_time_horizons_external` (METR’s long-task suite as mirrored by Epoch): 48 dated models (12 pre / 36 post). Outcome is $`\log_2`$ of the 50%-success time horizon in minutes.
-
-Epoch Capabilities Index (ECI).  
-`epoch_capabilities_index`, an IRT-linked aggregate capability index; 356 dated, scored models. Used as the sibling-series falsification.
-
-AI chip stocks.  
-`ai_chip_owners/cumulative_by_designer`: quarterly cumulative compute stocks in H100-equivalents by owner. Outcome is $`\ln(\text{cumulative H100e})`$; treated series China, control series the hyperscalers (Amazon + Microsoft + Google + Meta). The 2026-03-31 quarter is flagged `Incomplete` and its “cumulative” totals *decrease*; it is dropped.
+The four series. The logit removes the mechanical slope compression of a bounded score near its ceiling. The incomplete 2026-03-31 quarter is dropped from the chip series because its cumulative totals fall. {#tab:data}
 
 # Methods
 
-## Estimators
+## Estimator
 
-Let $`x`$ be the running variable centered at the cutoff and let $`m[\mathrm{s}]`$ denote the one-sided derivative of $`E[Y \mid x]`$ at zero on side $`\mathrm{s}`$. `natex` defines every kink right-minus-left,
+Let $`x`$ be days since the cutoff and $`m[\mathrm{s}]`$ the one-sided derivative of $`E[Y \mid x]`$ at zero on side $`\mathrm{s}`$. The kink is
 ``` math
 \begin{equation}
-\kappa \;=\; m[\text{right}] - m[\text{left}],
+\kappa = m[\text{right}] - m[\text{left}],
 \end{equation}
 ```
-estimated by local polynomial fits in which each side (and each group cell for DiK) receives its own intercept and slope, weighted by a kernel in $`|x| \le \text{bandwidth}`$ (the weighted objective of , Equation 8). Defaults throughout: local linear fits, triangular kernel; uniform kernel, second-degree fits, and donut exclusions appear as explicit sensitivity choices. The sharp DiK estimand contrasts two such kinks,
+estimated by local linear fits with a separate intercept and slope on each side, triangular kernel weights inside the bandwidth, and HC1 standard errors with the degrees-of-freedom correction applied jointly across cells. The group DiK contrasts two such kinks at one date,
 ``` math
 \begin{equation}
-\tau_{\mathrm{DiK}} \;=\;
-\bigl(\kappa_{\text{treated}} - \kappa_{\text{control}}\bigr) \big/ \Delta,
+\tau = \kappa_{\text{China}} - \kappa_{\text{hyperscalers}},
 \end{equation}
 ```
-with $`\Delta`$ the known policy-kink change. In the China design the paper’s pre/post *periods* are aliased to control/treated *groups* at a common calendar cutoff: the export-license schedule bends for China only, so the Böckerman contrast is taken across groups and the controls difference out the global supply bend. Identification is parallel kinks: absent the controls, China’s growth bend would have matched the hyperscalers’.
+and identifies a policy effect only if the two groups’ non-policy slope changes would have been parallel. All runs use a unit policy denominator, so $`\kappa`$ is a descriptive slope change in outcome units per day.
 
-All calendar-time runs use a dummy unit denominator ($`\Delta = 1`$, the `--policy-kink 1.0` convention), so $`\tau`$ is a *descriptive slope change* in outcome units per day, not a marginal causal response to a measured policy variable.
+## Inference of record
 
-## Time as the running variable
+For each declared cutoff the same estimator is run at shifted placebo cutoffs: the distinct running values in the central 80% of the support, at least a quarter bandwidth away from the declared date, thinned to at most 49 positions. The placebo-calibrated $`p`$ is the add-one rank of the declared date’s $`|z|`$ among the placebo $`|z|`$ values. With $`N`$ placebos it cannot fall below $`1/(N+1)`$, so at least 19 positions are needed for a 5% claim. A series with fewer positions is reported as inconclusive, whatever its nominal statistic.
 
-The governing caveat, quoted verbatim from the `natex` method card, `docs/method_cards/` `kink.md`:
-
-> Calendar-time RKD — “did the trend bend at this dated event?” — is a legitimate use of the estimator but **not** a manipulable-running-variable design: no unit sorts itself across a date, so density/manipulation arguments give no protection. Identification reduces to a single untestable assumption: *no co-located slope-changing event* — nothing else may bend the outcome’s expected slope at that exact date.
-
-Two practices are therefore mandatory rather than optional. First, always run the shifted-cutoff *placebo-kink grid* and read it as separating bend existence from date attribution: a significant kink at the true cutoff plus significant kinks at shifted cutoffs means the series bends over an era, not at the event. Second, run a *sibling-series falsification*: an aggregate or related series in which the same test demonstrably has power but reads null at the candidate date. Sections <a href="#sec:metr" data-reference-type="ref" data-reference="sec:metr">4.2</a> and <a href="#sec:eci" data-reference-type="ref" data-reference="sec:eci">4.3</a> show both practices doing real work.
-
-## Inference
-
-Standard errors are HC1 sandwich by default, with the degrees-of-freedom correction applied *jointly* across all side/period cells ($`n - k`$ counts every observation and coefficient of the stacked regression). Cross-checks fitting each side separately with per-side $`n-k`$ reproduce the point estimate exactly and report SEs roughly 5% larger at $`n \approx 50`$: in the METR cross-validation (uniform kernel, bandwidth 720), `natex` and an independent per-side OLS fit agreed on the kink to 10 decimals (both $`0.0067291763`$) with SEs $`0.0023236`$ (joint-cell) versus $`0.0024334`$ (per-side) — a convention difference, not an error. Cluster-robust CR1 covariance with $`t(G-1)`$ critical values is used where clustering is stated. Wald intervals are conventional local-polynomial inference and may retain smoothing bias; degree-2 and bandwidth sensitivity are part of the required battery. Failed computations return NaN, never zero. The diagnostics battery — bandwidth$`\times`$donut sensitivity grids, placebo-kink grids with empirical size, density kinks, covariate kinks — follows the validation figures of as implemented in `natex.kink`.
+The share of placebo dates at which the nominal HC1 test rejects is reported as a diagnostic of that test’s size on the series. It says nothing about power at the declared date and is never read as evidence for a null.
 
 # Results
 
-Table <a href="#tab:headline" data-reference-type="ref" data-reference="tab:headline">1</a> summarizes the four designs. All candidates had externally dated cutoffs; none was searched for.
+Table <a href="#tab:headline" data-reference-type="ref" data-reference="tab:headline">2</a> gives the headline specification for each series. Appendix Table <a href="#tab:bw" data-reference-type="ref" data-reference="tab:bw">4</a> gives the bandwidth grid.
 
-| Series (source) | Design / cutoff | Headline (HC1) | Verdict |
-|:---|:---|:---|:---|
-| GPQA-Diamond, logit(mean score), 180 models | sharp RKD-in-time at o1-preview, 2024-09-12 | $`+0.00258`$/day, se $`0.00078`$, $`t = 3.32`$ (bw 540, tri) | credible kink, date-localized |
-| METR 50% time horizon, $`\log_2`$ minutes, 48 models | sharp RKD-in-time at o1-preview, 2024-09-12 | $`+0.00601`$/day, se $`0.00282`$, $`t = 2.13`$ (bw 720, tri) | credible era bend; date attribution fails |
-| Epoch Capabilities Index, all models | sharp RKD-in-time at o1-preview (falsification) | $`-0.00725`$ pts/day, se $`0.00895`$, $`t = -0.81`$ (bw 540, tri) | clean null — the guard the other two need |
-| China vs. hyperscaler $`\ln`$ cumulative H100e stock | sharp group-DiK at export controls, 2023-10-17 | $`-0.00154`$/day, se $`0.00047`$, $`t = -3.30`$ (bw 548, tri) | credible kink with a magnitude honesty band |
+| Series | bw (d) | $`\kappa`$ or $`\tau`$ / day | nominal $`z`$ | placebos | nominal rej. | calibrated $`p`$ | verdict |
+|:---|---:|---:|---:|---:|---:|---:|:---|
+| GPQA-Diamond logit | 540 | $`+0.00258`$ | 3.32 | 49 | 14% | 0.020 | dated bend |
+| METR $`\log_2`$ 50% horizon | 720 | $`+0.00601`$ | 2.13 | 17 | 24% | 0.278 | era bend, not dated |
+| ECI, all models | 540 | $`-0.00725`$ | $`-0.81`$ | 49 | 55% | 0.780 | null |
+| China legal stock, DiK | 548 | $`-0.00154`$ | $`-3.30`$ | 7 | – | 0.125 (floor) | inconclusive |
 
-The four formal results of the pass (`natex` v0.2.0, HC1 standard errors). “tri” = triangular kernel; bandwidths in days. {#tab:headline}
+Headline specifications, triangular kernel, HC1 standard errors. “placebos” is the number of evaluable placebo cutoffs; “nominal rej.” the share of them at which HC1 rejects at 5%, a size diagnostic. The calibrated $`p`$ is the add-one rank of the declared date among the placebos. The China row has seven evaluable positions, so its floor is 0.125. {#tab:headline}
 
-## GPQA-Diamond at o1-preview: a date-localized kink
+## GPQA-Diamond at o1-preview
 
-The logit-score slope changes from $`0.00188`$ to $`0.00446`$ logit-units per day at the o1-preview release — in raw terms roughly $`15 \to 34`$ percentage points per year, a $`\sim 2.4\times`$ acceleration (Figure <a href="#fig:gpqa" data-reference-type="ref" data-reference="fig:gpqa">1</a>). The headline estimate is $`+0.00258`$ per day (se $`0.00078`$, $`t = 3.32`$; bandwidth 540, triangular kernel, cells 44/111). The battery is uniformly supportive: the estimate is positive in 8/8 bandwidth$`\times`$donut cells ($`t`$ from $`2.15`$ to $`3.71`$), and the donut *strengthens* it, ruling out single-point dependence at the cutoff; the placebo-kink grid has empirical size $`\mathbf{0/7}`$ — no shifted cutoff rejects; a McCrary-style release-date density kink is null ($`t = 0.76`$), so the score bend is not an artifact of a release-frequency bend; a training-compute covariate kink is null ($`p = 0.54`$); and a degree-2 fit keeps the sign and magnitude at three times the standard error. This is the cleanest result of the pass: the bend localizes to the date.
+The logit-score slope rises from 0.00188 to 0.00446 per day at the release, about 15 to 34 raw percentage points a year (Figure <a href="#fig:gpqa" data-reference-type="ref" data-reference="fig:gpqa">1</a>). The declared date is the most extreme of 49 placebo dates at bandwidth 540 and 365 days, and of 46 at 730 days (calibrated $`p`$ 0.020, 0.020 and 0.021). The largest placebo statistic at bandwidth 540 is $`|z| = 2.78`$, at 142 days before the release. The estimate is positive in all eight bandwidth-by-donut cells, a release-density kink is null ($`t = 0.76`$), and a training-compute covariate kink is null ($`p = 0.54`$).
 
-The standing caveat belongs in every sentence of interpretation: composition — reasoning models entering the release stream — *is* the mechanism, so $`\tau`$ is a property of the release stream, not a statement that individual models improved. Benchmark contamination drifting over time remains an unmodeled confounder.
+The mechanism is composition. Reasoning models entered the release stream after September 2024, so the bend is a property of what was released, not of any model’s improvement.
 
 <figure id="fig:gpqa" data-latex-placement="t">
 <img src="fig_gpqa" style="width:82.0%" />
-<figcaption>GPQA-Diamond, logit(mean score) against days since o1-preview (2024-09-12). Solid lines: kernel-weighted local-linear fits on each side (bandwidth 540 days, triangular); dashed: the pre-cutoff trend continued. The slope roughly <span class="math inline">2.4×</span>’s at the cutoff, and the placebo grid (empirical size 0/7) localizes the bend to the date.</figcaption>
+<figcaption>GPQA-Diamond, logit of mean score against days since o1-preview. Solid lines: local-linear fits on each side (bandwidth 540 days, triangular kernel); dashed: the pre-cutoff trend continued. The declared date is the most extreme of 49 placebo dates.</figcaption>
 </figure>
 
-## METR time horizon: a real bend that cannot be dated
+## METR time horizon at o1-preview
 
-The $`\log_2`$ 50%-time-horizon slope rises from $`0.00331`$ to $`0.00932`$ per day at bandwidth 720 (triangular): a doubling time of $`9.9`$ months before the cutoff falling to $`3.5`$ months after (Figure <a href="#fig:metr" data-reference-type="ref" data-reference="fig:metr">2</a>). The headline kink is $`+0.00601`$ (se $`0.00282`$, $`t = 2.13`$); the full-sample uniform-kernel fit gives $`+0.00491`$ (se $`0.00095`$, $`t = 5.17`$; doubling time $`7.6 \to 3.6`$ months). The estimate is positive in 8/8 bandwidth$`\times`$donut cells ($`0.0044`$–$`0.0085`$), and the 80%-horizon variant agrees ($`+0.00454`$, $`t = 4.08`$), though with only three pre-cutoff points it is directional corroboration only.
-
-But the placebo grid smears on the pre side: at bandwidth 720, shifted cutoffs at $`-270`$, $`-180`$, and $`-90`$ days all reject ($`p = 0.030`$, $`0.014`$, $`0.004`$) with estimates the size of the headline kink, while post-side shifts are clean nulls (empirical size 3/6). With 11–12 pre-cutoff models, adjacent placebo windows share most of their data, and the design cannot distinguish 2024-09-12 from any date within roughly $`\pm 270`$ days on the pre side. The honest verdict, quoted from the analysis of record: *“credible slope change with failed date-localization — report as reasoning-era slope doubling, not ‘o1-preview caused X’.”* This is the era-bend/event-bend contrast with Section <a href="#sec:gpqa" data-reference-type="ref" data-reference="sec:gpqa">4.1</a> in a single dataset pair.
+The $`\log_2`$ time-horizon slope rises from 0.00331 to 0.00932 per day at bandwidth 720, a doubling time of 9.9 months falling to 3.5 (Figure <a href="#fig:metr" data-reference-type="ref" data-reference="fig:metr">2</a>). The bend is real. It is not dated: a placebo cutoff 311 days before the release gives $`|z| = 7.9`$ against 2.1 at the declared date, and placebos at $`-196`$ and $`+455`$ days also exceed it. The calibrated $`p`$ is 0.28 at bandwidth 720, 0.35 at 540 and 0.20 at 900. With 48 models the grid holds only 14 to 19 positions, so the floor is near 0.05 and the test is close to its limit either way. The 80% horizon has three pre-cutoff models and is not estimable.
 
 <figure id="fig:metr" data-latex-placement="t">
 <img src="fig_metr" style="width:82.0%" />
-<figcaption>METR 50% time horizon (<span class="math inline">log<sub>2</sub></span> minutes) against days since o1-preview. The slope nearly triples (doubling time <span class="math inline">9.9 → 3.5</span> months at bandwidth 720), but pre-side placebo cutoffs also reject: an era bend, not a dated event.</figcaption>
+<figcaption>METR 50% time horizon (<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mrow><mi mathvariant="normal">log</mi><mo>&#8289;</mo></mrow><mn>2</mn></msub><annotation encoding="application/x-tex">\log_2</annotation></semantics></math> minutes) against days since o1-preview. The slope nearly triples, but a placebo cutoff ten months earlier produces a larger statistic: the series bends over the era, not at the release.</figcaption>
 </figure>
 
-## The Epoch Capabilities Index: a null with power
+## The Epoch Capabilities Index at o1-preview
 
-If “everything kinked in 2024” — a global measurement or composition shift — then per-benchmark kinks would be uninformative. The ECI falsification run was launched *expecting* a null, and it delivered one: at the o1 date the all-models kink is null in 8/8 grid cells ($`t`$ from $`-0.60`$ to $`-1.54`$; headline $`-0.00725`$ points/day, se $`0.00895`$), with the index gaining roughly 18 points per year on both sides of the cutoff (Figure <a href="#fig:eci" data-reference-type="ref" data-reference="fig:eci">3</a>). Crucially, the same series’ placebo grid rejects at 4/7 shifted cutoffs — the test demonstrably has power in this data, from composition-churn bends elsewhere in the series — and still reads zero at 2024-09-12. The instrument works; the dial reads zero. The per-benchmark bends of Sections <a href="#sec:gpqa" data-reference-type="ref" data-reference="sec:gpqa">4.1</a>–<a href="#sec:metr" data-reference-type="ref" data-reference="sec:metr">4.2</a> are therefore not a global measurement artifact. This is partly by construction (IRT linking smooths regime shifts) and partly because o1-era gains concentrate in reasoning-heavy benchmarks.
-
-Two recorded lessons ride along. First, an analyst-script frontier filter — `cummax().diff()` `.fillna(1) > 0` over a series with 231 NaN scores — manufactured 347 false “frontier records”; the clean frontier has 25 points and is *not* an estimable design — four left-cell points, failing donut, bandwidth-direction, and placebo checks in every direction — and should never be quoted. Second, a side finding: the training-compute covariate kink among ECI-listed models is $`-0.00265`$ $`\log_{10}`$ FLOP/day at the o1 date ($`p = 0.021`$), corroborating the “pretraining-compute frontier stalls” narrative without itself being a design.
+The all-models index gains about 18 points a year on both sides of the release. The kink is $`-0.00725`$ points per day (se 0.00895) and null in every bandwidth cell (Figure <a href="#fig:eci" data-reference-type="ref" data-reference="fig:eci">3</a>). Its calibrated $`p`$ is 0.78: 38 of 49 placebo dates give a larger statistic. The nominal test rejects at 55% of placebo dates on this series. The July version of this paper read those rejections as proof that the test had power. They show that nominal inference is oversized here, and nothing about power at the release. The null stands on its own.
 
 <figure id="fig:eci" data-latex-placement="t">
 <img src="fig_eci" style="width:82.0%" />
-<figcaption>Epoch Capabilities Index (all models) against days since o1-preview. The two-sided fit and the continued pre-trend nearly coincide: a clean null (<span class="math inline"><em>t</em> = −0.81</span>) in a series where the placebo grid shows the test has power (4/7 shifted cutoffs reject). The guard the per-benchmark kinks need.</figcaption>
+<figcaption>Epoch Capabilities Index (all models) against days since o1-preview. The two-sided fit and the continued pre-trend nearly coincide.</figcaption>
 </figure>
 
 ## China’s chip stock at the October 2023 export controls
 
-The only true difference-in-kinks structure in the corpus: the US export-license schedule bends for China only, at a common dated cutoff (2023-10-17), so treated = China and control = hyperscalers (Amazon + Microsoft + Google + Meta), and the controls difference out the global supply bend (their own kink: $`-0.00067`$/day). The legal-stock DiK is $`-0.00154`$ log-units per day (se $`0.00047`$, $`t = -3.30`$; bandwidth 548, triangular), i.e. a growth-rate change of roughly $`\mathbf{-0.56}`$ **log-units per year** (Figure <a href="#fig:china" data-reference-type="ref" data-reference="fig:china">4</a>). By-year CR1 clustering keeps significance ($`t = -5.15`$) with the explicit few-cluster caveat ($`G = 4`$). The estimate is negative in **25/25** specifications.
+The export-licence schedule bent for China only, so the design is a group DiK: China’s legal H100-equivalent stock against the four US hyperscalers at a common date, with the hyperscalers absorbing the global supply bend (Figure <a href="#fig:china" data-reference-type="ref" data-reference="fig:china">4</a>). The DiK is $`-0.00154`$ log units per day at bandwidth 548, about $`-0.56`$ per year, and $`-0.00114`$ at 730 days. The sign is negative in all 25 specifications of the July pass. The placebo-treated group, other buyers against the hyperscalers, is null ($`t = 1.34`$), and the October 2022 round, whose compliance loophole predicts no bite, is null ($`t = 1.46`$). The total stock including smuggled chips gives half the effect ($`-0.00076`$, $`t = -1.54`$).
 
-Falsifications behave: the October 2022 first-round placebo — the round whose A800/H800 compliance loophole predicts no bite — is null/positive ($`+0.0018`$, $`p = 0.15`$), and the placebo-treated group (“Other” vs. hyperscalers) is clean at bandwidths 548–730 while rejecting at 365, so the defensible range is bandwidth 548–730 with DiK $`-0.0009`$ to $`-0.0015`$. The honesty band: the *total*-stock series including smuggled chips gives a DiK roughly half the size and fragile ($`-0.00076`$, $`t = -1.54`$ at bandwidth 548) — the smuggled series, which starts 2024-03-31 and is itself a treatment response, substitutes for lost legal supply. Serial dependence in a six-points-per-cell cumulative series makes every $`|t|`$ optimistic; the sign stability is the real evidence. The verdict of record: *“the policy bent the legal channel $`\approx -0.3`$ to $`-0.56`$ ln-units/yr; the effect on China’s actual compute stock is smaller and fragile.”*
+None of this can be turned into a calibrated 5% claim. Fifteen quarters per group admit ten placebo positions, of which seven are evaluable, so the floor is 0.125 and the declared date reaches exactly that floor at both bandwidths. The design is inconclusive on this series. Table <a href="#tab:china" data-reference-type="ref" data-reference="tab:china">3</a> records what quarterly data can and cannot show. The cells also hold six points each, where HC1 standard errors are known to be overstated .
+
+| Contrast (vs hyperscalers) | bw (d) | $`\tau`$ / day | $`t`$ | evaluable placebos | calibrated $`p`$ |
+|:---|---:|---:|---:|---:|---:|
+| China legal stock | 548 | $`-0.00154`$ | $`-3.30`$ | 7 | 0.125 (floor) |
+| China legal stock | 730 | $`-0.00114`$ | $`-2.85`$ | 6 | 0.143 (floor) |
+| China total incl. smuggled | 548 | $`-0.00076`$ | $`-1.54`$ | 7 | 0.125 |
+| China total incl. smuggled | 730 | $`-0.00046`$ | $`-1.10`$ | 6 | 0.429 |
+| Other buyers (placebo group) | 548 | $`+0.00050`$ | $`1.34`$ | 7 | 0.750 |
+| China legal vs neoclouds | 548 | $`-0.00094`$ | $`-1.70`$ | 7 | 0.375 |
+| China legal, Oct 2022 round | 548 | $`+0.00182`$ | $`1.46`$ | – | – |
+
+Group difference-in-kinks on quarterly $`\ln`$ cumulative H100-equivalent stocks. Evaluable placebo positions never exceed seven, so no row can reach $`p < 0.125`$. {#tab:china}
 
 <figure id="fig:china" data-latex-placement="t">
 <img src="fig_china" style="width:82.0%" />
-<figcaption>Group difference-in-kinks: <span class="math inline">ln </span> cumulative H100e stock for China (legal) and the hyperscaler controls against days since the 2023-10-17 export-control round (bandwidth 548 days, triangular). Both series bend at the cutoff; the DiK is their difference, <span class="math inline">−0.00154</span> log-units/day (<span class="math inline"> ≈ −0.56</span>/yr).</figcaption>
+<figcaption>Group difference-in-kinks: <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi mathvariant="normal">ln</mi><annotation encoding="application/x-tex">\ln</annotation></semantics></math> cumulative H100-equivalent stock for China (legal) and the hyperscaler controls against days since the 2023-10-17 export-control round (bandwidth 548 days). Both series bend at the cutoff; the DiK is their difference.</figcaption>
 </figure>
 
-# The graveyard
+# Rejected designs
 
-Rejections are results. Three claims that look at least as impressive as Table <a href="#tab:headline" data-reference-type="ref" data-reference="tab:headline">1</a> in a scatter plot died in the battery.
+Three further claims were tested and do not survive.
 
-#### Datacenter growth “kinked at ChatGPT.”
+#### Datacenter growth at ChatGPT.
 
-The GPU-cluster series ($`\ln`$ cumulative H100e by first-operational date) shows a nominal kink at ChatGPT’s release with $`t = 12.9`$ — the largest $`t`$-statistic of the entire exercise. Its placebo grid rejects at **7/7** shifted cutoffs (empirical size $`1.0`$): a smoothly super-exponential cumulative series bends *everywhere*, and HC1 inference on serially dependent cumulative data is meaningless. The design was discarded; the estimate is descriptive curvature, not a kink. (The dataset variant named in the original claim, datacenter power timelines, was infeasible outright: one pre-ChatGPT observation.) This is the cautionary tale for every “the curve bent at \[event\]” plot drawn on cumulative infrastructure data.
+The GPU-cluster series ($`\ln`$ cumulative H100-equivalents by first operational date) has a nominal kink at ChatGPT’s release with $`z = 9`$ at the default bandwidth and $`t = 12.9`$ in the July pass. The nominal test rejects at 88% of placebo dates and the calibrated $`p`$ is 0.62. A smoothly super-exponential cumulative series bends everywhere; the estimate is curvature.
 
 #### Chinchilla.
 
-Tokens-per-parameter among language base models at the Chinchilla paper’s release date (2022-03-29): kink $`t = -0.91`$, $`-0.05`$, $`+1.48`$ at bandwidths 365, 540, 730 — a sign-unstable null. Even a genuine regime change (prior work shows a two-to-three-month adoption ramp) does not produce a slope kink dateable to the paper’s release.
+Tokens per parameter among language base models at the Chinchilla paper’s release (2022-03-29): $`t = -0.91`$, $`-0.05`$ and $`+1.48`$ at bandwidths 365, 540 and 730. The adoption entered the record as a ramp over two to three months, not a kink at the date.
 
-#### The EU AI Act threshold is a step with bunching, not a kink.
+#### The EU AI Act threshold.
 
-The Act’s systemic-risk presumption at $`10^{25}`$ training FLOP imposes a *level* discontinuity in obligations, not a marginal-rate kink, so RKD/DiK is the wrong estimand shape. Worse for any kink or RD design at that cutoff, the running variable sorts: post-Act, the model-density just above the line is depleted (below/above contingency: Fisher exact $`\mathrm{OR} = 0.17`$, 95% CI $`0.05`$–$`0.62`$, $`p = 0.0071`$; roughly 83% of the expected above-line mass missing), which violates any no-sorting requirement. Kink-shaped probes confirm nulls (e.g. an open-weights-share DiK of $`-0.93`$, se $`0.72`$). The bunching test remains the right tool at this threshold — and the bunching itself, an avoidance response specific to the statutory line and the post-Act period, is the substantive finding.
+The $`10^{25}`$-FLOP line is a level discontinuity in obligations, not a slope change, so a kink is the wrong estimand. The running variable also sorts at the line (Fisher odds ratio 0.17, $`p = 0.007`$, for the post-Act deficit just above it), which rules out any regression-discontinuity reading. The bunching itself is analysed in a companion note.
 
 # Discussion
 
-Four lessons generalize beyond these datasets.
+Three points carry beyond these series.
 
-**Era bends and event bends are different claims.** The METR and GPQA series tell almost the same visual story — capability slopes steepen around late 2024 — yet the placebo grid cleanly separates them: GPQA’s bend localizes to the o1 date (size 0/7) while METR’s does not (pre-side size 3/6). Public discussion rarely distinguishes “the trend changed in this era” from “this event changed the trend”; the shifted-cutoff grid makes the distinction mechanical.
+First, nominal robust inference is not usable for dating a bend in a short, serially dependent aggregate. On the four headline series it rejects at between 14% and 55% of dates where nothing happened, and at 88% on the cumulative datacenter series. Every verdict here rests on the placebo rank instead.
 
-**Nulls need power certificates.** The ECI falsification is informative precisely because the same series rejects at 4/7 shifted placebo cutoffs: the test has power in this data, and still reads zero at the candidate date. A null from an underpowered test would have guarded nothing.
+Second, placebo rejections are a size diagnostic, not a power certificate. The July version of this paper treated the ECI’s rejections at shifted dates as evidence that its null at the release was well powered. That reading was wrong, and the correction changes no number but changes what the null means.
 
-**Report honesty bands, not point claims.** The China result is strongest as a band: legal-channel bend $`\approx -0.3`$ to $`-0.56`$ log-units/yr across the defensible bandwidth range, total-stock effect roughly half and fragile because smuggling — itself a response to the policy — substitutes for legal supply. Similarly, GPQA’s $`\tau`$ is a release-stream property with composition as the mechanism, not per-model improvement.
+Third, the number of placebo positions is a property of the series, and it bounds what any calibrated test can say. Monthly or per-model series give 46 to 49 positions and a floor of 0.02. Fifteen quarters give seven positions and a floor of 0.125. A sign that is stable across 25 specifications on quarterly data is worth reporting, but it is not a dated effect at the 5% level and should not be described as one.
 
-**The graveyard is the argument.** The most significant statistic of the exercise ($`t = 12.9`$) belongs to a design that fails every placebo. Any workflow that stops at “the kink is significant” would have led with it. On the public record of AI progress, where series are short, serially dependent, and composition-churned, the falsification battery is not a robustness appendix — it is the analysis.
+#### Limitations.
 
-*Limitations.* Calendar-time identification rests on an untestable no-co-located-event assumption; placebo grids probe but cannot certify it. Several series are short (6 quarterly points per cell in the DiK; 11–12 pre-cutoff models for METR), making serial dependence corrections coarse and $`|t|`$ optimistic. Epoch’s compute figures are partly estimates, and benchmark contamination drifts over time. All results are properties of the *public record* of AI progress — release-stream composition included — not of any individual system.
+Calendar-time identification rests on the untestable assumption that no other event bent the series at the date; placebo grids rank the date, they do not certify the assumption. The METR grid holds 14 to 19 positions and sits near its floor. The GPQA bend is a composition effect of which models were released, and benchmark contamination drifts over time. The chip series are partly estimates, have six points per cell, and carry serial dependence that the estimator flags. All results describe the public record of AI progress, not any individual system.
 
 ## Reproducibility
 
-Estimates were produced with the open-source `natex` v0.2.0 kink module on public Epoch AI data ; the per-design analysis records (inputs, CLI outputs, diagnostics JSON) and the case-study write-up of record live in the `natex` repository under `docs/case_studies/` (`epoch-kinks.md`). The four figures regenerate deterministically from the public CSVs via the committed script `paper/figures/` `make_figures.py`, which asserts every headline number against the case study before drawing.
+Point estimates come from the `natex` v0.2.0 kink module on the July 2026 extracts; placebo grids and calibrated $`p`$-values from `natex` v0.3.0 on the same extracts. The per-design records and the numbers of record live in the repository under `docs/case_studies/epoch-kinks.md`. The four figures regenerate from the public files via `paper/figures/make_figures.py`, which asserts every point estimate against that file before drawing.
+
+# Appendix: bandwidth grid
+
+| Series | bw (d) | $`\kappa`$ / day | nominal $`z`$ | placebos | nominal rej. | calibrated $`p`$ |
+|:---|---:|---:|---:|---:|---:|---:|
+| GPQA-Diamond logit | 365 | $`+0.00313`$ | 2.96 | 49 | 0% | 0.020 |
+| GPQA-Diamond logit | 540 | $`+0.00258`$ | 3.32 | 49 | 14% | 0.020 |
+| GPQA-Diamond logit | 730 | $`+0.00261`$ | 4.05 | 46 | 4% | 0.021 |
+| METR $`\log_2`$ 50% horizon | 540 | $`+0.00507`$ | 1.41 | 19 | 16% | 0.350 |
+| METR $`\log_2`$ 50% horizon | 720 | $`+0.00601`$ | 2.13 | 17 | 24% | 0.278 |
+| METR $`\log_2`$ 50% horizon | 900 | $`+0.00627`$ | 2.37 | 14 | 29% | 0.200 |
+| ECI, all models | 365 | $`-0.01190`$ | $`-0.72`$ | 49 | 39% | 0.660 |
+| ECI, all models | 540 | $`-0.00725`$ | $`-0.81`$ | 49 | 55% | 0.780 |
+| ECI, all models | 730 | $`-0.00463`$ | $`-0.70`$ | 49 | 67% | 0.820 |
+| GPU clusters at ChatGPT | 708 | $`+0.00080`$ | 8.95 | 49 | 88% | 0.620 |
+
+Every bandwidth run for the per-model and monthly series, triangular kernel. Placebo grids and calibrated $`p`$-values computed with `natex` v0.3.0 on 2026-10-05. {#tab:bw}
 
 <div class="thebibliography">
 
@@ -154,11 +169,11 @@ Estimates were produced with the open-source `natex` v0.2.0 kink module on publi
 
 Böckerman, P., Jysmä, S., and Kanninen, O. (2025). *Difference-in-Kinks Design*. IZA Discussion Paper No. 18313. <https://docs.iza.org/dp18313.pdf>
 
-Herlands, W., McFowland III, E., Wilson, A. G., and Neill, D. B. (2018). Automated local regression discontinuity design discovery. In *Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD ’18)*.
+Card, D., Lee, D. S., Pei, Z., and Weber, A. (2015). Inference on causal effects in a generalized regression kink design. *Econometrica*, 83(6), 2453–2483.
 
-Epoch AI (2026). Data on AI: AI Benchmarking Hub, Epoch Capabilities Index, and AI chip data. Published online at <https://epoch.ai/data>. Retrieved July 2026. CC-BY 4.0.
+Epoch AI (2026). Data on AI: AI Benchmarking Hub, Epoch Capabilities Index, and AI chip data. <https://epoch.ai/data>. Retrieved July 2026. CC-BY 4.0.
 
-Hillebrandt, H. (2026). *natex: automated natural-experiment discovery and estimation* (version 0.2.0). Software. <https://github.com/HaukeHillebrandt/natex>
+Hillebrandt, H. (2026). *natex: automated natural-experiment discovery and estimation* (versions 0.2.0 and 0.3.0). Software. <https://github.com/HaukeHillebrandt/natex>
 
 Kwa, T., West, B., Becker, J., et al. (2025). Measuring AI ability to complete long tasks. arXiv:2503.14499.
 
