@@ -1,0 +1,9 @@
+series,event,n_placebos,rejection_rate,calibrated_p,verdict,source
+GPQA-Diamond logit score (bw 540 d),o1-preview 2024-09-12,49,0.143,0.020,dated bend,flagship paper; docs/case_studies/epoch-kinks.md
+METR 50% time horizon (bw 720 d),o1-preview 2024-09-12,17,0.235,0.278,era bend,flagship paper; docs/case_studies/epoch-kinks.md
+Epoch Capabilities Index (bw 540 d),o1-preview 2024-09-12,49,0.551,0.780,null,flagship paper; docs/case_studies/epoch-kinks.md
+GPU clusters H100e stock (bw 708 d),ChatGPT 2022-11-30,49,0.878,0.620,null (curvature),flagship paper graveyard; docs/case_studies/epoch-kinks.md
+Hyperscaler capex (quarterly),ChatGPT 2022-11-30,15,0.467,0.125,inconclusive (N < 19),papers/capex-dik-chatgpt (v0.2.0 run)
+"CVE high+critical publications, 21 CNAs (bw 35 mo)",Claude Mythos 2026-04-07,49,0.224,0.020,dated bend,natex-runs/cve-mythos-2026-10-02/out/pooled_kink.csv
+CISA KEV additions (bw 23 mo),April 2026,40,0.250,0.610,null,natex-runs/cve-mythos-2026-10-02/out_kev/results.json
+"KEV additions of CVEs at most 90 d old (bw 23 mo)",April 2026,40,0.075,0.024,dated bend,natex-runs/cve-mythos-2026-10-02/out_kev/results.json
