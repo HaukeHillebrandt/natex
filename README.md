@@ -176,15 +176,19 @@ uv run natex discover /tmp/natex-demo/synth.csv --treatment T --outcome y \
   --k 40 --q 49 --seed 0 --out /tmp/natex-demo/out
 ```
 
+Output of a real run on v0.3.0 (results path shortened):
+
 ```console
 model=bernoulli  max LLR=21.16  scan p=0.020
 top center (raw z): [0.757951   0.51275872]
-placebo passed: True   density p: 0.559
+placebo passed: — (no non-forcing covariate was testable; battery vacuous)   density p: 0.702
 2SLS tau=2.047 CI=(1.024,3.070) weak_iv=False
+results: …/natex-demo/out/results.json
 ```
 
-The planted effect is 2. The scan finds the discontinuity, the falsification tests pass,
-and the 2SLS interval covers the truth.
+The planted effect is 2. The scan finds the discontinuity, the density test passes, and
+the 2SLS interval covers the truth. The covariate placebo battery is vacuous here because
+the synthetic file has no covariate besides the two forcing variables.
 
 ### Python API
 
@@ -345,8 +349,15 @@ Three Claude Code skills ship in [skills/](skills/):
 - [natex-lit-review](skills/natex-lit-review/SKILL.md): generate the research brief, hand it
   to deep-research tooling, vet the citations.
 
-Install by symlinking the directories into `~/.claude/skills`. [AGENTS.md](AGENTS.md)
-documents the same surface for other agents.
+Install into Claude Code by symlinking (or copying) the skill directories into
+`~/.claude/skills`:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/skills/"*/ ~/.claude/skills/
+```
+
+[AGENTS.md](AGENTS.md) documents the same surface for other agents.
 
 ## Backtests on real data
 
@@ -359,19 +370,24 @@ uv run natex datasets
 uv run pytest tests/backtests -m backtest -q
 ```
 
-| Dataset | Rows | Truth asserted (natex is never told the cutoff) |
-|---|---|---|
-| `test_score_2012` (MDRC RDD practice set) | 2,767 | sharp RDD at pretest 215; known effect about 10 inside the 2SLS interval |
-| `academic_probation` (Lindo, Sanders and Oreopoulos 2010) | 44,362 | fuzzy RDD at `dist_from_cut = 0`, ranked first of four forcing candidates, through the coarse-to-fine scan |
-| `ed_visits` (Anderson, Dobkin and Gross 2012) | 161 cells | insurance-loss RDDs at ages 19 and 23 among the top clusters |
-| `inpatient_visits` (ADG 2012 companion) | 73 cells | age-23 cutoff on 73 aggregated cells |
-| `egger_koethenbuerger` (Egger and Koethenbuerger 2010) | 43,175 | at least two statutory council-size thresholds on `log_pop` (four of five observed) |
-| `prop99` (Abadie, Diamond and Hainmueller) | 1,209 | SuDDDS recovers (California, 1989); donors put weight 0.955 on the ADH five, ATT about -19.5 |
+With all six archives in place the check prints one line per registered dataset (paths
+shortened):
 
-Expected layout under `NATEX_DATA` and fetch instructions are printed by `natex datasets`
-for anything missing; the registry in `natex.data.registry` is the source of truth. The
-MDRC file is a public download; the others are login-gated openICPSR archives. Outcomes and
-timings: [docs/status/phase-2.md](docs/status/phase-2.md).
+```console
+$ uv run natex datasets
+test_score_2012  found  rows=2767  ok=True  path=…/data/test_score_2012/RDD_Guide_Dataset_0.csv
+academic_probation  found  rows=44362  ok=True  path=…/data/AcademicProbation_LSO_2010/data_orig.csv
+ed_visits  found  rows=161  ok=True  path=…/data/ED_visits/P03_ED_Analysis_File.csv
+inpatient_visits  found  rows=73  ok=True  path=…/data/Inpatient_visits/P10_Inpatient_CSV_File.csv
+egger_koethenbuerger  found  rows=43175  ok=True  path=…/data/EggerKoethenbuerger_AEJ_Data (1).csv
+prop99  found  rows=1209  ok=True  path=…/data/prop99/smoking_data.csv
+```
+
+For anything missing it prints the expected layout and fetch instructions; the registry in
+`natex.data.registry` is the source of truth. The MDRC file is a public download; the
+others are login-gated openICPSR archives. What each backtest asserts is tabulated under
+[Project status](#project-status); outcomes and timings are in
+[docs/status/phase-2.md](docs/status/phase-2.md).
 
 ## Benchmarks
 
@@ -411,7 +427,7 @@ Legacy scan outputs are not ground truth in parity tests.
 
 ## Project status
 
-Latest release: v0.3.0 (October 2026). Run of record: `uv run pytest -q` collects 1,269
+Latest release: v0.3.0 (October 2026). Run of record: `uv run pytest -q` collects 1269
 offline tests across Python 3.11 to 3.14 in CI, `uv run pytest -m backtest` collects 32
 real-data backtests, and `uv run ruff check src tests` is clean.
 
@@ -428,6 +444,18 @@ real-data backtests, and `uv run ruff check src tests` is clean.
 | Kinks | **Done**: sharp and fuzzy RKD and DiK, HC1, CR1, HAC and Fieller inference, `natex kink` ([status](docs/status/phase-kinks.md)) |
 | Survey | **Done**: `natex survey` over seven families with one report ([method card](docs/method_cards/survey.md)) |
 | v0.3.0 | **Done**: exhaustive role-space scan, `inconclusive` verdicts, placebo-calibrated calendar-time kinks ([status](docs/status/phase-exhaustive-scan.md)) |
+
+What each real-data backtest recovers. natex is never told the cutoff, the treated unit or
+the timing; details are in the linked status files.
+
+| Dataset | Design | Result |
+|---|---|---|
+| `test_score_2012` (MDRC RDD practice set, 2,767 rows) | sharp RDD | pretest-215 cutoff recovered; the known effect of about 10 lies inside the 2SLS interval |
+| `academic_probation` (Lindo, Sanders and Oreopoulos 2010; 44,362 rows) | fuzzy RDD | `dist_from_cut = 0` ranked first of four forcing candidates through the coarse-to-fine scan |
+| `ed_visits` (Anderson, Dobkin and Gross 2012; 161 cells) | fuzzy RDD | insurance-loss cutoffs at ages 19 and 23 among the top clusters |
+| `inpatient_visits` (ADG 2012 companion; 73 cells) | fuzzy RDD | age-23 cutoff recovered on 73 aggregated cells |
+| `egger_koethenbuerger` (Egger and Koethenbuerger 2010; 43,175 rows) | multi-cutoff RDD | at least two statutory council-size thresholds on `log_pop` (four of five observed) |
+| `prop99` (Abadie, Diamond and Hainmueller; 1,209 rows) | DiD and synthetic control | SuDDDS recovers (California, 1989); donors put weight 0.955 on the ADH five, ATT about -19.5 |
 
 ## Development
 
