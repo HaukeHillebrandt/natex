@@ -40,6 +40,15 @@ automated pipeline. All three are fixed in 0.3.0
 
 Collection index (HTML and PDF): <https://haukehillebrandt.github.io/natex/>
 
+**Methods paper: natex 0.3.0: Methods for Automated Natural-Experiment Discovery and
+Calibrated Inference in Tabular Data**
+([HTML](https://haukehillebrandt.github.io/natex/natex-methods/),
+[PDF](papers/natex-methods/main.pdf), source in
+[`papers/natex-methods/`](papers/natex-methods/)). The methods of record: estimands,
+the inference behind every verdict, the audit corrections, the verdict vocabulary, the
+six blind backtests, and the placebo rejection rates of the nominal kink test on eight AI
+series.
+
 **Flagship: Placebo-Calibrated Kink Tests of Four Claimed Trend Breaks in Epoch AI Data**
 ([HTML](https://haukehillebrandt.github.io/natex/paper/),
 [PDF](https://haukehillebrandt.github.io/natex/main.pdf), source in [`paper/`](paper/),

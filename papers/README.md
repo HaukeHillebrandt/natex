@@ -1,27 +1,28 @@
 # papers/ — the natex paper collection
 
-**📕 Read everything in one file: [ALL_PAPERS.pdf](./ALL_PAPERS.pdf)** (116 pages, bookmarked) · **🌐 Always-current site: [haukehillebrandt.github.io/natex](https://haukehillebrandt.github.io/natex/)**
+**📕 Read everything in one file: [ALL_PAPERS.pdf](./ALL_PAPERS.pdf)** (127 pages, bookmarked) · **🌐 Always-current site: [haukehillebrandt.github.io/natex](https://haukehillebrandt.github.io/natex/)**
 
 | # | Paper | Read on GitHub | Typeset |
 |---|-------|----------------|---------|
 | 1 | Systematic Survey (capstone) | [md](./capstone/) · [pdf](./capstone/main.pdf) | [html](https://haukehillebrandt.github.io/natex/capstone/) |
-| 2 | Three Kinks and a Null (flagship) | [md](../paper/) · [pdf](../paper/main.pdf) | [html](https://haukehillebrandt.github.io/natex/paper/) |
-| 3 | BTOS adoption at DeepSeek-R1 | [md](./btos-sector-did-r1/) · [pdf](./btos-sector-did-r1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-sector-did-r1/) |
-| 4 | Export controls: three legs | [md](./export-controls-three-leg/) · [pdf](./export-controls-three-leg/main.pdf) | [html](https://haukehillebrandt.github.io/natex/export-controls-three-leg/) |
-| 5 | BTOS rewording measurement RDD | [md](./btos-rewording-rdd/) · [pdf](./btos-rewording-rdd/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-rewording-rdd/) |
-| 6 | Capex at ChatGPT (DiK) | [md](./capex-dik-chatgpt/) · [pdf](./capex-dik-chatgpt/main.pdf) | [html](https://haukehillebrandt.github.io/natex/capex-dik-chatgpt/) |
-| 7 | LMArena sycophancy ABA | [md](./lmarena-sycophancy-aba/) · [pdf](./lmarena-sycophancy-aba/main.pdf) | [html](https://haukehillebrandt.github.io/natex/lmarena-sycophancy-aba/) |
-| 8 | EU AI Act bunching | [md](./euact-bunching-writeup/) · [pdf](./euact-bunching-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/euact-bunching-writeup/) |
-| 9 | Still No Kink at o1 (ECI) | [md](./eci-fresh-kink-o1/) · [pdf](./eci-fresh-kink-o1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/eci-fresh-kink-o1/) |
-| 10 | Semiconductor event studies | [md](./semis-event-studies-writeup/) · [pdf](./semis-event-studies-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/semis-event-studies-writeup/) |
-| 11 | Chinchilla: an honest miss | [md](./chinchilla-writeup/) · [pdf](./chinchilla-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/chinchilla-writeup/) |
-| 12 | Prop 99 blind validation | [md](./prop99-validation-writeup/) · [pdf](./prop99-validation-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/prop99-validation-writeup/) |
-| 13 | Chip-level export controls (SuDDDS) | [md](./chip-suddds-exportcontrols/) · [pdf](./chip-suddds-exportcontrols/main.pdf) | [html](https://haukehillebrandt.github.io/natex/chip-suddds-exportcontrols/) |
-| 14 | BTOS spliced panel: R1 kink out of sample | [md](./btos-spliced-r1-extension/) · [pdf](./btos-spliced-r1-extension/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-spliced-r1-extension/) |
-| 15 | Benchmark contamination (public vs held-out) | [md](./benchmark-contamination-dee/) · [pdf](./benchmark-contamination-dee/main.pdf) | [html](https://haukehillebrandt.github.io/natex/benchmark-contamination-dee/) |
-| 16 | Datacenter sites at 2025Q1 | [md](./datacenter-sites-2025q1/) · [pdf](./datacenter-sites-2025q1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/datacenter-sites-2025q1/) |
-| 17 | State AI-exposure gradient at R1 | [md](./aei-btos-state-gradient/) · [pdf](./aei-btos-state-gradient/main.pdf) | [html](https://haukehillebrandt.github.io/natex/aei-btos-state-gradient/) |
-| 18 | CVE publications: no kink at R1 | [md](./cve-monthly-kink-r1/) · [pdf](./cve-monthly-kink-r1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/cve-monthly-kink-r1/) |
+| 2 | natex 0.3.0 methods paper | [md](./natex-methods/) · [pdf](./natex-methods/main.pdf) | [html](https://haukehillebrandt.github.io/natex/natex-methods/) |
+| 3 | Placebo-calibrated kink tests of four claimed trend breaks (flagship) | [md](../paper/) · [pdf](../paper/main.pdf) | [html](https://haukehillebrandt.github.io/natex/paper/) |
+| 4 | BTOS adoption at DeepSeek-R1 | [md](./btos-sector-did-r1/) · [pdf](./btos-sector-did-r1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-sector-did-r1/) |
+| 5 | Export controls: three legs | [md](./export-controls-three-leg/) · [pdf](./export-controls-three-leg/main.pdf) | [html](https://haukehillebrandt.github.io/natex/export-controls-three-leg/) |
+| 6 | BTOS rewording measurement RDD | [md](./btos-rewording-rdd/) · [pdf](./btos-rewording-rdd/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-rewording-rdd/) |
+| 7 | Capex at ChatGPT (DiK) | [md](./capex-dik-chatgpt/) · [pdf](./capex-dik-chatgpt/main.pdf) | [html](https://haukehillebrandt.github.io/natex/capex-dik-chatgpt/) |
+| 8 | LMArena sycophancy ABA | [md](./lmarena-sycophancy-aba/) · [pdf](./lmarena-sycophancy-aba/main.pdf) | [html](https://haukehillebrandt.github.io/natex/lmarena-sycophancy-aba/) |
+| 9 | EU AI Act bunching | [md](./euact-bunching-writeup/) · [pdf](./euact-bunching-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/euact-bunching-writeup/) |
+| 10 | Still No Kink at o1 (ECI) | [md](./eci-fresh-kink-o1/) · [pdf](./eci-fresh-kink-o1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/eci-fresh-kink-o1/) |
+| 11 | Semiconductor event studies | [md](./semis-event-studies-writeup/) · [pdf](./semis-event-studies-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/semis-event-studies-writeup/) |
+| 12 | Chinchilla: an honest miss | [md](./chinchilla-writeup/) · [pdf](./chinchilla-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/chinchilla-writeup/) |
+| 13 | Prop 99 blind validation | [md](./prop99-validation-writeup/) · [pdf](./prop99-validation-writeup/main.pdf) | [html](https://haukehillebrandt.github.io/natex/prop99-validation-writeup/) |
+| 14 | Chip-level export controls (SuDDDS) | [md](./chip-suddds-exportcontrols/) · [pdf](./chip-suddds-exportcontrols/main.pdf) | [html](https://haukehillebrandt.github.io/natex/chip-suddds-exportcontrols/) |
+| 15 | BTOS spliced panel: R1 kink out of sample | [md](./btos-spliced-r1-extension/) · [pdf](./btos-spliced-r1-extension/main.pdf) | [html](https://haukehillebrandt.github.io/natex/btos-spliced-r1-extension/) |
+| 16 | Benchmark contamination (public vs held-out) | [md](./benchmark-contamination-dee/) · [pdf](./benchmark-contamination-dee/main.pdf) | [html](https://haukehillebrandt.github.io/natex/benchmark-contamination-dee/) |
+| 17 | Datacenter sites at 2025Q1 | [md](./datacenter-sites-2025q1/) · [pdf](./datacenter-sites-2025q1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/datacenter-sites-2025q1/) |
+| 18 | State AI-exposure gradient at R1 | [md](./aei-btos-state-gradient/) · [pdf](./aei-btos-state-gradient/main.pdf) | [html](https://haukehillebrandt.github.io/natex/aei-btos-state-gradient/) |
+| 19 | CVE publications: no kink at R1 | [md](./cve-monthly-kink-r1/) · [pdf](./cve-monthly-kink-r1/main.pdf) | [html](https://haukehillebrandt.github.io/natex/cve-monthly-kink-r1/) |
 
 Each paper directory carries a `README.md` (a pandoc Markdown render that GitHub
 displays when you open the folder) and a committed `main.pdf` (GitHub's viewer
